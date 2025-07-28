@@ -248,7 +248,7 @@ private:
             std::sort(distance.begin(), distance.end());
             // ROS_INFO("最小距离%f",distance[0]);
             // ROS_INFO("有效点数%d",effective_point);
-            if (effective_point > 5 && distance[0] < 0.45){ //满足条件就说明前方有障碍物
+            if (effective_point > 5 && distance[0] < 0.6){ //满足条件就说明前方有障碍物
                 // waitForContinue();
                 cv::Vec4f lineParams;
                 cv::fitLine(points, lineParams, cv::DIST_L2, 0, 0.01, 0.01);

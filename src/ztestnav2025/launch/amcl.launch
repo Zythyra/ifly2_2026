@@ -2,17 +2,14 @@
 <!-- http://wiki.ros.org/amcl -->
 
     <arg name="scan_topic" default="scan"/>
-    <!-- <arg name="initial_pose_x" default="0.3"/>
+    <arg name="initial_pose_x" default="0.3"/>
     <arg name="initial_pose_y" default="0.253"/>
-    <arg name="initial_pose_a" default="0.0"/> -->
-    <arg name="initial_pose_x" default="2.75"/>
+    <arg name="initial_pose_a" default="0.0"/>
+    <!-- <arg name="initial_pose_x" default="2.75"/>
     <arg name="initial_pose_y" default="0.3"/>
-    <arg name="initial_pose_a" default="1.57"/>
+    <arg name="initial_pose_a" default="1.57"/> -->
 
     <node pkg="amcl" type="amcl" name="amcl" clear_params="true">
-
-        <param name="diagnostic_period" value="0.5"/> <!-- 每0.5秒输出诊断 -->
-        <param name="do_diagnostics" value="true"/>   <!-- 启用详细诊断 -->
         
         <param name="use_map_topic" value="false"/>  
         <!-- //当设置为true时，AMCL将会订阅map话题，而不是调用服务返回地图。也就是说，当设置为true时，有另外一个节点实时的发布map话题，也就是机器人在实时的进行地图构建，并供给amcl话题使用；当设置为false时，通过map server，也就是调用已经构建完成的地图。在navigation 1.4.2中新加入的参数。 -->

@@ -159,7 +159,7 @@ namespace my_planner
                         unsigned char red = cost;
                         pixel = cv::Vec3b(blue, 0, red);
                     }
-                }
+                }//
             }
             
 
@@ -299,7 +299,7 @@ namespace my_planner
             double final_yaw = tf::getYaw(pose_final.pose.orientation);
             // double final_yaw = tf2::getYaw(pose_final.pose.orientation);
 
-            ROS_WARN("调整最终姿态，final_yaw = %.2f",final_yaw);
+            // ROS_WARN("调整最终姿态，final_yaw = %.2f",final_yaw);
             // cmd_vel.linear.x = pose_final.pose.position.x * final_pose_linear_gain_;//到达目标点附近后调整位姿的速度比例系数
             if(pose_final.pose.position.x>0.03) cmd_vel.linear.x = std::max(pose_final.pose.position.x * final_pose_linear_gain_,0.2);
             else if(pose_final.pose.position.x<-0.03) cmd_vel.linear.x = std::min(pose_final.pose.position.x * final_pose_linear_gain_,-0.2);

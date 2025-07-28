@@ -1,28 +1,3 @@
-# #Description:
-# #  全局代价地图参数配置文件,各参数的意义如下：
-# #  global_frame:在全局代价地图中的全局坐标系;
-# #  robot_base_frame:机器人的基坐标系;
-# #
-# global_costmap:
-#   global_frame: map
-#   robot_base_frame: base_link
-#   update_frequency: 5.0
-#   publish_frequency: 5.0
-
-#   cost_scaling_factor: 14.0     #14.0  
-#   inflation_radius: 0.33         #0.33  注：这里的参数和common_params里面的参数重复了，这里的会把前者的参数覆盖掉
-
-  
-#   static_map: true
-#   rolling_window: true
-#   transform_tolerance: 2.0
-#   track_unknown_space: false
-#   plugins:
-#     - {name: static_layer,    type: "costmap_2d::StaticLayer"}
-#     - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
-#     - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
-
-
 #Description:
 #  全局代价地图参数配置文件,各参数的意义如下：
 #  global_frame:在全局代价地图中的全局坐标系;
@@ -34,8 +9,8 @@ global_costmap:
   update_frequency: 5.0
   publish_frequency: 5.0
 
-  # cost_scaling_factor: 14.0     #22.0
-  # inflation_radius: 0.33         #0.7 注：这里的参数和common_params里面的参数重复了，这里的会把前者的参数覆盖掉
+  cost_scaling_factor: 14.0     #14.0  
+  inflation_radius: 0.33         #0.33  注：这里的参数和common_params里面的参数重复了，这里的会把前者的参数覆盖掉
 
   
   static_map: true
@@ -46,38 +21,3 @@ global_costmap:
     - {name: static_layer,    type: "costmap_2d::StaticLayer"}
     - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
     - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
-
-
-#Description:
-#  修正后的全局代价地图参数配置文件
-#
-# global_costmap:
-#   global_frame: map
-#   robot_base_frame: base_link
-  
-#   update_frequency: 10.0
-#   publish_frequency: 10.0
-  
-#   # transform_tolerance: 在TF变换信息发布延迟时，可容忍的最大时间(秒)
-#   transform_tolerance: 2.0
-
-#   # 正确的插件定义
-#   plugins:
-#     - {name: static_layer,    type: "costmap_2d::StaticLayer"}
-#     - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
-#     - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
-
-#   # 为每个图层单独配置参数
-#   static_layer:
-#     enabled: true
-#     map_topic: "/map" # 确保你发布的地图话题是这个
-
-#   obstacle_layer:
-#     enabled: true
-#     observation_sources: laser_scan_sensor
-#     laser_scan_sensor: {sensor_frame: laser_frame, data_type: LaserScan, topic: /scan, marking: true, clearing: true} # 请将 laser_link 和 /scan 替换为你自己的frame和topic
-
-#   inflation_layer:
-#     enabled: true
-#     cost_scaling_factor: 16.0  # 代价比例因子，越小障碍物周围的代价增长越慢
-#     inflation_radius: 0.22     # 膨胀半径，机器人轮廓到致命代价区之外的范围

@@ -1028,7 +1028,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                         left_forward = false;
                     }
                     else{
-                        twist.linear.x = 0.1;
+                        twist.linear.x = 0.15;
                         twist.angular.z = -0.05;
                     }
                 }
