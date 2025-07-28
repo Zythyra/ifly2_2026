@@ -1,0 +1,17 @@
+right_P: 0.009
+right_I: 0.05
+right_D: 0.023
+integration_limit: 20
+
+leftpoint_p: 0.004
+leftpoint_I: 0.15
+leftpoint_D: 0.0
+
+double_P: 0.005
+double_I: 0.05
+double_D: 0.017
+
+other_enter_pointx: 0.002
+other_enter_pointy: 0.002
+
+x_max_: 0.5
