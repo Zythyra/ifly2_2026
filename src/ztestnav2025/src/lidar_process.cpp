@@ -74,6 +74,155 @@ private:
             resp.lidar_results.push_back(slope[effective_point/2]);
             return true;
         }
+        if(req.lidar_process_start == 3)
+        { // 拣货区对准后绕行用
+
+            ztestnav2025::getpose_server pose_srv;
+            pose_srv.request.getpose_start = 1;
+            double robot_yaw;
+            robot_yaw = pose_srv.response.pose_at[2];
+
+            int effective_point = 0;
+            double average_x = 0;
+            double average_y = 0;
+            std::vector<cv::Point2f> points; // 准备拟合直线
+            std::vector<float> distance;
+            bool flag = 1;
+            int count = 168;
+            int failed_count = 0;
+
+            // 从中心向右搜索
+            while(flag){
+                count++;
+                if (count > 332 || failed_count > 6) break;
+                if(std::isinf(ranges_[count]) || ranges_[count] == 0.0f) {
+                    failed_count++;
+                    continue;
+                }
+
+                float current_distance = ranges_[count];
+                // 计算每个雷达点在世界坐标系下的绝对角度
+                float relative_angle = lasar_scan_.angle_min + count * lasar_scan_.angle_increment;
+                double world_angle = robot_yaw + relative_angle;
+                world_angle = atan2(sin(world_angle), cos(world_angle)); // 归一化到[-pi, pi]
+                // 使用test_point的逻辑进行筛选
+                bool is_wall = false;
+                if (world_angle > -0.95 && world_angle <= 0.785) { // 右墙
+                    if (current_distance > 1.25 / cos(world_angle) - 0.5) { is_wall = true; }
+                } else if (world_angle > 0.785 && world_angle <= 2.355) { // 上墙
+                    if (current_distance > 1.25 / sin(world_angle) - 0.5) { is_wall = true; }
+                } else if (world_angle > -2.19 && world_angle <= -0.95) { // 下墙
+                    if (current_distance > 1.75 / std::abs(sin(world_angle)) - 0.5) { is_wall = true; }
+                } else { // 左墙
+                    if (current_distance > 1.25 / std::abs(cos(world_angle)) - 0.5) { is_wall = true; }
+                }
+                    
+                if(is_wall) {
+                    continue; // 如果是墙壁，则跳过该点
+                }
+
+
+
+
+
+
+
+                // 放宽距离阈值以适应远距离板，同时过滤墙面
+                if ((fabs(ranges_[count] - ranges_[count - failed_count - 1]) > 0.2) || ranges_[count] > 1.0) {
+                    failed_count++;
+                    continue;
+                }
+                failed_count = 0;
+                theta = count * angle_step;
+                cv::Point2f pt(ranges_[count] * cos(theta) * -1, ranges_[count] * sin(theta) * -1);
+                points.push_back(pt);
+                effective_point++;
+                average_x += pt.x;
+                average_y += pt.y;
+                distance.push_back(ranges_[count]);
+            }
+
+            failed_count = 0;
+            count = 168;
+            flag = true;
+
+            // 从中心向左搜索
+            while(flag){
+                count--;
+                if (count == 3 || failed_count > 6) break;
+                if(std::isinf(ranges_[count]) || ranges_[count] == 0.0f) {
+                    failed_count++;
+                    continue;
+                }
+
+                float current_distance = ranges_[count];
+                float relative_angle = lasar_scan_.angle_min + count * lasar_scan_.angle_increment;
+                double world_angle = robot_yaw + relative_angle;
+                world_angle = atan2(sin(world_angle), cos(world_angle));
+
+                bool is_wall = false;
+                if (world_angle > -0.95 && world_angle <= 0.785) {
+                    if (current_distance > 1.25 / cos(world_angle) - 0.5) { is_wall = true; }
+                } else if (world_angle > 0.785 && world_angle <= 2.355) {
+                    if (current_distance > 1.25 / sin(world_angle) - 0.5) { is_wall = true; }
+                } else if (world_angle > -2.19 && world_angle <= -0.95) {
+                    if (current_distance > 1.75 / std::abs(sin(world_angle)) - 0.5) { is_wall = true; }
+                } else {
+                    if (current_distance > 1.25 / std::abs(cos(world_angle)) - 0.5) { is_wall = true; }
+                }
+                if(is_wall) 
+                {
+                    continue;
+                }
+
+
+                 // 同样放宽距离阈值
+                if (fabs(ranges_[count] - ranges_[count + failed_count - 1]) > 0.2 || ranges_[count] > 1.0) {
+                    failed_count++;
+                    continue;
+                }
+                failed_count = 0;
+                theta = count * angle_step;
+                cv::Point2f pt(ranges_[count] * cos(theta) * -1, ranges_[count] * sin(theta) * -1);
+                points.push_back(pt);
+                effective_point++;
+                average_x += pt.x;
+                average_y += pt.y;
+                distance.push_back(ranges_[count]);
+            }
+            
+            // 去除 effective_point > 5 && distance[0] < 0.45 的判断
+            // 只要找到足够的点，就进行拟合
+            if (effective_point > 5){ 
+                ROS_INFO("雷达绕障模式(3): 找到 %d 个有效点, 进行直线拟合。", effective_point);
+                std::sort(distance.begin(), distance.end());
+                cv::Vec4f lineParams;
+                cv::fitLine(points, lineParams, cv::DIST_L2, 0, 0.01, 0.01);
+                //标准化方向向量 
+                float vx = lineParams[0];
+                float vy = lineParams[1];
+
+                // 强制让向量的y分量为负, 这样其法向量（-vy,vx）必定会指向障碍物后方
+                if (vy > 0) 
+                {
+                    vx = -vx;
+                    vy = -vy;
+                }
+                resp.lidar_results.push_back(distance[0]);//最短距离
+                resp.lidar_results.push_back(average_x / effective_point);//中点x坐标
+                resp.lidar_results.push_back(average_y / effective_point);//中点y坐标
+                resp.lidar_results.push_back(lineParams[0] / lineParams[1]);//板子斜率
+                resp.lidar_results.push_back(vx); // 新增返回拟合直线的xy分量
+                resp.lidar_results.push_back(vy); 
+                ROS_INFO("x%f,y%f",average_x/effective_point,average_y/effective_point);
+                return true;
+            }
+            else { // 如果点不够，则认为没有找到有效障碍物
+                ROS_WARN("雷未找到足够的有效点来拟合障碍物。");
+                resp.lidar_results.push_back(-1);
+                return true;
+            }
+        }
     //---------------------------新增的模式：为避障获取精确前方距离和角度---------------------
         if(req.lidar_process_start == 0){ 
             if (lasar_scan_.ranges.empty()) { // 检查是否有雷达数据
@@ -278,157 +427,6 @@ private:
                 return true;
             }
         }
-        if(req.lidar_process_start == 3)
-        { // 拣货区对准后绕行用
-
-            ztestnav2025::getpose_server pose_srv;
-            pose_srv.request.getpose_start = 1;
-            double robot_yaw;
-            robot_yaw = pose_srv.response.pose_at[2];
-
-            int effective_point = 0;
-            double average_x = 0;
-            double average_y = 0;
-            std::vector<cv::Point2f> points; // 准备拟合直线
-            std::vector<float> distance;
-            bool flag = 1;
-            int count = 168;
-            int failed_count = 0;
-
-            // 从中心向右搜索
-            while(flag){
-                count++;
-                if (count > 332 || failed_count > 6) break;
-                if(std::isinf(ranges_[count]) || ranges_[count] == 0.0f) {
-                    failed_count++;
-                    continue;
-                }
-
-                float current_distance = ranges_[count];
-                // 计算每个雷达点在世界坐标系下的绝对角度
-                float relative_angle = lasar_scan_.angle_min + count * lasar_scan_.angle_increment;
-                double world_angle = robot_yaw + relative_angle;
-                world_angle = atan2(sin(world_angle), cos(world_angle)); // 归一化到[-pi, pi]
-                // 使用test_point的逻辑进行筛选
-                bool is_wall = false;
-                if (world_angle > -0.95 && world_angle <= 0.785) { // 右墙
-                    if (current_distance > 1.25 / cos(world_angle) - 0.5) { is_wall = true; }
-                } else if (world_angle > 0.785 && world_angle <= 2.355) { // 上墙
-                    if (current_distance > 1.25 / sin(world_angle) - 0.5) { is_wall = true; }
-                } else if (world_angle > -2.19 && world_angle <= -0.95) { // 下墙
-                    if (current_distance > 1.75 / std::abs(sin(world_angle)) - 0.5) { is_wall = true; }
-                } else { // 左墙
-                    if (current_distance > 1.25 / std::abs(cos(world_angle)) - 0.5) { is_wall = true; }
-                }
-                    
-                if(is_wall) {
-                    continue; // 如果是墙壁，则跳过该点
-                }
-
-
-
-
-
-
-
-                // 放宽距离阈值以适应远距离板，同时过滤墙面
-                if ((fabs(ranges_[count] - ranges_[count - failed_count - 1]) > 0.2) || ranges_[count] > 1.0) {
-                    failed_count++;
-                    continue;
-                }
-                failed_count = 0;
-                theta = count * angle_step;
-                cv::Point2f pt(ranges_[count] * cos(theta) * -1, ranges_[count] * sin(theta) * -1);
-                points.push_back(pt);
-                effective_point++;
-                average_x += pt.x;
-                average_y += pt.y;
-                distance.push_back(ranges_[count]);
-            }
-
-            failed_count = 0;
-            count = 168;
-            flag = true;
-
-            // 从中心向左搜索
-            while(flag){
-                count--;
-                if (count == 3 || failed_count > 6) break;
-                if(std::isinf(ranges_[count]) || ranges_[count] == 0.0f) {
-                    failed_count++;
-                    continue;
-                }
-
-                float current_distance = ranges_[count];
-                float relative_angle = lasar_scan_.angle_min + count * lasar_scan_.angle_increment;
-                double world_angle = robot_yaw + relative_angle;
-                world_angle = atan2(sin(world_angle), cos(world_angle));
-
-                bool is_wall = false;
-                if (world_angle > -0.95 && world_angle <= 0.785) {
-                    if (current_distance > 1.25 / cos(world_angle) - 0.5) { is_wall = true; }
-                } else if (world_angle > 0.785 && world_angle <= 2.355) {
-                    if (current_distance > 1.25 / sin(world_angle) - 0.5) { is_wall = true; }
-                } else if (world_angle > -2.19 && world_angle <= -0.95) {
-                    if (current_distance > 1.75 / std::abs(sin(world_angle)) - 0.5) { is_wall = true; }
-                } else {
-                    if (current_distance > 1.25 / std::abs(cos(world_angle)) - 0.5) { is_wall = true; }
-                }
-                if(is_wall) 
-                {
-                    continue;
-                }
-
-
-                 // 同样放宽距离阈值
-                if (fabs(ranges_[count] - ranges_[count + failed_count - 1]) > 0.2 || ranges_[count] > 1.0) {
-                    failed_count++;
-                    continue;
-                }
-                failed_count = 0;
-                theta = count * angle_step;
-                cv::Point2f pt(ranges_[count] * cos(theta) * -1, ranges_[count] * sin(theta) * -1);
-                points.push_back(pt);
-                effective_point++;
-                average_x += pt.x;
-                average_y += pt.y;
-                distance.push_back(ranges_[count]);
-            }
-            
-            // 去除 effective_point > 5 && distance[0] < 0.45 的判断
-            // 只要找到足够的点，就进行拟合
-            if (effective_point > 5){ 
-                ROS_INFO("雷达绕障模式(3): 找到 %d 个有效点, 进行直线拟合。", effective_point);
-                std::sort(distance.begin(), distance.end());
-                cv::Vec4f lineParams;
-                cv::fitLine(points, lineParams, cv::DIST_L2, 0, 0.01, 0.01);
-                //标准化方向向量 
-                float vx = lineParams[0];
-                float vy = lineParams[1];
-
-                // 强制让向量的y分量为负, 这样其法向量（-vy,vx）必定会指向障碍物后方
-                if (vy > 0) 
-                {
-                    vx = -vx;
-                    vy = -vy;
-                }
-                resp.lidar_results.push_back(distance[0]);//最短距离
-                resp.lidar_results.push_back(average_x / effective_point);//中点x坐标
-                resp.lidar_results.push_back(average_y / effective_point);//中点y坐标
-                resp.lidar_results.push_back(lineParams[0] / lineParams[1]);//板子斜率
-                resp.lidar_results.push_back(vx); // 新增返回拟合直线的xy分量
-                resp.lidar_results.push_back(vy); 
-                ROS_INFO("x%f,y%f",average_x/effective_point,average_y/effective_point);
-                return true;
-            }
-            else { // 如果点不够，则认为没有找到有效障碍物
-                ROS_WARN("雷未找到足够的有效点来拟合障碍物。");
-                resp.lidar_results.push_back(-1);
-                return true;
-            }
-        }
-
-
     }
     
 public:
