@@ -15,6 +15,10 @@
 // #include "dynamic_reconfigure/server.h"
 #include "ztestnav2025/drConfig.h"
 
+#include <tf2_ros/transform_listener.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <geometry_msgs/PointStamped.h>
+
 class MecanumController {
 public:
     MecanumController(ros::NodeHandle& nh);
@@ -34,6 +38,9 @@ public:
 
 
     ros::Publisher cmd_pub_;
+
+    tf2_ros::Buffer tf_buffer_;
+    tf2_ros::TransformListener tf_listener_;
 
 private:
     // ROS通信接口

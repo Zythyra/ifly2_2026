@@ -80,7 +80,14 @@ private:
             ztestnav2025::getpose_server pose_srv;
             pose_srv.request.getpose_start = 1;
             double robot_yaw;
-            robot_yaw = pose_srv.response.pose_at[2];
+            if (getpose_client_.call(pose_srv) && !pose_srv.response.pose_at.empty()) {
+                robot_yaw = pose_srv.response.pose_at[2]; // 获取yaw
+                
+            } else {
+                ROS_ERROR("调用/getpose_server服务失败或响应为空");
+                resp.lidar_results.push_back(-1);
+                return true;
+            }
 
             int effective_point = 0;
             double average_x = 0;
@@ -208,13 +215,30 @@ private:
                     vx = -vx;
                     vy = -vy;
                 }
+                // 确保法向量单位化（已知原始方向向量已单位化）
+                float norm_length = std::sqrt(vy * vy + vx * vx);  // 实际应为1，安全起见保留
+                float nx = -vy / norm_length;  // 法向量x分量
+                float ny = vx / norm_length;   // 法向量y分量
+                // 计算后方点坐标（从中点沿法向量方向移动0.22米）
+                const float BACK_DISTANCE = 0.22;  // 22cm
+                float mid_x = average_x / effective_point;
+                float mid_y = average_y / effective_point;
+                float back_x = mid_x + nx * BACK_DISTANCE;
+                float back_y = mid_y + ny * BACK_DISTANCE;
+                float angle = std::atan2(ny, nx);
+
                 resp.lidar_results.push_back(distance[0]);//最短距离
-                resp.lidar_results.push_back(average_x / effective_point);//中点x坐标
-                resp.lidar_results.push_back(average_y / effective_point);//中点y坐标
-                resp.lidar_results.push_back(lineParams[0] / lineParams[1]);//板子斜率
-                resp.lidar_results.push_back(vx); // 新增返回拟合直线的xy分量
-                resp.lidar_results.push_back(vy); 
+                // resp.lidar_results.push_back(average_x / effective_point);//中点x坐标
+                // resp.lidar_results.push_back(average_y / effective_point);//中点y坐标
+                // resp.lidar_results.push_back(lineParams[0] / lineParams[1]);//板子斜率
+                // resp.lidar_results.push_back(vx); // 新增返回拟合直线的xy分量
+                // resp.lidar_results.push_back(vy); 
+                resp.lidar_results.push_back(back_x);//直接返回目的地就可以了
+                resp.lidar_results.push_back(back_y);//
+                resp.lidar_results.push_back(angle);//目的地角度（雷达坐标系）
                 ROS_INFO("x%f,y%f",average_x/effective_point,average_y/effective_point);
+                ROS_INFO("BACK_X%f,back_y%f,angle%f",back_x,back_y,angle);
+
                 return true;
             }
             else { // 如果点不够，则认为没有找到有效障碍物

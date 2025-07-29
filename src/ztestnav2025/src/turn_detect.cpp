@@ -12,7 +12,8 @@ MecanumController::MecanumController(ros::NodeHandle& nh) :
     detect_client_(nh.serviceClient<ros_nanodet::detect_result_srv>("nanodet_detect")),
     getpose_client_(nh.serviceClient<ztestnav2025::getpose_server>("getpose_server")),
     set_speed_client_(nh.serviceClient<ztestnav2025::set_speed>("set_speed")),
-    adjust_client_(nh.serviceClient<ztestnav2025::lidar_process>("/lidar_process/lidar_process"))
+    adjust_client_(nh.serviceClient<ztestnav2025::lidar_process>("/lidar_process/lidar_process")),
+    tf_listener_(tf_buffer_)
     // timer(nh.createTimer(ros::Duration(17.0), &MecanumController::timerCallback, this, false, false))
 {
     if (!detect_client_.waitForExistence()) {
@@ -180,6 +181,9 @@ int MecanumController::turn_and_find(double find_time,int z,double angular_speed
 }
 
 bool MecanumController::test_point(double yaw,double distance){
+    if(distance<0){
+        return false;//负一是雷达啥也没找到随便塞的，直接false
+    }
     if(yaw>-0.95 &&yaw<=0.785){
         ROS_INFO("右墙距离%f",1.25/cos(yaw));
         if(distance>1.25/cos(yaw)-0.5){
@@ -273,15 +277,24 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                         set_speed_.request.target_twist.angular.z = 0;
                         set_speed_client_.call(set_speed_);
                         the_first = rightestname;
-                        board_slope.request.lidar_process_start = 1;
+                        board_slope.request.lidar_process_start = 3;
                         adjust_client_.call(board_slope);
                         ROS_INFO("前方距离%f",board_slope.response.lidar_results[0]);//
                         
                         ROS_INFO("满足避障条件%d",test_point(position[2],board_slope.response.lidar_results[0]));
                         if(test_point(position[2],board_slope.response.lidar_results[0])){
-                            targetx = (board_slope.response.lidar_results[0]+0.5)*cos(position[2])+position[0];
-                            targety = (board_slope.response.lidar_results[0]+0.5)*sin(position[2])+position[1];
-                            targetz = position[2];
+                            geometry_msgs::PointStamped lidar_point;
+                            lidar_point.header.frame_id = "laser_frame";  // 设置坐标系为雷达坐标系
+                            lidar_point.header.stamp = ros::Time(0); // 使用最新可用变换，或指定特定时间戳
+                            lidar_point.point.x = board_slope.response.lidar_results[1]; // 雷达坐标系下的 X 坐标
+                            lidar_point.point.y = board_slope.response.lidar_results[2]; // Y 坐标
+                            lidar_point.point.z = 0.0; // Z 坐标
+                            geometry_msgs::PointStamped map_point;
+                            map_point = tf_buffer_.transform(lidar_point, "map"); // 目标坐标系：map
+
+                            targetx = map_point.point.x+position[0];
+                            targety = map_point.point.y+position[1];
+                            targetz = position[2]+board_slope.response.lidar_results[3];
                             targetflag = true;
                             ROS_INFO("目标板子1位置x%f,y,%fz,%f",targetx,targety,targetz);
                         }
@@ -290,7 +303,7 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                         set_speed_.request.target_twist.angular.z = 0;
                         set_speed_client_.call(set_speed_);
                         the_second = rightestname;
-                        board_slope.request.lidar_process_start = 1;
+                        board_slope.request.lidar_process_start = 3;
                         adjust_client_.call(board_slope);
                         ROS_INFO("前方距离%f",board_slope.response.lidar_results[0]);//
                         

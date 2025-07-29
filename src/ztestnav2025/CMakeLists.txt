@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
   move_base_msgs      
   tf2
   tf2_ros
+  tf2_geometry_msgs
   message_generation  # 生成自定义消息头文件[7](@ref)
   dynamic_reconfigure
 )
@@ -125,7 +126,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES ztestnav2025
- CATKIN_DEPENDS amcl gmapping map_server move_base roscpp rospy std_msgs message_runtime dynamic_reconfigure
+ CATKIN_DEPENDS amcl gmapping map_server move_base roscpp rospy std_msgs message_runtime dynamic_reconfigure tf2_ros  tf2_geometry_msgs
 #  DEPENDS system_lib
 )
 

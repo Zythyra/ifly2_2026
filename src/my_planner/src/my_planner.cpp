@@ -126,6 +126,7 @@ namespace my_planner
 
     bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
     {
+        int final_index = global_plan_.size()-1;
         if(visualize_costmap_)//可视化分支：opencv绘制代价地图
         {
             // 获取代价地图的数据
@@ -253,6 +254,12 @@ namespace my_planner
                 if(cost >= 253)
                 {
                     ROS_INFO("重新规划路径");
+                    if(final_index-target_index_<30)//判定是否到达目标点附近的距离阈值
+                    {
+                        pose_adjusting_ = true;
+                        return true;
+                    }
+
                     initial_rotation_done_ = false; // 重置初始旋转标志
                     return false; // 返回false，触发重新规划全局路径，实现动态避障
                 }
@@ -273,7 +280,7 @@ namespace my_planner
 
 
         // ROS_INFO("进入代码确认");
-        int final_index = global_plan_.size()-1;
+        
         geometry_msgs::PoseStamped pose_final;
         // global_plan_[final_index].header.stamp = ros::Time(0);
         // tf_listener_->transformPose("base_link",global_plan_[final_index],pose_final);
@@ -454,7 +461,6 @@ namespace my_planner
         {
             cmd_vel.angular.z = target_pose.pose.position.y * path_angular_gain_;
         }
-        // ROS_INFO("速度:x%f,y%f,z%f",cmd_vel.linear.x,cmd_vel.linear.y,cmd_vel.angular.z);
     
         //--------------------------全局路径显示，省去节省算力---------------------------------------------
         // cv::Mat plan_image(600, 600, CV_8UC3, cv::Scalar(0, 0, 0));        
