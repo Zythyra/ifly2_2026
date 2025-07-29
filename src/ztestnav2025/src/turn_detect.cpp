@@ -292,8 +292,8 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                             geometry_msgs::PointStamped map_point;
                             map_point = tf_buffer_.transform(lidar_point, "map"); // 目标坐标系：map
 
-                            targetx = map_point.point.x+position[0];
-                            targety = map_point.point.y+position[1];
+                            targetx = map_point.point.x;
+                            targety = map_point.point.y;
                             targetz = position[2]+board_slope.response.lidar_results[3];
                             targetflag = true;
                             ROS_INFO("目标板子1位置x%f,y,%fz,%f",targetx,targety,targetz);
@@ -309,9 +309,18 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                         
                         ROS_INFO("满足避障条件%d",test_point(position[2],board_slope.response.lidar_results[0]));
                         if(test_point(position[2],board_slope.response.lidar_results[0])){
-                            targetx2 = (board_slope.response.lidar_results[0]+0.5)*cos(position[2])+position[0];
-                            targety2 = (board_slope.response.lidar_results[0]+0.5)*sin(position[2])+position[1];
-                            targetz2 = position[2];
+                            geometry_msgs::PointStamped lidar_point;
+                            lidar_point.header.frame_id = "laser_frame";  // 设置坐标系为雷达坐标系
+                            lidar_point.header.stamp = ros::Time(0); // 使用最新可用变换，或指定特定时间戳
+                            lidar_point.point.x = board_slope.response.lidar_results[1]; // 雷达坐标系下的 X 坐标
+                            lidar_point.point.y = board_slope.response.lidar_results[2]; // Y 坐标
+                            lidar_point.point.z = 0.0; // Z 坐标
+                            geometry_msgs::PointStamped map_point;
+                            map_point = tf_buffer_.transform(lidar_point, "map"); // 目标坐标系：map
+
+                            targetx2 = map_point.point.x;
+                            targety2 = map_point.point.y;
+                            targetz2 = position[2]+board_slope.response.lidar_results[3];
                             target2flag = true;
                             ROS_INFO("目标板子2位置x%f,y,%fz,%f",targetx2,targety2,targetz2);
                         }
