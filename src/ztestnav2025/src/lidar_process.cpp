@@ -28,6 +28,8 @@ private:
     int num_points_ = 337;
     float angle_step = M_PI * 2.0 / (num_points_ - 1);
 
+    double lidar_board_backdisdance;
+
     void scanCallback(const sensor_msgs::LaserScan::ConstPtr &scan_msg) {
         lasar_scan_ = *scan_msg;  // 更新最新扫描数据
     }
@@ -98,6 +100,7 @@ private:
             int count = 168;
             int failed_count = 0;
 
+            double leftestx,leftesty,rightestx,rightesty;
             // 从中心向右搜索
             while(flag){
                 count++;
@@ -128,14 +131,8 @@ private:
                     continue; // 如果是墙壁，则跳过该点
                 }
 
-
-
-
-
-
-
                 // 放宽距离阈值以适应远距离板，同时过滤墙面
-                if ((fabs(ranges_[count] - ranges_[count - failed_count - 1]) > 0.2) || ranges_[count] > 1.0) {
+                if ((fabs(ranges_[count] - ranges_[count - failed_count - 1]) > 0.2)) {
                     failed_count++;
                     continue;
                 }
@@ -148,6 +145,12 @@ private:
                 average_y += pt.y;
                 distance.push_back(ranges_[count]);
             }
+            ROS_INFO("完成一轮搜索%zu",points.size());
+            if(points.size()>5){
+                rightestx = points[points.size()-1].x;
+                rightesty = points[points.size()-1].y;
+            }
+            
 
             failed_count = 0;
             count = 168;
@@ -184,7 +187,7 @@ private:
 
 
                  // 同样放宽距离阈值
-                if (fabs(ranges_[count] - ranges_[count + failed_count - 1]) > 0.2 || ranges_[count] > 1.0) {
+                if (fabs(ranges_[count] - ranges_[count + failed_count - 1]) > 0.2) {
                     failed_count++;
                     continue;
                 }
@@ -197,10 +200,14 @@ private:
                 average_y += pt.y;
                 distance.push_back(ranges_[count]);
             }
-            
+            ROS_INFO("完成二轮搜索%zu",points.size());
+            if(points.size()>4){
+                leftestx = points[points.size()-1].x;
+                leftesty = points[points.size()-1].y;
+            }
             // 去除 effective_point > 5 && distance[0] < 0.45 的判断
             // 只要找到足够的点，就进行拟合
-            if (effective_point > 5){ 
+            if (effective_point > 7){ 
                 ROS_INFO("雷达绕障模式(3): 找到 %d 个有效点, 进行直线拟合。", effective_point);
                 std::sort(distance.begin(), distance.end());
                 cv::Vec4f lineParams;
@@ -219,12 +226,13 @@ private:
                 float norm_length = std::sqrt(vy * vy + vx * vx);  // 实际应为1，安全起见保留
                 float nx = -vy / norm_length;  // 法向量x分量
                 float ny = vx / norm_length;   // 法向量y分量
-                // 计算后方点坐标（从中点沿法向量方向移动0.22米）
-                const float BACK_DISTANCE = 0.22;  // 22cm
-                float mid_x = average_x / effective_point;
-                float mid_y = average_y / effective_point;
-                float back_x = mid_x + nx * BACK_DISTANCE;
-                float back_y = mid_y + ny * BACK_DISTANCE;
+                // 计算后方点坐标（从中点沿法向量方向移动lidar_board_backdisdance米）
+                // float mid_x = average_x / effective_point;
+                // float mid_y = average_y / effective_point;
+                float mid_x = (leftestx+rightestx)/2;
+                float mid_y = (leftesty+rightesty)/2;
+                float back_x = mid_x + nx * lidar_board_backdisdance;
+                float back_y = mid_y + ny * lidar_board_backdisdance;
                 float angle = std::atan2(ny, nx);
 
                 resp.lidar_results.push_back(distance[0]);//最短距离
@@ -451,6 +459,7 @@ private:
                 return true;
             }
         }
+        
     }
     
 public:
@@ -464,6 +473,8 @@ public:
         ROS_INFO("等待坐标获取服务 /getpose_server ...");
         getpose_client_.waitForExistence();
         ROS_INFO("雷达处理器初始化完成，坐标获取服务已连接。");
+        nh_.getParam("/myplanernav/lidar_board_backdisdance",lidar_board_backdisdance);
+        ROS_INFO("获取参数%f",lidar_board_backdisdance);
     }
 
     // 实时查看数据（新增方法）
