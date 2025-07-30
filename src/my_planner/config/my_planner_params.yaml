@@ -1,7 +1,7 @@
 # MyPlanner 局部规划器的参数配置
 
 # 路径跟随阶段的参数
-path_linear_x_gain: 4.6      # [比例系数] 路径跟随时的x方向线速度比例增益4.6
+path_linear_x_gain: 4.2      # [比例系数] 路径跟随时的x方向线速度比例增益4.6
 path_linear_y_gain: 2.0      # [比例系数] 路径跟随时的y方向线速度比例增益 2.0
 path_angular_gain: 11     # [比例系数] 路径跟随时的角速度比例增益 11
 lookahead_dist: 0.12        # [米] 选取前方临时目标点的距离阈值

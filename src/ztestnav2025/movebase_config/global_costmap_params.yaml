@@ -9,18 +9,19 @@ global_costmap:
   update_frequency: 5.0
   publish_frequency: 5.0
 
+  resolution: 0.01
   # cost_scaling_factor: 14.0     #14.0  
   # inflation_radius: 0.33         #0.33  注：这里的参数和common_params里面的参数重复了，这里的会把前者的参数覆盖掉
 
   
   static_map: true
   rolling_window: false
-  transform_tolerance: 2.0
+  transform_tolerance: 0.5
   track_unknown_space: false
   plugins:
     - {name: static_layer,    type: "costmap_2d::StaticLayer"}
     - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
     - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
 
-  static_layer:
-    footprint_padding: 0.13  # 在机器人实际尺寸基础上增加20cm安全边界
+  # static_layer:
+  #   map_topic: "/planning_map"  # 使用规划地图的话题

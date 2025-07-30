@@ -1,6 +1,23 @@
+
+<!-- 双地图系统 launch 示例 -->
 <launch>
-    <!-- 设置地图的配置文件 -->
-    <arg name="map" default="mapname.yaml" />
-    <!-- 运行地图服务器，并且加载设置的地图-->
-    <node name="map_server" pkg="map_server" type="map_server" args="$(find ztestnav2025)/map/$(arg map)"/>
+  <!-- ===== 1. 定位地图服务器 (AMCL使用) ===== -->
+  <!-- 原始地图，保证定位精度 -->
+  <arg name="localization_map" default="original_map.yaml" />
+  <node name="loc_map_server" pkg="map_server" type="map_server" 
+        args="$(find ztestnav2025)/map/mapname.yaml">
+    <param name="frame_id" value="map"/>  <!-- 保持默认map坐标系 -->
+    <remap from="map" to="/localization_map"/>  <!-- 重命名话题 -->
+    <remap from="map_metadata" to="/localization_map_metadata"/>
+  </node>
+
+  <!-- ===== 2. 规划地图服务器 (move_base使用) ===== -->
+  <!-- 添加了虚拟障碍物的地图 -->
+  <arg name="planning_map" default="with_virtual_obstacles.yaml" />
+  <node name="plan_map_server" pkg="map_server" type="map_server" 
+        args="$(find ztestnav2025)/map/map_planning.yaml">
+    <param name="frame_id" value="map"/>  <!-- 必须与定位地图同坐标系 -->
+    <remap from="map" to="/planning_map"/>  <!-- 重命名话题 -->
+    <remap from="map_metadata" to="/planning_map_metadata"/>
+  </node>
 </launch>

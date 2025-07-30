@@ -360,7 +360,10 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                     set_speed_.request.work = false;
                     set_speed_client_.call(set_speed_);
                     exit_flag = false;
-                    
+                    board_slope.request.lidar_process_start = 1;
+                    adjust_client_.call(board_slope);   
+                    ROS_INFO("板子%zu",board_slope.response.lidar_results.size());
+                    ROS_INFO("定位%f,%f,%f",position[0],position[1],position[2]);
                     targetx2 = (board_slope.response.lidar_results[0]-0.6)*cos(position[2])+position[0];
                     targety2 = (board_slope.response.lidar_results[0]-0.6)*sin(position[2])+position[1];
                     targetz2 = position[2]-1.57;

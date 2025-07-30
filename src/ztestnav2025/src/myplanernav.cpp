@@ -234,10 +234,13 @@ int main(int argc, char *argv[])
     pose_result.request.getpose_start = 1;
     poseget_client.waitForExistence();
     ROS_INFO("等待视觉巡线服务中---");
-    ros::ServiceClient line_client = nh.serviceClient<line_follow::line_follow>("line_server");
+    ros::ServiceClient line_client1 = nh.serviceClient<line_follow::line_follow>("line_right");
+    ros::ServiceClient line_client2 = nh.serviceClient<line_follow::line_follow>("line_left");
+    ros::ServiceClient line_client3 = nh.serviceClient<line_follow::line_follow>("right2");
+    ros::ServiceClient line_client4 = nh.serviceClient<line_follow::line_follow>("left2");
     line_follow::line_follow linefollow_start;
     linefollow_start.request.line_follow_start = 1;
-    line_client.waitForExistence();
+    line_client4.waitForExistence();
     //发布话题以供仿真通信
     Sim_talkto_car sim_talkto_car(nh);
     ros::Publisher cmd_pub = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 1);
@@ -274,7 +277,8 @@ int main(int argc, char *argv[])
         play_audio(voice[0][board_class-1]);
     }
 
-    go_destination(goal,0.50,2.25,3.14,q,ac);
+    // go_destination(goal,0.50,2.25,3.14,q,ac);
+    go_destination(goal,1.25,3.75,0,q,ac);
     ROS_INFO("走廊环境导航完成");
 
 
@@ -291,7 +295,9 @@ int main(int argc, char *argv[])
     double targetx, targety, targetz, targetx2, targety2, targetz2;
     bool target2flag = false,targetflag = false;
     if(mecanumController.turn_and_find_plus(17,board_class,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,1)){
+        ROS_INFO("前往%f,%f,%f",targetx2,targety2,targetz2);
         go_destination(goal,targetx2,targety2,targetz2,q,ac);
+        mecanumController.cap_buffer_clear();
         mecanumController.adjust(board_class,0.4);
         board_name = mecanumController.forward(board_class,0.3);
         flag=true;
@@ -300,15 +306,21 @@ int main(int argc, char *argv[])
         if(targetflag){
             double passx, passy, passz, passx2, passy2, passz2;
             bool find1,find2;
+            ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
             go_destination(goal,targetx,targety,targetz,q,ac);
+            mecanumController.cap_buffer_clear();
             if(mecanumController.turn_and_find_plus(5.0,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2)){
+                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
                 go_destination(goal,passx2, passy2, passz2,q,ac);
+                mecanumController.cap_buffer_clear();
                 mecanumController.adjust(board_class,0.4);
                 mecanumController.forward(board_class,0.3);
                 flag=true;
             }
             else if(mecanumController.turn_and_find_plus(11.0,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2)){
+                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
                 go_destination(goal,passx2, passy2, passz2,q,ac);
+                mecanumController.cap_buffer_clear();
                 mecanumController.adjust(board_class,0.4);
                 mecanumController.forward(board_class,0.3);
                 flag=true;
@@ -317,15 +329,21 @@ int main(int argc, char *argv[])
         if(target2flag && !flag){
             double passx, passy, passz, passx2, passy2, passz2;
             bool find1,find2;
+            ROS_INFO("前往%f,%f,%f",targetx2, targety2, targetz2);
             go_destination(goal,targetx2, targety2, targetz2,q,ac);
+            mecanumController.cap_buffer_clear();
             if(mecanumController.turn_and_find_plus(5.0,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2)){
+                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
                 go_destination(goal,passx2, passy2, passz2,q,ac);
+                mecanumController.cap_buffer_clear();
                 mecanumController.adjust(board_class,0.4);
                 mecanumController.forward(board_class,0.3);
                 flag=true;
             }
             else if(mecanumController.turn_and_find_plus(11.0,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2)){
+                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
                 go_destination(goal,passx2, passy2, passz2,q,ac);
+                mecanumController.cap_buffer_clear();
                 mecanumController.adjust(board_class,0.4);
                 mecanumController.forward(board_class,0.3);
                 flag=true;
@@ -366,6 +384,7 @@ int main(int argc, char *argv[])
     
 
     //--------------------------------------------前往红绿灯识别区域--------------------------------------------//
+    bool enter1 = true;
     ROS_INFO("前往红绿灯区域路口1");
     go_destination(goal,3.25,4.50,1.57,q,ac);  
     if (checkTrafficLightWithSearch(cmd_pub)){
@@ -375,6 +394,7 @@ int main(int argc, char *argv[])
     } 
     else {
         ROS_INFO("前往红绿灯区域路口2");
+        enter1 = false;
         go_destination(goal,4.25,4.50,1.57,q,ac);
         if (checkTrafficLightWithSearch(cmd_pub)){
             ROS_INFO("路口2可通过");
@@ -389,11 +409,21 @@ int main(int argc, char *argv[])
     }
 
     //-----------------------------------------视觉巡线---------------------------------------------//
-    if(line_client.call(linefollow_start)){
-        ROS_INFO("视觉巡线结束");
+    if(enter1){
+        if(line_client1.call(linefollow_start)){
+            ROS_INFO("视觉巡线结束");
+        }
+        else{
+            ROS_ERROR("视觉巡线失败....");
+        }
     }
     else{
-        ROS_ERROR("视觉巡线失败....");
+        if(line_client2.call(linefollow_start)){
+            ROS_INFO("视觉巡线结束");
+        }
+        else{
+            ROS_ERROR("视觉巡线失败....");
+        }
     }
     
     play_audio(voice[4+board_name][sim_talkto_car.sim_detect_class]);

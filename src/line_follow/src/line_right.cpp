@@ -661,7 +661,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
             // ROS_INFO("积分项%f",integration);
 
             if(!right_checker){
-                ROS_INFO("右线斜率出错，舍弃");
+                ROS_INFO("右线斜率出错，舍弃%f",twist.angular.z);//
                 twist.angular.z = std::max(twist.angular.z-0.05,-0.3);
             }
             else{

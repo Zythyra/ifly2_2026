@@ -100,22 +100,22 @@ namespace my_planner
         // std::cout << "Press [Enter] to continue...";
         // std::cin.ignore(); // 清除缓冲区
         // std::cin.get();    // 等待回车
-        // ROS_INFO("查看全局路径规划");
-        // ROS_INFO("起点%f,%f",global_plan_[0].pose.position.x,global_plan_[0].pose.position.y);
-        // geometry_msgs::PoseStamped pose;
-        // tf::StampedTransform transform;
-        // try {
-        //     tf_listener_->lookupTransform("map", "base_link", ros::Time(0), transform);
-        //     pose.header.frame_id = "map";
-        //     pose.header.stamp = ros::Time::now();
-        //     pose.pose.position.x = transform.getOrigin().x();
-        //     pose.pose.position.y = transform.getOrigin().y();
-        //     pose.pose.orientation = tf::createQuaternionMsgFromYaw(
-        //         tf::getYaw(transform.getRotation()));
-        // } catch (tf::TransformException &ex) {
-        //     ROS_ERROR("获取机器人位姿失败: %s", ex.what());
-        // }
-        // ROS_INFO("实际机器人位置: (%.3f, %.3f)", pose.pose.position.x,pose.pose.position.y);
+        ROS_INFO("查看全局路径规划");
+        ROS_INFO("起点%f,%f",global_plan_[0].pose.position.x,global_plan_[0].pose.position.y);
+        geometry_msgs::PoseStamped pose;
+        tf::StampedTransform transform;
+        try {
+            tf_listener_->lookupTransform("map", "base_link", ros::Time(0), transform);
+            pose.header.frame_id = "map";
+            pose.header.stamp = ros::Time::now();
+            pose.pose.position.x = transform.getOrigin().x();
+            pose.pose.position.y = transform.getOrigin().y();
+            pose.pose.orientation = tf::createQuaternionMsgFromYaw(
+                tf::getYaw(transform.getRotation()));
+        } catch (tf::TransformException &ex) {
+            ROS_ERROR("获取机器人位姿失败: %s", ex.what());
+        }
+        ROS_INFO("实际机器人位置: (%.3f, %.3f)", pose.pose.position.x,pose.pose.position.y);
         // size_t number = global_plan_.size();
         // for(int i=0;i<20;i++){
         //     ROS_INFO("全局规划特殊点x%f,y%f",global_plan_[number*i/20].pose.position.x,global_plan_[number*i/20].pose.position.y);
@@ -451,8 +451,31 @@ namespace my_planner
 
 
 
+        double min_y_deviation = target_pose.pose.position.y; // 首先，默认使用原始预瞄点的y偏差
+        // 定义回溯搜索的起始点索引，并确保它不小于0
+        int search_start_index = std::max(0, (int)target_index_ - 10);
+        // 遍历从 search_start_index 到 target_index_ 前一个点的这个区间
+        for (int j = search_start_index; j < target_index_; ++j)
+        {
+            geometry_msgs::PoseStamped point_in_base;
+            // 复制一份路径点，并设置时间戳为0以获取最新的坐标变换
+            geometry_msgs::PoseStamped plan_point = global_plan_[j];
+            plan_point.header.stamp = ros::Time(0);
+            // 将该路径点从全局坐标系（map）转换到机器人基座坐标系（base_link）
+            tf_listener_->transformPose("base_link", plan_point, point_in_base);
+                
+            // 检查当前点的y偏差的绝对值是否比已记录的最小偏差的绝对值还要小
+            if (std::abs(point_in_base.pose.position.y) < std::abs(min_y_deviation))
+            {
+                // 如果是，则更新最小偏差值（更新时保留其原始符号，用于控制方向）
+                min_y_deviation = point_in_base.pose.position.y;
+            }
+        }
+
         cmd_vel.linear.x = target_pose.pose.position.x * dynamic_x_gain;//小车运动速度比例系数
-        cmd_vel.linear.y = target_pose.pose.position.y * path_linear_y_gain_;
+        // cmd_vel.linear.y = target_pose.pose.position.y * path_linear_y_gain_;
+        cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_;
+
         if(avrage_curvature < 5)
         {
             cmd_vel.angular.z = target_pose.pose.position.y * path_angular_gain_*(angular_limit_ * avrage_curvature+0.6);   //限制角速度，防止前进时超调摆头

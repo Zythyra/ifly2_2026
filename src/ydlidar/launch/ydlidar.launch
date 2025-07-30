@@ -15,5 +15,5 @@
     <remap from="scan" to="scan" />
   </node>
   <node pkg="tf" type="static_transform_publisher" name="base_link_to_laser"
-    args="-0.11 0.0 0.165 -0.07 0.0  0.0 /base_link /laser_frame 40" /> <!-- 在ROS网络中，不同的节点可能会在任意时间启动或重启。如果静态变换只发布一次，那么在它发布之后才启动的节点就会错过这个信息，导致它们的坐标系树TF Tree不完整，从而引发错误。 -->
+    args="-0.11 0.0 0.165 -0.07 0.0  0.0 /base_link /laser_frame 100" /> <!-- 在ROS网络中，不同的节点可能会在任意时间启动或重启。如果静态变换只发布一次，那么在它发布之后才启动的节点就会错过这个信息，导致它们的坐标系树TF Tree不完整，从而引发错误。 -->
 </launch>
