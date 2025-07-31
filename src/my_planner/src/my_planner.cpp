@@ -363,7 +363,7 @@ namespace my_planner
                 {
                     target_pose = pose_base;
                     target_index_ = i;
-                    // ROS_WARN("选择第 %d 个路径点作为临时目标，坐标x%f,y%f",target_index_,global_plan_[i].pose.position.x,global_plan_[i].pose.position.y);
+                    // ROS_WARN("选择第 %d 个路径点作为临时目标，坐标x%f,y%f",target_index_,target_pose.pose.position.x,target_pose.pose.position.y);
                     break;
                 }
 
@@ -433,14 +433,7 @@ namespace my_planner
             }
         }
         avrage_curvature = avrage_curvature/(cur_final - cur_start );
-        // 根据最大曲率调整速度增益
-        // if (max_curvature > 10.0) // 设置一个阈值，避免在近似直线上过度反应，曲率超过阈值才会减速
-        // {
-        //     //速度增益只与该路径段的最大曲率有关
-        //     double penalty_term = max_curvature * curvature_penalty_gain_;
-        //     dynamic_x_gain = path_linear_x_gain_ / (curvature_damping_factor_ + penalty_term);
-        // }
-        // ROS_INFO("基础速度%f",path_linear_x_gain_);
+        
         dynamic_x_gain = path_linear_x_gain_  * exp((avrage_curvature-a_)/k_);
 
         // 对动态增益进行限幅，保证安全和稳定
@@ -451,6 +444,8 @@ namespace my_planner
 
 
 
+
+        //--------------------修改y速度的逻辑-----------------------
         double min_y_deviation = target_pose.pose.position.y; // 首先，默认使用原始预瞄点的y偏差
         // 定义回溯搜索的起始点索引，并确保它不小于0
         int search_start_index = std::max(0, (int)target_index_ - 10);
@@ -476,7 +471,7 @@ namespace my_planner
         // cmd_vel.linear.y = target_pose.pose.position.y * path_linear_y_gain_;
         cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_;
 
-        if(avrage_curvature < 5)
+        if(avrage_curvature < 10)
         {
             cmd_vel.angular.z = target_pose.pose.position.y * path_angular_gain_*(angular_limit_ * avrage_curvature+0.6);   //限制角速度，防止前进时超调摆头
         }

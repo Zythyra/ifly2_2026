@@ -56,16 +56,17 @@ private:
 
         if(req.lidar_process_start==2){//到达板前，雷达对准
             int effective_point = 0;
+            float shortest = 100;
             for (int i=158;i<=178;i++) {// 将雷达数据转化为xy坐标系
                 if (std::isinf(ranges_[i]) || ranges_[i] == 0.0f) {
                     continue;
                 }
                 theta = i * angle_step;
                 effective_point++;
-                result.push_back({
-                    ranges_[i] * cos(theta) * -1, // x坐标与小车同向
-                    ranges_[i] * sin(theta) * -1  // y坐标朝左
-                });
+                result.push_back({ranges_[i] * cos(theta) * -1,ranges_[i] * sin(theta) * -1});
+                if(ranges_[i]<shortest){
+                    shortest = ranges_[i];
+                }
             }
             std::vector<double> slope;
             for (int i=0;i<effective_point-1;i++){
@@ -74,6 +75,7 @@ private:
             std::sort(slope.begin(), slope.end());
             // ROS_INFO("板子斜率%f",slope[effective_point/2]);
             resp.lidar_results.push_back(slope[effective_point/2]);
+            resp.lidar_results.push_back(shortest);//最短距离
             return true;
         }
         if(req.lidar_process_start == 3)
@@ -254,6 +256,42 @@ private:
                 resp.lidar_results.push_back(-1);
                 return true;
             }
+        }
+        if(req.lidar_process_start == 4){//不仅仅要知道前方障碍板在哪里，还要看路上有没有其他障碍物
+            int effective_point = 0,dangerous_point = 0;
+            std::vector<float> disdance;
+            float center_disdance = -1;
+            for(int i=0;i<20;i++){//认为最中心的点属于板子
+                if(!(std::isinf(ranges_[168+i]) || ranges_[168+i] == 0.0f)){
+                    center_disdance = ranges_[168+i];
+                    break;
+                }
+                if(!(std::isinf(ranges_[168-i]) || ranges_[168-i] == 0.0f)){
+                    center_disdance = ranges_[168-i];
+                    break;
+                }
+            }
+            if(center_disdance!=-1){//找到中央点就好处理，没找到的话直接前进到最近一个障碍物前方一般不会看不见
+                for(int i=138;i<=198;i++){//只看正前方的点
+                    if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
+                    theta = (168-i) * angle_step;
+                    if(abs(ranges_[i] * sin(theta))<0.25){
+                        if(ranges_[i] * cos(theta)<center_disdance){//前方有障碍点,启用movebase
+                            dangerous_point++;
+                            if(dangerous_point>3){
+                                resp.lidar_results.push_back(center_disdance);
+                                resp.lidar_results.push_back(-1);//-1表示启用movebase
+                                return true;
+                            }
+                        }
+                    }
+                }
+                resp.lidar_results.push_back(center_disdance);
+                resp.lidar_results.push_back(1);//1表示直线前进
+                return true;
+            }
+            ROS_INFO("正前方没点，另外处理");
+            return true;
         }
     //---------------------------新增的模式：为避障获取精确前方距离和角度---------------------
         if(req.lidar_process_start == 0){ 

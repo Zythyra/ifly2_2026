@@ -15,6 +15,8 @@ local_costmap:
   resolution: 0.01
   transform_tolerance: 10
   footprint_padding: 0.036
+  cost_scaling_factor: 15.0
+  inflation_radius: 0.20
   plugins:
 #    - {name: static_layer,    type: "costmap_2d::StaticLayer"}
     - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}

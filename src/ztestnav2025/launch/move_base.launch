@@ -12,12 +12,12 @@
     <!--<param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS" /> 选择本地规划器类型 -->
     <!-- dwa_local_planner参数配置http://wiki.ros.org/dwa_local_planner 
     <rosparam file="$(find gazebo_nav)/config/dwa_local_planner_params.yaml" command="load" />-->
-    <!-- <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS" />
-    <rosparam file="$(find ucar_nav)/launch/config/move_base/1/teb_local_planner_params_final.yaml" command="load" /> -->
+    <!-- <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS" /> -->
+    <!-- <rosparam file="$(find ztestnav2025)/movebase_config/teb_local_planner_params_final.yaml" command="load" /> -->
     
     <param name="base_local_planner" value="my_planner/MyPlanner" />
 
-    <param name="controller_frequency" value="30.0" /><!--下面三行 -->
+    <!-- <param name="controller_frequency" value="30.0" />下面三行 -->
     <param name="controller_patience" value="10.0" />
     <param name="clearing_rotation_allowed" value="true" />
    
