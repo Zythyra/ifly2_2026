@@ -79,6 +79,7 @@ namespace my_planner
 
         private_nh.param("a", a_, 7.0);
         private_nh.param("k", k_, -25.0); 
+        private_nh.param("diff_gain", diff_gain, 0.0);
         initial_rotation_done_ = false;
         // ROS_INFO("加载参数path_linear_x_gain_=%f",path_linear_x_gain_);
         // ROS_INFO("加载参数path_linear_y_gain_=%f",path_linear_y_gain_);
@@ -402,15 +403,15 @@ namespace my_planner
         // 需要至少3个点(i-1, i, i+1)来计算曲率，所以 target_index_ 必须至少为2
         int cur_final = std::min(target_index_+15,final_index);//多看10cm
         int cur_start = std::max(target_index_ - 15 , 0 );
-        if (target_index_ >= 2) 
+        if (target_index_ >= 5) 
         {
             // 循环遍历从路径起点到 target_index 的前一个点
             // 计算点 i 处的曲率，需要 p_i-1, p_i, p_i+1
-            for (int i = cur_start; i < cur_final; ++i)
+            for (int i = cur_start; i < cur_final;i+=5)
             {
-                const auto& p0 = global_plan_[i-1].pose.position;
+                const auto& p0 = global_plan_[i-5].pose.position;
                 const auto& p1 = global_plan_[i].pose.position;
-                const auto& p2 = global_plan_[i+1].pose.position;
+                const auto& p2 = global_plan_[i+5].pose.position;
                 
                 // 计算向量 u (p0->p1) 和 v (p1->p2)
                 double ux = p1.x - p0.x, uy = p1.y - p0.y;
@@ -428,11 +429,12 @@ namespace my_planner
                     // if (curvature > max_curvature) {
                     //     max_curvature = curvature;
                     // }
-                    avrage_curvature += curvature*(1.5-i/cur_final);//曲率加平均，近处权重更大
+                    // ROS_INFO("当前curvature=%f",curvature);
+                    avrage_curvature += curvature*(1.5-(i-cur_start)/(cur_final-cur_start));//曲率加平均，近处权重更大
                 }
             }
         }
-        avrage_curvature = avrage_curvature/(cur_final - cur_start );
+        avrage_curvature = avrage_curvature/(cur_final - cur_start)*5;
         
         dynamic_x_gain = path_linear_x_gain_  * exp((avrage_curvature-a_)/k_);
 
@@ -450,6 +452,7 @@ namespace my_planner
         // 定义回溯搜索的起始点索引，并确保它不小于0
         int search_start_index = std::max(0, (int)target_index_ - 10);
         // 遍历从 search_start_index 到 target_index_ 前一个点的这个区间
+        std::vector<cv::Point2f> slope_points;//z速度不应该是y的差距，而是前方几个点拟合成的直线角度
         for (int j = search_start_index; j < target_index_; ++j)
         {
             geometry_msgs::PoseStamped point_in_base;
@@ -458,7 +461,8 @@ namespace my_planner
             plan_point.header.stamp = ros::Time(0);
             // 将该路径点从全局坐标系（map）转换到机器人基座坐标系（base_link）
             tf_listener_->transformPose("base_link", plan_point, point_in_base);
-                
+
+            slope_points.push_back(cv::Point2f(point_in_base.pose.position.x,point_in_base.pose.position.y));
             // 检查当前点的y偏差的绝对值是否比已记录的最小偏差的绝对值还要小
             if (std::abs(point_in_base.pose.position.y) < std::abs(min_y_deviation))
             {
@@ -466,20 +470,28 @@ namespace my_planner
                 min_y_deviation = point_in_base.pose.position.y;
             }
         }
-
+        cv::Vec4f line_params;
+        cv::fitLine(slope_points, line_params, cv::DIST_L2, 0, 0.01, 0.01);
+        float vx = line_params[0], vy = line_params[1];
+        if(line_params[0]<0){
+            vx *= -1;
+            vy *= -1;//因为看的是前方的点，强制Vx大于0
+        }
+        float angle_rad = std::atan2(vy, vx);
         cmd_vel.linear.x = target_pose.pose.position.x * dynamic_x_gain;//小车运动速度比例系数
         // cmd_vel.linear.y = target_pose.pose.position.y * path_linear_y_gain_;
         cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_;
-
-        if(avrage_curvature < 10)
-        {
-            cmd_vel.angular.z = target_pose.pose.position.y * path_angular_gain_*(angular_limit_ * avrage_curvature+0.6);   //限制角速度，防止前进时超调摆头
-        }
-        else
-        {
-            cmd_vel.angular.z = target_pose.pose.position.y * path_angular_gain_;
-        }
-    
+        
+        // if(avrage_curvature < 10)
+        // {
+        //     cmd_vel.angular.z = target_pose.pose.position.y * path_angular_gain_*(angular_limit_ * avrage_curvature+0.6);   //限制角速度，防止前进时超调摆头
+        // }
+        // else
+        // {
+            cmd_vel.angular.z = angle_rad * path_angular_gain_ + (angle_rad-z_pre_error)*diff_gain;
+        // }
+        // ROS_INFO("误差%f,差分%f,速度%f",angle_rad,(angle_rad-z_pre_error)*diff_gain,cmd_vel.angular.z);
+        z_pre_error = angle_rad;
         //--------------------------全局路径显示，省去节省算力---------------------------------------------
         // cv::Mat plan_image(600, 600, CV_8UC3, cv::Scalar(0, 0, 0));        
         // for(int i=0;i<global_plan_.size();i++)

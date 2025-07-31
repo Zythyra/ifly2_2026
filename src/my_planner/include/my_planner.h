@@ -9,9 +9,11 @@
 #include <pluginlib/class_list_macros.h>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/core.hpp>
 #include <tf/tf.h>
 #include <tf/transform_listener.h>
 #include <tf/transform_datatypes.h>
+#include <cmath>
 
 // #include <tf2_ros/buffer.h>
 // #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -56,7 +58,8 @@ namespace my_planner
             double k_;
             double angular_limit_;
 
-
+            double z_pre_error;
+            double diff_gain;//pd调节
     };
 } // namespace my_planner
  

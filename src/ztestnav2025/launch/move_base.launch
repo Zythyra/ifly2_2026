@@ -9,11 +9,10 @@
     <param name="planner_patience" value="2" />
     <param name="use_dijkstra" value="true" />
 
-    <rosparam file="$(find gazebo_nav)/config/dwa_local_planner_params.yaml" command="load" />-->
-    <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS" />
-    <rosparam file="$(find ztestnav2025)/movebase_config/teb_local_planner_params_final.yaml" command="load" />
+    <!-- <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS" />
+    <rosparam file="$(find ztestnav2025)/movebase_config/teb_local_planner_params_final.yaml" command="load" /> -->
     
-    <!-- <param name="base_local_planner" value="my_planner/MyPlanner" /> -->
+    <param name="base_local_planner" value="my_planner/MyPlanner" />
 
     <!-- <param name="controller_frequency" value="30.0" />下面三行 -->
     <param name="controller_patience" value="10.0" />
