@@ -110,10 +110,10 @@ def detect_start(req):
                 response.class_name.append(int(label))
                 color = (0, 0, 0)  # 绿色边框
                 cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), color, 2)  # 2是边框粗细
-                label = f"{label}: {score:.2f}"
-                (text_width, text_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                text = f"{label}: {score:.2f}"
+                (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
                 cv2.rectangle(frame,  (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),color, thickness=2)
-                cv2.putText(frame,label,(int(bbox[0]), int(bbox[1])+ 5), cv2.FONT_HERSHEY_SIMPLEX,0.5,(0, 0, 0),2)
+                cv2.putText(frame,text,(int(bbox[0]), int(bbox[1])+ 5), cv2.FONT_HERSHEY_SIMPLEX,0.5,(0, 0, 0),2)
 
     # start_time = time.time()
     out.write(frame)

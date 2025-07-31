@@ -535,7 +535,8 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                 ROS_INFO("速度发布:%f",output);
                 
                 // 执行旋转（限制输出范围）
-                set_speed_.request.target_twist.angular.z = output;
+                if(output>0)set_speed_.request.target_twist.angular.z = std::max(output,0.1);
+                else set_speed_.request.target_twist.angular.z = std::min(output,-0.1);
                 set_speed_client_.call(set_speed_);
                 
                 prev_error = error;
@@ -587,15 +588,8 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
             }
         }
         if(!find) continue;//可能会有几帧识别不到
-        if(std::abs(center_x - img_width/2) < 20){
-            integral = 0;
-            ROS_INFO("在视野中心");
-            set_speed_.request.target_twist.linear.y = 0;
-            set_speed_client_.call(set_speed_);
-        } 
         double error = (img_width/2.0 - center_x)/100; 
-        // ROS_INFO("error:%f",error);
-        // 离散PID计算
+
         integral += error*0.4;      
         integral = clamp(integral, -1.5, 1.5);
         double derivative = (error - prev_error)/0.2;
@@ -608,7 +602,14 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
         prev_error = error;
         // ROS_INFO("速度发布:%f",output);
         // 执行（限制输出范围）
-        set_speed_.request.target_twist.linear.y = output;
+        if(output>0) set_speed_.request.target_twist.linear.y = std::max(output,0.1);
+        else set_speed_.request.target_twist.linear.y = std::min(output,-0.1);
+        if(std::abs(center_x - img_width/2) < 20){
+            integral = 0;
+            ROS_INFO("在视野中心");
+            set_speed_.request.target_twist.linear.y = 0;
+            set_speed_client_.call(set_speed_);
+        } 
 
         double lidar_output;
         if(adjust_client_.call(board_slope)){
@@ -627,14 +628,20 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                     set_speed_.request.target_twist.angular.z = 0;
                     set_speed_client_.call(set_speed_);
                 } 
+                else if(lidar_output>0){
+                    set_speed_.request.target_twist.angular.z = std::max(lidar_output,0.1);
+                }
                 else{
-                    set_speed_.request.target_twist.angular.z = lidar_output;
+                    set_speed_.request.target_twist.angular.z = std::min(lidar_output,-0.1);
                 }
                 if(std::abs(board_slope.response.lidar_results[1]<0.4)){
                     set_speed_.request.target_twist.linear.x = 0;
                 }
-                else{
+                else if(board_slope.response.lidar_results[1]>0.4){
                     set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-0.4,0.1);
+                }
+                else {
+                    set_speed_.request.target_twist.linear.x = std::min(board_slope.response.lidar_results[1]-0.4,-0.1);
                 }
                 
                 // ROS_INFO("速度发布:%f",lidar_output);
