@@ -50,11 +50,11 @@ def shutdown_cap(response):
     if cap and cap.isOpened():
         cap.release()
         camera_active = False
-        response.x0 = -1
-        response.y0 = -1
-        response.x1 = -1
-        response.y1 = -1
-        response.class_name = -1
+        response.x0.append(-1)
+        response.y0.append(-1)
+        response.x1.append(-1)
+        response.y1.append(-1)
+        response.class_name.append(-1)
         rospy.loginfo("关闭摄像头")
 def open_cap():
     global camera_active, cap

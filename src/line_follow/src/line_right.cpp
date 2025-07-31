@@ -646,22 +646,11 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                 line_error = double_find(gray_img,brightness_threshold,cropped);
             }
 
-            integration += line_error*0.03;
-            integration = std::max(std::min(integration,abs(line_error)/integration_limit+1),-1*abs(line_error)/integration_limit-1);
-            double diff = line_error - pre_error;
-            diff = std::max(std::min(diff,50.0),-50.0);
-            twist.linear.x = x_max / exp(abs(line_error) / 100.0);
-            twist.angular.z = std::max(std::min(line_error*p+integration*i+diff*d,1.0),-1.0);
-            pre_error = line_error;
-            displayStream << "error: " << line_error << "p: " << line_error*p << "i: " << integration*i << "d: " << diff*d<<"z: "<< twist.angular.z;
-            string displayText = displayStream.str();
-            putText(cropped, displayText, Point(50, 50),
-            FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
-            out.write(cropped);
-            // ROS_INFO("积分项%f",integration);
-
             if(!right_checker){
                 ROS_INFO("右线斜率出错，舍弃%f",twist.angular.z);//
+                displayStream << "error_rightline: ";
+                string displayText = displayStream.str();
+                putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
                 twist.angular.z = std::max(twist.angular.z-0.05,-0.3);
             }
             else{
@@ -676,8 +665,23 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                 point_confirm = 0;
                 left_forward = true;
                 point_forward = true;
+
+                integration += line_error*0.03;
+                integration = std::max(std::min(integration,abs(line_error)/integration_limit+1),-1*abs(line_error)/integration_limit-1);
+                double diff = line_error - pre_error;
+                diff = std::max(std::min(diff,50.0),-50.0);
+                twist.linear.x = x_max / exp(abs(line_error) / 100.0);
+                twist.angular.z = std::max(std::min(line_error*p+integration*i+diff*d,1.0),-1.0);
+                pre_error = line_error;
+                displayStream << "error: " << line_error << "p: " << line_error*p << "i: " << integration*i << "d: " << diff*d<<"z: "<< twist.angular.z;
+                string displayText = displayStream.str();
+                putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
             }
-        } else {
+            out.write(cropped);
+            // ROS_INFO("积分项%f",integration);
+            
+        } 
+        else {
             if(left_forward){
                 if(point_forward){
                     // ROS_INFO("左点");

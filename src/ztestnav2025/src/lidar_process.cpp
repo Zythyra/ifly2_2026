@@ -35,6 +35,7 @@ private:
     }
 
     bool lidar_process(ztestnav2025::lidar_process::Request& req,ztestnav2025::lidar_process::Response& resp){//处理雷达数据，获取板子坐标
+    //雷达第一个点是-180度，然后逆时针旋转
         ranges_ = lasar_scan_.ranges;
         num_points_ = ranges_.size();
         std::vector<std::vector<float>> result;
@@ -73,7 +74,7 @@ private:
                 slope.push_back((result[i+1][0]-result[i][0])/(result[i+1][1]-result[i][1])*-1);//这里是x/y，免得斜率变成无穷大了
             }
             std::sort(slope.begin(), slope.end());
-            // ROS_INFO("板子斜率%f",slope[effective_point/2]);
+            ROS_INFO("板子斜率%f",slope[effective_point/2]);
             resp.lidar_results.push_back(slope[effective_point/2]);
             resp.lidar_results.push_back(shortest);//最短距离
             return true;
@@ -271,23 +272,29 @@ private:
                     break;
                 }
             }
+            float last_disdance = 0;
             if(center_disdance!=-1){//找到中央点就好处理，没找到的话直接前进到最近一个障碍物前方一般不会看不见
                 for(int i=138;i<=198;i++){//只看正前方的点
                     if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
                     theta = (168-i) * angle_step;
                     if(abs(ranges_[i] * sin(theta))<0.25){
+                        // ROS_INFO("点在雷达坐标系下位置%f,%f",ranges_[i] * cos(theta),ranges_[i] * sin(theta));
                         if(ranges_[i] * cos(theta)<center_disdance){//前方有障碍点,启用movebase
-                            dangerous_point++;
-                            if(dangerous_point>3){
+                            if ((abs(ranges_[i]-last_disdance)>0.2)) {
+                                if(abs(ranges_[i] * sin(theta))<0.05){
+                                    resp.lidar_results.push_back(std::max(ranges_[i],last_disdance));
+                                    resp.lidar_results.push_back(-1);//正中间发生跳变，板子被挡了
+                                    return true;
+                                }
                                 resp.lidar_results.push_back(center_disdance);
                                 resp.lidar_results.push_back(-1);//-1表示启用movebase
-                                return true;
                             }
                         }
                     }
+                    last_disdance = ranges_[i];
                 }
                 resp.lidar_results.push_back(center_disdance);
-                resp.lidar_results.push_back(1);//1表示直线前进
+                resp.lidar_results.push_back(1);//表示没有发生跳变,前方就一个板子
                 return true;
             }
             ROS_INFO("正前方没点，另外处理");

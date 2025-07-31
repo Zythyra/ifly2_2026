@@ -93,15 +93,15 @@ int main(int argc, char *argv[]){
     //然后去中间，识别目标，或者定位遮挡视野的板子
     go_destination(goal,0.75,1.75,1.57,q,ac); 
     double targetx, targety, targetz, targetx2, targety2, targetz2;//
-    bool target2flag = false,targetflag = false;
-    if(mecanumController.turn_and_find_plus(5,4,-0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag)){
+    bool target2flag = false,targetflag = false,use_forward = false;
+    if(mecanumController.turn_and_find_plus(5,4,-0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward)){
         ROS_INFO("拣货区起点找到");
         mecanumController.forward_and_adjust(1,0.3);
         flag=true;
     }
 
     go_destination(goal,1.25,3.75,0,q,ac);
-    if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,1)){
+    if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
         ROS_INFO("正中间找到");
         mecanumController.forward_and_adjust(1,0.3);
         flag=true;
@@ -110,7 +110,7 @@ int main(int argc, char *argv[]){
     if(targetflag){
         ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
         go_destination(goal,targetx,targety,targetz,q,ac); 
-        if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag)){
+        if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward)){
             ROS_INFO("板子严重遮挡1，但是找到");
             mecanumController.forward_and_adjust(1,0.3);
             flag=true;
@@ -119,7 +119,7 @@ int main(int argc, char *argv[]){
     else if(target2flag){
         ROS_INFO("前往%f,%f,%f",targetx2,targety2,targetz2);
         go_destination(goal,targetx2,targety2,targetz2,q,ac);  
-        if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag)){
+        if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward)){
             ROS_INFO("板子严重遮挡2，但是找到");
             mecanumController.forward_and_adjust(1,0.3);
             flag=true;

@@ -31,7 +31,7 @@ public:
     bool forward(int z,double forward_speed);
     int adjust(int z,double adjust_speed);
     bool test_point(double yaw,double distance);
-    bool turn_and_find_plus(double find_time,int z,double angular_speed,double& targetx,double& targety,double& targetz,bool& targetflag,double& targetx2,double& targety2,double& targetz2,bool& target2flag,bool middle=false);
+    bool turn_and_find_plus(double find_time,int z,double angular_speed,double& targetx,double& targety,double& targetz,bool& targetflag,double& targetx2,double& targety2,double& targetz2,bool& target2flag,bool& use_forward,bool middle=false);
     int forward_and_adjust(int z,double forward_speed);
     void cap_buffer_clear();
     // bool pid_change_flag=0;
