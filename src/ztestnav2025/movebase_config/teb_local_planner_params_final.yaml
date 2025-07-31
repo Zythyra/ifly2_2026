@@ -172,7 +172,7 @@ TebLocalPlannerROS:
  costmap_obstacles_behind_robot_dist: 0.1   #限制在机器人背后进行规划时要考虑的已占用本地成本图障碍（以米为单位指定距离
  obstacle_poses_affected:   10.0              #20障碍物位置与轨迹上最接近的姿态相连，
                                             #以减少计算量，但同时也考虑了许多相邻的障碍物
- dynamic_obstacle_inflation_dist:   0.3     #动态障碍物的膨胀范围，动态障碍物的预测位置周围的缓冲区的惩罚成本非零
+ dynamic_obstacle_inflation_dist:   0.24     #动态障碍物的膨胀范围，动态障碍物的预测位置周围的缓冲区的惩罚成本非零
                                             #（应大于min_obstacle_dist才能生效）
  include_dynamic_obstacles:         false 
 
