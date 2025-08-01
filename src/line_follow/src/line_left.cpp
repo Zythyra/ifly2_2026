@@ -602,6 +602,13 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                 avoid_done = true;
                 ROS_INFO("避障结束");
                 x_max = 0.5;
+                double_line = true;
+                avoid_done= true;
+                nh.getParam("/line_right/double_P", p);
+                nh.getParam("/line_right/double_I", i);
+                nh.getParam("/line_right/double_D", d);
+                ROS_INFO("p%f",p);
+                ROS_INFO("双边巡线");
             }
         }
 
