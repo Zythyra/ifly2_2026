@@ -413,20 +413,20 @@ int main(int argc, char *argv[])
     //发送仿真消息
     ros::Rate rate(1);
     // waitForContinue();
-    // while (ros::ok()) {
-    //     sim_talkto_car.car_msg_publish(board_name);
-    //     rate.sleep();
-    //     ros::spinOnce();
-    //     if(sim_talkto_car.sim_done==1){
-    //         break;
-    //     }
-    // }
-    // if(sim_talkto_car.sim_room>=0){
-    //     play_audio(voice[2][sim_talkto_car.sim_room-1]);
-    // }
-    // else {
-    //     ROS_INFO("仿真失败");
-    // }
+    while (ros::ok()) {
+        sim_talkto_car.car_msg_publish(board_name);
+        rate.sleep();
+        ros::spinOnce();
+        if(sim_talkto_car.sim_done==1){
+            break;
+        }
+    }
+    if(sim_talkto_car.sim_room>=0){
+        play_audio(voice[2][sim_talkto_car.sim_room-1]);
+    }
+    else {
+        ROS_INFO("仿真失败");
+    }
     
 
     //--------------------------------------------前往红绿灯识别区域--------------------------------------------//
@@ -456,7 +456,7 @@ int main(int argc, char *argv[])
 
     //-----------------------------------------视觉巡线---------------------------------------------//
     if(enter1){
-        if(line_client1.call(linefollow_start)){
+        if(line_client3.call(linefollow_start)){
             ROS_INFO("视觉巡线结束");
         }
         else{
@@ -464,7 +464,7 @@ int main(int argc, char *argv[])
         }
     }
     else{
-        if(line_client2.call(linefollow_start)){
+        if(line_client4.call(linefollow_start)){
             ROS_INFO("视觉巡线结束");
         }
         else{
