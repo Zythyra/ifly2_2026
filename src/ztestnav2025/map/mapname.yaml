@@ -1,9 +1,9 @@
-# image: 120_600.pgm
-# resolution: 0.010000
-# origin: [-0.850000, -0.780000, 0.000000]
-# negate: 0
-# occupied_thresh: 0.65
-# free_thresh: 0.196
+image: 120_600.pgm
+resolution: 0.010000
+origin: [-0.850000, -0.780000, 0.000000]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
 
 # image: map4.pgm
 # resolution: 0.010000
@@ -12,11 +12,11 @@
 # occupied_thresh: 0.65
 # free_thresh: 0.196
 
-image: /home/ucar/ucar_car/src/ztestnav2025/map/amcl.pgm
-resolution: 0.010000
-origin: [-0.000000, -0.000000, 0.000000]
-negate: 0
-occupied_thresh: 0.65
-free_thresh: 0.196
+# image: /home/ucar/ucar_car/src/ztestnav2025/map/amcl.pgm
+# resolution: 0.010000
+# origin: [-0.000000, -0.000000, 0.000000]
+# negate: 0
+# occupied_thresh: 0.65
+# free_thresh: 0.196
 
 

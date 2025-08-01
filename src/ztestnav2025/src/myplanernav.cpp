@@ -4,6 +4,8 @@
 
 #include <tf2/LinearMath/Quaternion.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <std_srvs/Empty.h>
 
 #include "ztestnav2025/getpose_server.h"
 #include "ztestnav2025/turn_detect.h"
@@ -189,6 +191,41 @@ bool checkTrafficLightWithSearch(ros::Publisher& cmd_pub) {
     return detectTrafficLightStatus() == 2;
 }
 
+void publishInitialPose(double x,double y,double yaw,tf2::Quaternion &q,ros::Publisher& initial_pose_pub_ ) {
+        geometry_msgs::PoseWithCovarianceStamped initial_pose;
+        
+        // 设置header
+        initial_pose.header.stamp = ros::Time::now();
+        initial_pose.header.frame_id = "map";  // 坐标系设置为map
+        
+        // 设置位置
+        initial_pose.pose.pose.position.x = x;
+        initial_pose.pose.pose.position.y = y;
+        initial_pose.pose.pose.position.z = 0.0;
+        
+        // 设置方向
+        q.setRPY(0, 0, yaw);
+        initial_pose.pose.pose.orientation.x = q.x();
+        initial_pose.pose.pose.orientation.y = q.y();
+        initial_pose.pose.pose.orientation.z = q.z();
+        initial_pose.pose.pose.orientation.w = q.w();
+        
+        // 设置协方差矩阵
+        boost::array<double, 36> covariance = {{
+            0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0076
+        }};
+        initial_pose.pose.covariance = covariance;
+        
+        // 发布初始位置
+        initial_pose_pub_.publish(initial_pose);
+        ROS_INFO("已发布初始位置: x=%.2f, y=%.2f, yaw=%.2f",
+                initial_pose.pose.pose.position.x, initial_pose.pose.pose.position.y,yaw);
+    }
 
 int main(int argc, char *argv[])
 {
@@ -244,6 +281,9 @@ int main(int argc, char *argv[])
     //发布话题以供仿真通信
     Sim_talkto_car sim_talkto_car(nh);
     ros::Publisher cmd_pub = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 1);
+    //清理代价地图和重新amcl定位
+    ros::ServiceClient clear_costmaps_client_ = nh.serviceClient<std_srvs::Empty>("/move_base/clear_costmaps");
+    ros::Publisher initial_pose_pub_ = nh.advertise<geometry_msgs::PoseWithCovarianceStamped>("/initialpose", 1);
 
     //--------------------------------------语音唤醒等待--------------------------------//
     AwakeDetector awakeDetector(nh);
@@ -288,6 +328,7 @@ int main(int argc, char *argv[])
     bool flag=false;//判断到达与否
     //第一点视觉识别
     //视觉识别开始，先传个-1把摄像头打开
+    publishInitialPose(1.25,3.75,0,q,initial_pose_pub_ );
     std::vector<std::vector<int>> a = {{-1},{-1},{-1},{-1},{-1},{-1}};
     mecanumController.detect(a,-1);
     

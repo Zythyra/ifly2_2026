@@ -727,6 +727,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
 
     bool out_range = false,start = true;//出圆环判断标志,开始巡线标志，movabese可能导致巡线一开始就压线，先导航到外面，让他自己进来
     bool other_enter = false,pass_out = false,pass_enter = false,out_ready = false,pass_enter_ready = false;//绕环岛期间左巡线
+    bool start_other_enter = false;//检测到第一帧另一路口的角点后变为true,如果再返回又巡线逻辑则路口结束
     int out_ready_count = 0;//检测到右线25帧后判定离开
     bool left_ready;//判断是否进入圆环需要一个标志位辅助，两边线都看到才算进圆环否则离圆环太远容易出问题
     double position_right_change_left = -1;//右转左的y坐标，用来恢复左转右出圆环
@@ -840,8 +841,9 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
             other_enter_last_conner = find_other_coner_edge(gray_img,other_enter_last_conner,brightness_threshold,cropped);
             // ROS_INFO("点%d,%d",other_enter_last_conner.x,other_enter_last_conner.y);
             if(other_enter_last_conner.x != -1){
-                twist.linear.x = (205-other_enter_last_conner.y)*other_enter_pointy;
-                twist.angular.z = (553-other_enter_last_conner.x)*other_enter_pointx*(other_enter_last_conner.y*0.00516+0.33);
+                start_other_enter = true;
+                twist.linear.x = (205-other_enter_last_conner.y)*other_enter_pointy+0.12;
+                twist.angular.z = (553-other_enter_last_conner.x)*other_enter_pointx*(other_enter_last_conner.y*0.0061+0.28);
                 cmd_pub.publish(twist);
                 displayStream <<"x:"<< twist.linear.x<<"z:"<< twist.angular.z<<"erx:"<<205-other_enter_last_conner.y<<"ery:"<<553-other_enter_last_conner.x;
                 string displayText = displayStream.str();
@@ -861,7 +863,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         if(pass_enter_ready){
             ROS_INFO("回到路口特殊逻辑");
             int recent = recently_white(gray_img,brightness_threshold,cropped);
-            if(recent<100){
+            if(recent<50){
                 twist.linear.x = 0.3;
                 twist.angular.z = 0;
             }
@@ -941,6 +943,13 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     ROS_INFO("p%f",p);
                     ROS_INFO("双边巡线");
                 }
+                if(start_other_enter){
+                    start_other_enter = false;
+                    other_enter = false;
+                    pass_enter = true;//这个的逻辑塞到后面去了
+                    // out_ready = true;
+                    ROS_INFO("离开另一个路口");
+                }
                 point_confirm = 0;
                 left_forward = true;
                 point_forward = true;
@@ -979,8 +988,8 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     ROS_INFO("左点");
                     if(pass_out){
                         find_left_edge(gray_img, left_edge_point,brightness_threshold,cropped);
-                        twist.linear.x = (205-left_edge_point.y)*other_enter_pointx;
-                        twist.angular.z = (553-left_edge_point.x)*other_enter_pointy;
+                        twist.linear.x = (205-left_edge_point.y)*other_enter_pointx+0.05;
+                        twist.angular.z = (553-left_edge_point.x)*other_enter_pointy+0.1;
                         if(left_edge_point.x>450 && left_edge_point.y >180){
                             right = true;//恢复右巡线逻辑
                             other_enter = true;   //已经绕圆环半圈准备离开

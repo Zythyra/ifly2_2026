@@ -602,9 +602,9 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
         prev_error = error;
         // ROS_INFO("速度发布:%f",output);
         // 执行（限制输出范围）
-        if(output>0) set_speed_.request.target_twist.linear.y = std::max(output,0.1);
-        else set_speed_.request.target_twist.linear.y = std::min(output,-0.1);
-        if(std::abs(center_x - img_width/2) < 20){
+        if(output>0) set_speed_.request.target_twist.linear.y = std::max(output,0.05);
+        else set_speed_.request.target_twist.linear.y = std::min(output,-0.05);
+        if(std::abs(center_x - img_width/2) < 30){
             integral = 0;
             ROS_INFO("在视野中心");
             set_speed_.request.target_twist.linear.y = 0;
@@ -638,17 +638,17 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                     set_speed_.request.target_twist.linear.x = 0;
                 }
                 else if(board_slope.response.lidar_results[1]>0.4){
-                    set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-0.4,0.1);
+                    set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-0.4,0.05);
                 }
                 else {
-                    set_speed_.request.target_twist.linear.x = std::min(board_slope.response.lidar_results[1]-0.4,-0.1);
+                    set_speed_.request.target_twist.linear.x = std::min(board_slope.response.lidar_results[1]-0.4,-0.05);
                 }
                 
                 // ROS_INFO("速度发布:%f",lidar_output);
                 lidar_prev_error = board_slope.response.lidar_results[0];
             }
         }
-        if(std::abs(center_x - img_width/2) < 20 && std::abs(board_slope.response.lidar_results[0]) < 0.15 && std::abs(board_slope.response.lidar_results[1]) < 0.4){
+        if(std::abs(center_x - img_width/2) < 40 && std::abs(board_slope.response.lidar_results[0]) < 0.15 && std::abs(board_slope.response.lidar_results[1]) < 0.4){
             count++;
             set_speed_.request.target_twist.linear.x = 0;
             set_speed_.request.target_twist.linear.y = 0;

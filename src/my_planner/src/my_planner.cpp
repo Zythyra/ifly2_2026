@@ -299,7 +299,7 @@ namespace my_planner
             // // ROS_INFO("终点距离%f",dist);
             // if(dist < goal_dist_threshold_)//判定是否到达目标点附近的距离阈值
             //     pose_adjusting_ = true;
-            if(final_index-target_index_<20)//判定是否到达目标点附近的距离阈值
+            if(final_index-target_index_<35)//判定是否到达目标点附近的距离阈值
                 pose_adjusting_ = true;
         }
         if(pose_adjusting_ == true)
@@ -309,12 +309,12 @@ namespace my_planner
 
             // ROS_WARN("调整最终姿态，final_yaw = %.2f",final_yaw);
             // cmd_vel.linear.x = pose_final.pose.position.x * final_pose_linear_gain_;//到达目标点附近后调整位姿的速度比例系数
-            if(pose_final.pose.position.x>0.03) cmd_vel.linear.x = std::max(pose_final.pose.position.x * final_pose_linear_gain_,0.2);
-            else if(pose_final.pose.position.x<-0.03) cmd_vel.linear.x = std::min(pose_final.pose.position.x * final_pose_linear_gain_,-0.2);
+            if(pose_final.pose.position.x>0.03) cmd_vel.linear.x = std::max(cmd_vel.linear.x-0.1,0.2);
+            else if(pose_final.pose.position.x<-0.03) cmd_vel.linear.x = std::min(cmd_vel.linear.x+0.1,-0.2);
             else cmd_vel.linear.x = 0;
             // ROS_INFO("开始减速，线速度为%f",cmd_vel.linear.x);
-            if(pose_final.pose.position.y>0.03) cmd_vel.linear.y = std::max(pose_final.pose.position.y * final_pose_linear_gain_,0.2);
-            else if(pose_final.pose.position.y<-0.03) cmd_vel.linear.y = std::min(pose_final.pose.position.y * final_pose_linear_gain_,-0.2);
+            if(pose_final.pose.position.y>0.03) cmd_vel.linear.y = std::max(cmd_vel.linear.y-0.15,0.2);
+            else if(pose_final.pose.position.y<-0.03) cmd_vel.linear.y = std::min(cmd_vel.linear.y-0.15,-0.2);
             else cmd_vel.linear.y = 0;
 
             // if(final_index-target_index_<12){
@@ -376,7 +376,27 @@ namespace my_planner
 
         if (!initial_rotation_done_) //如果还未进行过初始姿态调整，说明是第一个目标点
         {
-            double angle_to_target = atan2(target_pose.pose.position.y, target_pose.pose.position.x);
+            std::vector<cv::Point2f> initial_points;//z速度不应该是y的差距，而是前方几个点拟合成的直线角度
+            for (int j = 5; j < 17; ++j)
+            {
+                geometry_msgs::PoseStamped point_in_base;
+                geometry_msgs::PoseStamped plan_point = global_plan_[j];
+                plan_point.header.stamp = ros::Time(0);
+                tf_listener_->transformPose("base_link", plan_point, point_in_base);
+                initial_points.push_back(cv::Point2f(point_in_base.pose.position.x,point_in_base.pose.position.y));
+            }
+            cv::Vec4f line_params;
+            cv::fitLine(initial_points, line_params, cv::DIST_L2, 0, 0.01, 0.01);
+            float vx = line_params[0], vy = line_params[1];
+            if(line_params[0]<0){
+                vx *= -1;
+                vy *= -1;//因为看的是前方的点，强制Vx大于0
+            }
+            // if(line_params[0]>0 && initial_points[10].x<0){
+            //     vx *= -1;
+            //     vy *= -1;//因为看的是前方的点，强制Vx大于0
+            // }
+            float angle_to_target = std::atan2(vy, vx);
             // ROS_INFO("开始进行初始姿态调整");
             if (std::abs(angle_to_target) < goal_yaw_tolerance_) {
                 ROS_INFO("初始姿态已对准，设置标志位并开始正常行驶。");

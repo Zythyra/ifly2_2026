@@ -89,16 +89,16 @@ def detect_start(req):
     
     rec, frame = cap.read()
     frame = whitebalance.process(frame)
-    print("拍照耗时")
-    print(time.time()-start_time)
+    # print("拍照耗时")
+    # print(time.time()-start_time)
     if not rec:
         rospy.logerr("获取图片失败")
     frame = cv2.flip(frame, 1)
     
     # start_time = time.time()
     res = detect(frame, predictor)
-    print("目标检测耗时")
-    print(time.time()-start_time)
+    # print("目标检测耗时")
+    # print(time.time()-start_time)
     for label in res:
         for bbox in res[label]:
             score = bbox[-1]
@@ -116,9 +116,9 @@ def detect_start(req):
                 cv2.putText(frame,text,(int(bbox[0]), int(bbox[1])+ 5), cv2.FONT_HERSHEY_SIMPLEX,0.5,(0, 0, 0),2)
 
     # start_time = time.time()
-    out.write(frame)
-    print("完整操作耗时")
-    print(time.time()-start_time)
+    # out.write(frame)
+    # print("完整操作耗时")
+    # print(time.time()-start_time)
     return response
 
 server = rospy.Service("nanodet_detect",detect_result_srv,detect_start)
