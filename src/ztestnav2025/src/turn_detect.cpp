@@ -507,10 +507,26 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                     ROS_INFO("板子%f",board_slope.response.lidar_results[0]);
                     ROS_INFO("定位%f,%f,%f",position[0],position[1],position[2]);
                     if(board_slope.response.lidar_results[1]<0){
-                        ROS_INFO("不能直线前进，用movebase");
-                        targetx2 = (board_slope.response.lidar_results[0]-0.6)*cos(position[2])+position[0];
-                        targety2 = (board_slope.response.lidar_results[0]-0.6)*sin(position[2])+position[1];
-                        targetz2 = position[2];
+                        ROS_INFO("不能直线前进，用movebase");//需要再次请求雷达服务，准确计算目的地
+                        board_slope.request.lidar_process_start = 5;
+                        adjust_client_.call(board_slope);
+                        geometry_msgs::PointStamped scan_point;
+                        scan_point.header.frame_id = "laser_frame";
+                        scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
+                        scan_point.point.x = board_slope.response.lidar_results[1];
+                        scan_point.point.y = board_slope.response.lidar_results[2];
+                        scan_point.point.z = 0.0;
+                        geometry_msgs::PointStamped output_point;
+                        try {
+                            tf_buffer_.transform(scan_point, output_point, "map");
+                            ROS_INFO("map下目的地坐标: (%.2f, %.2f)",output_point.point.x, output_point.point.y);
+                        }
+                        catch (tf2::TransformException &ex) {
+                            ROS_ERROR("坐标系变换失败: %s", ex.what());
+                        }
+                        targetx2 = output_point.point.x;
+                        targety2 = output_point.point.y;
+                        targetz2 = board_slope.response.lidar_results[3]+position[2];
                         use_forward = false;//false表示不能前进，需要movebase
                         return true;
                     }
@@ -638,10 +654,10 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                     set_speed_.request.target_twist.linear.x = 0;
                 }
                 else if(board_slope.response.lidar_results[1]>0.4){
-                    set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-0.4,0.05);
+                    set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-0.2,0.05);
                 }
                 else {
-                    set_speed_.request.target_twist.linear.x = std::min(board_slope.response.lidar_results[1]-0.4,-0.05);
+                    set_speed_.request.target_twist.linear.x = std::min(board_slope.response.lidar_results[1]-0.2,-0.05);
                 }
                 
                 // ROS_INFO("速度发布:%f",lidar_output);

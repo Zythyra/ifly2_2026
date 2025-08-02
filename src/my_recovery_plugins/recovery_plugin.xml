@@ -1,0 +1,9 @@
+<library path="lib/libamcl_reloc_recovery">
+  <class name="my_recovery_plugins/AmclRelocRecovery"
+         type="my_recovery_plugins::AmclRelocRecovery"
+         base_class_type="nav_core::RecoveryBehavior">
+    <description>
+      获取机器人当前的AMCL位姿，用它来重新初始化AMCL定位，然后清除代价地图上因重新定位产生的代价地图鬼影。
+    </description>
+  </class>
+</library>

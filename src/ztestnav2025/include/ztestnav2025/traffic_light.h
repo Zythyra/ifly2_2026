@@ -55,13 +55,13 @@ std::vector<std::vector<std::string>> voice = {
     },
     {
         "aplay ~/ucar_car/src/broadcast/20_wav/5_chili_tomato.wav",
-        "aplay ~/ucar_car/src/broadcast/20_wav/5_potato_potato.wav",
+        "aplay ~/ucar_car/src/broadcast/20_wav/5_tomato_tomato.wav",
         "aplay ~/ucar_car/src/broadcast/20_wav/5_tomato_potato.wav"
     },
     {
-        "aplay ~/ucar_car/src/broadcast/20_wav/5_chili_tomato.wav",
+        "aplay ~/ucar_car/src/broadcast/20_wav/5_chili_potato.wav",
         "aplay ~/ucar_car/src/broadcast/20_wav/5_tomato_potato.wav",
-        "aplay ~/ucar_car/src/broadcast/20_wav/5_tomato_tomato.wav"
+        "aplay ~/ucar_car/src/broadcast/20_wav/5_potato_potato.wav"
         
     },
     {

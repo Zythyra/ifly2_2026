@@ -122,7 +122,7 @@ std::pair<std::vector<double>, std::vector<int>> fitLineRANSAC(
     return {bestModel, bestInliers};
 }
 
-int brightness_threshold_calculator(Mat& gray_img){//寻找跳变最剧烈的那个点，这个点的左值就是图像二值化阈值
+int brightness_threshold_calculator(Mat& gray_img,Mat& visual_img){//寻找跳变最剧烈的那个点，这个点的左值就是图像二值化阈值
     int max_brightness_change = 0;
     int best_binary_brightness = 180;//给个默认值，别一会没找到
     for (int y = 269; y > 69; y--) {
@@ -133,6 +133,7 @@ int brightness_threshold_calculator(Mat& gray_img){//寻找跳变最剧烈的那
                 if (next - current >= max_brightness_change) {
                     max_brightness_change = next - current;
                     best_binary_brightness = next-20;
+                    circle(visual_img, Point(x,y), 4, Scalar(177, 177, 177), -1);
                 }
             }
         }
@@ -624,7 +625,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         vector<Mat> channels;
         split(cropped, channels);
         gray_img = channels[2];//红色通道代替灰度图
-        int brightness_threshold = brightness_threshold_calculator(gray_img);  // 亮度变化阈值就是跳变最剧烈点的左值
+        int brightness_threshold = brightness_threshold_calculator(gray_img,cropped);  // 亮度变化阈值就是跳变最剧烈点的左值
 
         Point left_edge_point = Point(-1, -1);//
         int last_scanned_y;
@@ -707,7 +708,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     }
                     pointx_integration = std::max(std::min(pointx_integration,1.0),-1.0);
 
-                    twist.linear.x = std::max(twist.linear.x-0.15,0.0);
+                    twist.linear.x = std::max(twist.linear.x-0.25,0.0);
                     twist.angular.z = std::max(std::min(error_x*leftpoint_p + pointx_integration * leftpoint_I,0.5),-0.5);
                     pointx_pre_error = error_x;
                     displayStream <<"z:  "<< twist.angular.z<<"errorx:  "<<error_x<<"pointx_integration:"<<pointx_integration;

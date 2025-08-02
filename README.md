@@ -32,3 +32,4 @@ ydlidar激光雷达驱动包改动：ydlidar.launch将samp_rate改为4，即以4
 catkin_make -DCATKIN_WHITELIST_PACKAGES="ztestnav2025"
 catkin_make -DCATKIN_WHITELIST_PACKAGES="line_follow"
 catkin_make -DCATKIN_WHITELIST_PACKAGES="my_planner"
+catkin_make -DCATKIN_WHITELIST_PACKAGES="my_recovery_plugins"

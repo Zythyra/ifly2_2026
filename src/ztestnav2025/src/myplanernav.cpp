@@ -44,9 +44,9 @@ public:
         while (ros::ok() && !awake_received_) {
             ros::spinOnce();
             rate.sleep();
-            if((ros::Time::now()-awake_limit).toSec()>40){
-                break;
-            }
+            // if((ros::Time::now()-awake_limit).toSec()>40){
+            //     break;
+            // }
         }
         
         if (awake_received_) {
@@ -337,7 +337,7 @@ int main(int argc, char *argv[])
     bool target2flag = false,targetflag = false,use_forward = false;
     if(mecanumController.turn_and_find_plus(17,board_class,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
         if(use_forward){
-            board_name = mecanumController.forward_and_adjust(board_class,0.3);
+            board_name = mecanumController.forward_and_adjust(board_class,0.5);
         }
         else{
             ROS_INFO("前往%f,%f,%f",targetx2,targety2,targetz2);
@@ -456,7 +456,7 @@ int main(int argc, char *argv[])
 
     //-----------------------------------------视觉巡线---------------------------------------------//
     if(enter1){
-        if(line_client3.call(linefollow_start)){
+        if(line_client1.call(linefollow_start)){
             ROS_INFO("视觉巡线结束");
         }
         else{
@@ -464,7 +464,7 @@ int main(int argc, char *argv[])
         }
     }
     else{
-        if(line_client4.call(linefollow_start)){
+        if(line_client2.call(linefollow_start)){//
             ROS_INFO("视觉巡线结束");
         }
         else{
@@ -472,7 +472,7 @@ int main(int argc, char *argv[])
         }
     }
     
-    play_audio(voice[4+board_name][sim_talkto_car.sim_detect_class]);
+    play_audio(voice[4+board_name][sim_talkto_car.sim_detect_class-board_name/3*3]);
     ros::spin();
 
     return 0;

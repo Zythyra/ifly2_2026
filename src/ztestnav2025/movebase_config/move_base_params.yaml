@@ -15,7 +15,7 @@
 
 shutdown_costmaps: false
 
-controller_frequency: 15.0
+controller_frequency: 30.0
 controller_patience: 2.0
 
 planner_frequency: 0.0
@@ -31,3 +31,13 @@ clearing_rotation_allowed: true
 #base_global_planner: "astar_planner/AstarPlannerRos"
 #
 
+recovery_behaviors:
+  - name: 'amcl_reloc' # 这是给新插件起的名字
+    type: 'my_recovery_plugins/AmclRelocRecovery' # 这必须和插件描述文件xml中的 name 对应
+  - name: 'conservative_reset'
+    type: 'clear_costmap_recovery/ClearCostmapRecovery'
+
+
+conservative_reset:
+  reset_distance: 5.0  # 清除机器人周围3米内的代价地图障碍物
+  layer_names: ["obstacle_layer"]

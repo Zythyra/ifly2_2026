@@ -79,7 +79,7 @@ private:
             resp.lidar_results.push_back(shortest);//最短距离
             return true;
         }
-        if(req.lidar_process_start == 3)
+        if(req.lidar_process_start == 3)//拣货区中心没看到板子，严重遮挡
         { // 拣货区对准后绕行用
 
             ztestnav2025::getpose_server pose_srv;
@@ -247,8 +247,8 @@ private:
                 resp.lidar_results.push_back(back_x);//直接返回目的地就可以了
                 resp.lidar_results.push_back(back_y);//
                 resp.lidar_results.push_back(angle);//目的地角度（雷达坐标系）
-                ROS_INFO("x%f,y%f",average_x/effective_point,average_y/effective_point);
-                ROS_INFO("BACK_X%f,back_y%f,angle%f",back_x,back_y,angle);
+                ROS_INFO("目标板被严重遮挡，中心没有看到障碍板，准备绕后，障碍板中心x%f,y%f",average_x/effective_point,average_y/effective_point);
+                ROS_INFO("目的地坐标BACK_X%f,back_y%f,angle%f",back_x,back_y,angle);
 
                 return true;
             }
@@ -284,10 +284,12 @@ private:
                                 if(abs(ranges_[i] * sin(theta))<0.05){
                                     resp.lidar_results.push_back(std::max(ranges_[i],last_disdance));
                                     resp.lidar_results.push_back(-1);//正中间发生跳变，板子被挡了
+                                    ROS_INFO("中心发生跳变，板子大量被挡，障碍物非常靠近板子中心");
                                     return true;
                                 }
                                 resp.lidar_results.push_back(center_disdance);
                                 resp.lidar_results.push_back(-1);//-1表示启用movebase
+                                ROS_INFO("中心雷达数据发生跳变，说明有障碍物");
                                 return true;
                             }
                         }
@@ -296,10 +298,80 @@ private:
                 }
                 resp.lidar_results.push_back(center_disdance);
                 resp.lidar_results.push_back(1);//表示没有发生跳变,前方就一个板子
+                ROS_INFO("前方没有障碍物，直线前进");
                 return true;
             }
             ROS_INFO("正前方没点，另外处理");
             return true;
+        }
+        if(req.lidar_process_start == 5){//已经确认板子中途被障碍物遮挡，不能直线前进，需要利用导航
+            float last_disdance = 0;//跳变标志位
+            std::vector<cv::Point2f> board_point;
+            int diff_to_center168 = 100,center_point_index = -1;//与中心点的差距，拿离中间最近的一个当做中心点
+            //从最左点开始向右找，如果发生向后跳变，说明板子被挡，清除所有元素，向前跳变说明从板子转向障碍物，舍弃
+            for(int i=160;i<=176;i++){//左右观察临近点，准备拟合直线
+                if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
+                ROS_INFO("距离%f",ranges_[i]);
+                if(ranges_[i]-last_disdance>0.2){
+                    if(i>170){//从目标板跳变成障碍伴
+                        continue;
+                    }
+                    else{
+                        board_point.clear();//障碍板跳变成目标板
+                    }
+                }
+                if(ranges_[i]-last_disdance<-0.2){//向前跳变，被障碍物遮挡
+                    if(i<166){
+                        board_point.clear();//障碍板跳变成目标板
+                    }
+                    else{
+                        continue;//从目标板跳变成障碍伴
+                    }
+                }
+                theta = (i-168) * angle_step;
+                cv::Point2f ptf = cv::Point2f(ranges_[i] * cos(theta),ranges_[i] * sin(theta));
+                board_point.push_back(ptf);
+                ROS_INFO("待选点坐标x%f,y%f",ptf.x,ptf.y);
+                last_disdance = ranges_[i];
+                if(abs(168-i)<diff_to_center168){
+                    diff_to_center168 = abs(168-i);
+                    center_point_index = i;
+                }
+            }
+            ROS_INFO("共找到%zu个合格点，准备拟合直线，计算板子位置",board_point.size());
+            for(size_t j = 0;j<board_point.size();j++){
+                ROS_INFO("第%zu个点的坐标是x%f,y%f",j,board_point[j].x,board_point[j].y);
+            }
+            cv::Vec4f lineParams;
+            cv::fitLine(board_point, lineParams, cv::DIST_L2, 0, 0.01, 0.01);
+            //标准化方向向量 
+            float vx = lineParams[0];
+            float vy = lineParams[1];
+            ROS_INFO("直线拟合vx%f,vy%f",vx,vy);
+            // 强制让向量的y分量为负, 这样其法向量（vy,-vx）必定会指向障碍物前方，即法向量的x分量小于0
+            if (vy > 0) {
+                vx = -vx;
+                vy = -vy;
+            }
+            // 确保法向量单位化（已知原始方向向量已单位化）
+            float norm_length = std::sqrt(vy * vy + vx * vx);  // 实际应为1，安全起见保留
+            float nx = -vy / norm_length;  // 法向量x分量
+            float ny = vx / norm_length;   // 法向量y分量
+            // 计算前方点坐标（从中点沿法向量方向移动lidar_board_backdisdance米）
+            theta = (168-center_point_index) * angle_step;//中点角度
+            float mid_x = ranges_[center_point_index] * cos(theta);
+            float mid_y = ranges_[center_point_index] * sin(theta);
+            float back_x = mid_x + nx * lidar_board_backdisdance;
+            float back_y = mid_y + ny * lidar_board_backdisdance;
+            float angle = std::atan2(ny, nx);
+
+            resp.lidar_results.push_back(ranges_[center_point_index]);//中点距离 
+            resp.lidar_results.push_back(back_x);//直接返回目的地就可以了
+            resp.lidar_results.push_back(back_y);//
+            resp.lidar_results.push_back(angle);//目的地角度（雷达坐标系）
+            ROS_INFO("中心检测到板子，但是有障碍物，中心位于%f,y%f",mid_x,mid_y);
+            ROS_INFO("目的地是x%f,y%f,角度%f",back_x,back_y,angle);
+            return true;//如果识别到障碍板，但是雷达处理失败了，就直接撞过去吧
         }
     //---------------------------新增的模式：为避障获取精确前方距离和角度---------------------
         if(req.lidar_process_start == 0){ 
@@ -520,7 +592,7 @@ public:
         getpose_client_.waitForExistence();
         ROS_INFO("雷达处理器初始化完成，坐标获取服务已连接。");
         nh_.getParam("/myplanernav/lidar_board_backdisdance",lidar_board_backdisdance);
-        ROS_INFO("获取参数%f",lidar_board_backdisdance);
+        ROS_INFO("获取参数板前板后距离是%f米",lidar_board_backdisdance);
     }
 
     // 实时查看数据（新增方法）

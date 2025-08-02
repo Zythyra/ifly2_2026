@@ -53,13 +53,19 @@ namespace my_planner
             int visualization_scale_factor_;
             bool visualize_costmap_;
             
+            double smoothed_angular_vel_ = 0.0;//低通滤波处理后的角速度
 
             double a_;
             double k_;
             double angular_limit_;
 
             double z_pre_error;
-            double diff_gain;//pd调节
+            double diff_gain_;//pd调节
+            double alpha_; //低通滤波平滑系数
+            double y_pre_error;//y速度也使用pd调节,防止在过弯后刹不住车蹭墙
+            double y_diff_gain_;
+
+
     };
 } // namespace my_planner
  

@@ -116,7 +116,7 @@ def detect_start(req):
                 cv2.putText(frame,text,(int(bbox[0]), int(bbox[1])+ 5), cv2.FONT_HERSHEY_SIMPLEX,0.5,(0, 0, 0),2)
 
     # start_time = time.time()
-    # out.write(frame)
+    out.write(frame)
     # print("完整操作耗时")
     # print(time.time()-start_time)
     return response
