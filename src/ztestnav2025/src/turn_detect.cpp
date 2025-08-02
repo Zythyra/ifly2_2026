@@ -455,8 +455,8 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                 }
             }
             if(other_board){
-                ROS_INFO("中心位置%d",rightestx);
-                ROS_INFO("目标检测结果%s",class_names[rightestname].c_str());
+                // ROS_INFO("中心位置%d",rightestx);
+                // ROS_INFO("目标检测结果%s",class_names[rightestname].c_str());
 
                 // ROS_INFO("速度%f",set_speed_.request.target_twist.angular.z);
                 if(rightestx>290){//如果非目标超过了画面中心，记录当前位置和前方雷达距离，一会要过来
@@ -473,7 +473,7 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                 }
             }
             else{
-                ROS_INFO("什么都没有");
+                // ROS_INFO("什么都没有");
             }
         }
 
@@ -502,6 +502,7 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                     set_speed_.request.work = false;
                     set_speed_client_.call(set_speed_);
                     exit_flag = false;
+                    waitForContinue();
                     board_slope.request.lidar_process_start = 4;
                     adjust_client_.call(board_slope);
                     ROS_INFO("板子%f",board_slope.response.lidar_results[0]);
@@ -548,7 +549,7 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                 // ROS_INFO("P:%f",Kp*error);
                 // ROS_INFO("I:%f",Ki*integral);
                 // ROS_INFO("D:%f",Kd*derivative);
-                ROS_INFO("速度发布:%f",output);
+                // ROS_INFO("速度发布:%f",output);
                 
                 // 执行旋转（限制输出范围）
                 if(output>0)set_speed_.request.target_twist.angular.z = std::max(output,0.1);
@@ -561,6 +562,8 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                 if((ros::Time::now()-start_time_).toSec()>10.0){
                     exit_flag = true;
                 }
+                set_speed_.request.target_twist.angular.z = 0.4;
+                set_speed_client_.call(set_speed_);
             }
             // ROS_INFO("耗时%f",(ros::Time::now()-test_time).toSec());
         }
@@ -634,10 +637,10 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                 lidar_integral = clamp(lidar_integral, -1.0, 1.0);
                 double lidar_derivative = (board_slope.response.lidar_results[0] - lidar_prev_error)/0.2;
                 lidar_output = p1*board_slope.response.lidar_results[0] + lidar_integral*i1 + lidar_derivative*d1;
-                ROS_INFO("error:%f",board_slope.response.lidar_results[0]);
-                ROS_INFO("P:%f",p1*board_slope.response.lidar_results[0]);
-                ROS_INFO("I:%f",lidar_integral*i1);
-                ROS_INFO("D:%f",d1*lidar_derivative);
+                // ROS_INFO("error:%f",board_slope.response.lidar_results[0]);
+                // ROS_INFO("P:%f",p1*board_slope.response.lidar_results[0]);
+                // ROS_INFO("I:%f",lidar_integral*i1);
+                // ROS_INFO("D:%f",d1*lidar_derivative);
                 lidar_output = clamp(lidar_output, -0.13, 0.13);
                 if(std::abs(board_slope.response.lidar_results[0]) < 0.1){
                     lidar_integral = 0;

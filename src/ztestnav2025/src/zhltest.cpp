@@ -89,45 +89,73 @@ int main(int argc, char *argv[]){
     std::vector<std::vector<int>> a = {{-1},{-1},{-1},{-1},{-1},{-1}};
     mecanumController.detect(a,-1);
     mecanumController.cap_buffer_clear();
-    // go_destination(goal,1.25,3.75,0,q,ac);  
+    go_destination(goal,1.25,3.75,0,q,ac);  
     //然后去中间，识别目标，或者定位遮挡视野的板子
-    go_destination(goal,0.75,1.75,1.57,q,ac); 
-    double targetx, targety, targetz, targetx2, targety2, targetz2;//
+    // go_destination(goal,0.75,1.75,1.57,q,ac); 
+    double targetx, targety, targetz, targetx2, targety2, targetz2;
     bool target2flag = false,targetflag = false,use_forward = false;
-    if(mecanumController.turn_and_find_plus(5,4,-0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward)){
-        ROS_INFO("拣货区起点找到");
-        mecanumController.forward_and_adjust(1,0.3);
+    if(mecanumController.turn_and_find_plus(17,1,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
+        if(use_forward){
+            board_name = mecanumController.forward_and_adjust(1,0.5);
+        }
+        else{
+            ROS_INFO("前往%f,%f,%f",targetx2,targety2,targetz2);
+            go_destination(goal,targetx2,targety2,targetz2,q,ac);
+            mecanumController.cap_buffer_clear();
+            mecanumController.adjust(1,0.4);
+            board_name = mecanumController.forward(1,0.3);
+        }
         flag=true;
     }
-
-    go_destination(goal,1.25,3.75,0,q,ac);
-    if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
-        ROS_INFO("正中间找到");
-        mecanumController.forward_and_adjust(1,0.3);
-        flag=true;
+    else{//板子被挡了，中间看不到
+        if(targetflag){
+            double passx, passy, passz, passx2, passy2, passz2;
+            bool find1,find2;
+            ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
+            go_destination(goal,targetx,targety,targetz,q,ac);
+            mecanumController.cap_buffer_clear();
+            if(mecanumController.turn_and_find_plus(5.0,1,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
+                go_destination(goal,passx2, passy2, passz2,q,ac);
+                mecanumController.cap_buffer_clear();
+                mecanumController.adjust(1,0.4);
+                mecanumController.forward(1,0.3);
+                flag=true;
+            }
+            else if(mecanumController.turn_and_find_plus(11.0,1,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
+                go_destination(goal,passx2, passy2, passz2,q,ac);
+                mecanumController.cap_buffer_clear();
+                mecanumController.adjust(1,0.4);
+                mecanumController.forward(1,0.3);
+                flag=true;
+            }
+        }
+        if(target2flag && !flag){
+            double passx, passy, passz, passx2, passy2, passz2;
+            bool find1,find2;
+            ROS_INFO("前往%f,%f,%f",targetx2, targety2, targetz2);
+            go_destination(goal,targetx2, targety2, targetz2,q,ac);
+            mecanumController.cap_buffer_clear();
+            if(mecanumController.turn_and_find_plus(5.0,1,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
+                go_destination(goal,passx2, passy2, passz2,q,ac);
+                mecanumController.cap_buffer_clear();
+                mecanumController.adjust(1,0.4);
+                mecanumController.forward(1,0.3);
+                flag=true;
+            }
+            else if(mecanumController.turn_and_find_plus(11.0,1,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
+                go_destination(goal,passx2, passy2, passz2,q,ac);
+                mecanumController.cap_buffer_clear();
+                mecanumController.adjust(1,0.4);
+                mecanumController.forward(1,0.3);
+                flag=true;
+            }
+        }
     }
 
-    if(targetflag){
-        ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
-        go_destination(goal,targetx,targety,targetz,q,ac); 
-        if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward)){
-            ROS_INFO("板子严重遮挡1，但是找到");
-            mecanumController.forward_and_adjust(1,0.3);
-            flag=true;
-        } 
-    }
-    else if(target2flag){
-        ROS_INFO("前往%f,%f,%f",targetx2,targety2,targetz2);
-        go_destination(goal,targetx2,targety2,targetz2,q,ac);  
-        if(mecanumController.turn_and_find_plus(17,4,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward)){
-            ROS_INFO("板子严重遮挡2，但是找到");
-            mecanumController.forward_and_adjust(1,0.3);
-            flag=true;
-        } 
-    }
-    else{
-        ROS_INFO("什么都没有");
-    }
 
     // mecanumController.adjust(2,0.4);//
     // int de = mecanumController.turn_and_find(17,1,-0.4);

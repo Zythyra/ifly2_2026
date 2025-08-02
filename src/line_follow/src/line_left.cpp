@@ -300,16 +300,34 @@ bool find_right_edge(Mat gray_img,Point& right_edge_point,int brightness_thresho
     int width = gray_img.cols;
     bool flag = false;
     right_edge_point = Point(-1,-1);
-    for (int y = height - 1; y >= 69; y--) {
-        for (int x = 1; x < 490; x++) {
-            if (gray_img.at<uchar>(y, x) >= brightness_threshold) {
-                right_edge_point=Point(x, y);
-                flag = true;
-                break;
-            }
-        }
-        if (flag) break;
+
+    // for (int y = height - 1; y >= 69; y--) {
+    //     for (int x = 1; x < 490; x++) {
+    //         if (gray_img.at<uchar>(y, x) >= brightness_threshold) {
+    //             right_edge_point=Point(x, y);
+    //             flag = true;
+    //             break;
+    //         }
+    //     }
+    //     if (flag) break;
+    // }
+    
+     //  Harris 角点检测
+    Mat harris_response;
+    int blockSize = 5;     // 角点检测的邻域大小
+    int apertureSize = 3;  // Sobel 算子的孔径大小
+    double k = 0.04;       // Harris 检测器的自由参数
+    cornerHarris(gray_img, harris_response, blockSize, apertureSize, k, BORDER_DEFAULT);
+    // 4. 寻找 Harris 响应的最大值及其位置 (在整个图像范围内)    
+    double min_val, max_val;    
+    Point min_loc, max_loc;    
+    // minMaxLoc 在整个 harris_response 图像中寻找最值    
+    minMaxLoc(harris_response, &min_val, &max_val, &min_loc, &max_loc); 
+    if (max_val > 0 && max_val > 1e-6 && !flag) {     
+        right_edge_point = max_loc; // 将找到的点坐标赋给输出变量        
+        flag = true;
     }
+    
     if(right_edge_point.x == -1){
         ROS_INFO("没找到右点");
         return false;
@@ -320,6 +338,9 @@ bool find_right_edge(Mat gray_img,Point& right_edge_point,int brightness_thresho
         }
         return false;
     }
+    imshow("test",visualizeImg);
+    waitKey(1);
+
 }
 
 bool find_right_line(Mat gray_img,vector<Point>& right_edge_points,int brightness_threshold,Mat visualizeImg = Mat()){

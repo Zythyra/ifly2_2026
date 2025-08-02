@@ -318,11 +318,15 @@ private:
                     }
                     else{
                         board_point.clear();//障碍板跳变成目标板
+                        center_point_index = -1;
+                        diff_to_center168 = 100;
                     }
                 }
                 if(ranges_[i]-last_disdance<-0.2){//向前跳变，被障碍物遮挡
                     if(i<166){
                         board_point.clear();//障碍板跳变成目标板
+                        center_point_index = -1;
+                        diff_to_center168 = 100;
                     }
                     else{
                         continue;//从目标板跳变成障碍伴
@@ -347,22 +351,23 @@ private:
             //标准化方向向量 
             float vx = lineParams[0];
             float vy = lineParams[1];
-            ROS_INFO("直线拟合vx%f,vy%f",vx,vy);
+            
             // 强制让向量的y分量为负, 这样其法向量（vy,-vx）必定会指向障碍物前方，即法向量的x分量小于0
             if (vy > 0) {
                 vx = -vx;
                 vy = -vy;
             }
+            ROS_INFO("直线拟合vx%f,vy%f",vx,vy);
             // 确保法向量单位化（已知原始方向向量已单位化）
             float norm_length = std::sqrt(vy * vy + vx * vx);  // 实际应为1，安全起见保留
-            float nx = -vy / norm_length;  // 法向量x分量
+            float nx = -1*vy / norm_length;  // 法向量x分量
             float ny = vx / norm_length;   // 法向量y分量
             // 计算前方点坐标（从中点沿法向量方向移动lidar_board_backdisdance米）
             theta = (168-center_point_index) * angle_step;//中点角度
             float mid_x = ranges_[center_point_index] * cos(theta);
             float mid_y = ranges_[center_point_index] * sin(theta);
-            float back_x = mid_x + nx * lidar_board_backdisdance;
-            float back_y = mid_y + ny * lidar_board_backdisdance;
+            float back_x = mid_x - nx * 0.6;
+            float back_y = mid_y - ny * 0.6;
             float angle = std::atan2(ny, nx);
 
             resp.lidar_results.push_back(ranges_[center_point_index]);//中点距离 
