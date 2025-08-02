@@ -81,7 +81,6 @@ private:
         }
         if(req.lidar_process_start == 3)//拣货区中心没看到板子，严重遮挡
         { // 拣货区对准后绕行用
-
             ztestnav2025::getpose_server pose_srv;
             pose_srv.request.getpose_start = 1;
             double robot_yaw;
@@ -234,6 +233,7 @@ private:
                 // float mid_y = average_y / effective_point;
                 float mid_x = (leftestx+rightestx)/2;
                 float mid_y = (leftesty+rightesty)/2;
+                ROS_INFO("法向量nx%f,ny%f,偏移量%f",nx,ny,lidar_board_backdisdance);
                 float back_x = mid_x + nx * lidar_board_backdisdance;
                 float back_y = mid_y + ny * lidar_board_backdisdance;
                 float angle = std::atan2(ny, nx);
@@ -247,9 +247,8 @@ private:
                 resp.lidar_results.push_back(back_x);//直接返回目的地就可以了
                 resp.lidar_results.push_back(back_y);//
                 resp.lidar_results.push_back(angle);//目的地角度（雷达坐标系）
-                ROS_INFO("目标板被严重遮挡，中心没有看到障碍板，准备绕后，障碍板中心x%f,y%f",average_x/effective_point,average_y/effective_point);
+                ROS_INFO("目标板被严重遮挡，中心没有看到障碍板，准备绕后，障碍板中心x%f,y%f",mid_x,mid_y);
                 ROS_INFO("目的地坐标BACK_X%f,back_y%f,angle%f",back_x,back_y,angle);
-
                 return true;
             }
             else { // 如果点不够，则认为没有找到有效障碍物

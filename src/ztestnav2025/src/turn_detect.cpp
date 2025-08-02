@@ -461,13 +461,48 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                 // ROS_INFO("速度%f",set_speed_.request.target_twist.angular.z);
                 if(rightestx>290){//如果非目标超过了画面中心，记录当前位置和前方雷达距离，一会要过来
                     if(the_first==-1){
+                        ros::Time test = ros::Time::now();
                         the_first = rightestname;
-                        targetz = position[2];
+                        board_slope.request.lidar_process_start = 3;
+                        adjust_client_.call(board_slope);
+                        geometry_msgs::PointStamped scan_point;
+                        scan_point.header.frame_id = "laser_frame";
+                        scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
+                        scan_point.point.x = board_slope.response.lidar_results[1];
+                        scan_point.point.y = board_slope.response.lidar_results[2];
+                        scan_point.point.z = 0.0;
+                        geometry_msgs::PointStamped output_point;
+                        tf_buffer_.transform(scan_point, output_point, "map");
+                        ROS_INFO("map下目的地坐标: (%.2f, %.2f)",output_point.point.x, output_point.point.y);
+                        targetx = output_point.point.x;
+                        targety = output_point.point.y;
+                        targetz = board_slope.response.lidar_results[3]+position[2];
+                        ROS_INFO("处理耗时%f",(ros::Time::now()-test).toSec());
+                        // set_speed_.request.target_twist.angular.z = 0;
+                        // set_speed_client_.call(set_speed_);
+                        // waitForContinue();
+                        // set_speed_.request.target_twist.angular.z = 0.4;
+                        // set_speed_client_.call(set_speed_);
                         ROS_INFO("目标板子1位置z,%f",targetz);
                     }
                     else{
+                        ros::Time test = ros::Time::now();
                         the_second = rightestname;
-                        targetz2 = position[2];
+                        board_slope.request.lidar_process_start = 3;
+                        adjust_client_.call(board_slope);
+                        geometry_msgs::PointStamped scan_point;
+                        scan_point.header.frame_id = "laser_frame";
+                        scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
+                        scan_point.point.x = board_slope.response.lidar_results[1];
+                        scan_point.point.y = board_slope.response.lidar_results[2];
+                        scan_point.point.z = 0.0;
+                        geometry_msgs::PointStamped output_point;
+                        tf_buffer_.transform(scan_point, output_point, "map");
+                        ROS_INFO("map下目的地坐标: (%.2f, %.2f)",output_point.point.x, output_point.point.y);
+                        targetx = output_point.point.x;
+                        targety = output_point.point.y;
+                        targetz = board_slope.response.lidar_results[3]+position[2];
+                        ROS_INFO("处理耗时%f",(ros::Time::now()-test).toSec());
                         ROS_INFO("目标板子2位置z,%f",targetz2);
                     }
                 }
