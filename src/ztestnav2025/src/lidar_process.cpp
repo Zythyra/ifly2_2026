@@ -301,7 +301,7 @@ private:
                 ROS_INFO("前方没有障碍物，直线前进");
                 return true;
             }
-            ROS_INFO("正前方没点，另外处理");
+            ROS_INFO("正前方没点，另外处理");//
             return true;
         }
         if(req.lidar_process_start == 5){//已经确认板子中途被障碍物遮挡，不能直线前进，需要利用导航
