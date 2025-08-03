@@ -61,7 +61,7 @@ double calculateCurvature(const vector<Point>& curve) {
 }
 
 
-// 环岛内持续弧线检测函数（聚焦左下角特定区域）
+// 环岛内持续持续弧线检测函数（聚焦左下角特定区域）
 ArcInfo detectArcContinuous(Mat& gray_img, Mat& visualizeImg, int brightness_threshold, bool in_roundabout) {
     ArcInfo info = {false, 0, Point(-1, -1)};
     if (!in_roundabout) return info;  // 非环岛内不执行检测
@@ -70,15 +70,16 @@ ArcInfo detectArcContinuous(Mat& gray_img, Mat& visualizeImg, int brightness_thr
     int img_width = gray_img.cols;
     int img_height = gray_img.rows;
     
-    // 定义左下角检测区域：宽度0-1/6，高度0-1/3
+    // 定义左下角检测区域：宽度0-1/6，高度从底部向上1/3
     int start_x = 0;
-    int start_y = 0;
-    int area_width = img_width / 6;   // 宽度占比1/6
-    int area_height = img_height / 3; // 高度占比1/3
+    // 关键修改：从图像底部向上计算起始Y坐标（左下角区域）
+    int start_y = img_height - (img_height / 3);  // 从底部向上1/3处开始
+    int area_width = img_width / 6;               // 宽度占比1/6
+    int area_height = img_height / 3;             // 高度占比1/3
     
     // 确保区域不超出图像边界
     area_width = min(area_width, img_width - start_x);
-    area_height = min(area_height, img_height - start_y);
+    area_height = min(area_height, img_height - start_y);  // 防止超出底部边界
     
     Rect searchArea(start_x, start_y, area_width, area_height);
     Mat roi = gray_img(searchArea);
@@ -137,10 +138,11 @@ ArcInfo detectArcContinuous(Mat& gray_img, Mat& visualizeImg, int brightness_thr
                 FONT_HERSHEY_SIMPLEX, 0.4, Scalar(0, 255, 255), 1);
     }
 
-    // 标记检测区域
+    // 标记检测区域（蓝色矩形）
     rectangle(visualizeImg, searchArea, Scalar(255, 0, 0), 2);
     return info;
 }
+
     
     
 
