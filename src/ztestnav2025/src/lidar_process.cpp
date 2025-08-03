@@ -77,6 +77,7 @@ private:
             // ROS_INFO("板子斜率%f",slope[effective_point/2]);
             resp.lidar_results.push_back(slope[effective_point/2]);
             resp.lidar_results.push_back(shortest);//最短距离
+            ROS_INFO("最短距离%f",shortest);
             return true;
         }
         if(req.lidar_process_start == 3)//拣货区中心没看到板子，严重遮挡

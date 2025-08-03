@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   pluginlib
   roscpp
   std_srvs
+  move_base_msgs
 )
 
 ## System dependencies are found with CMake's conventions

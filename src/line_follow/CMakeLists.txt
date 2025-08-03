@@ -192,9 +192,9 @@ target_link_libraries(line_left
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
 )
-target_link_libraries(right2
+  target_link_libraries(right2
   ${catkin_LIBRARIES}
-  ${OpenCV_LIBS}
+   ${OpenCV_LIBS}
 )
 target_link_libraries(left2
   ${catkin_LIBRARIES}

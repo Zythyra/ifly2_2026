@@ -692,14 +692,17 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                     set_speed_.request.target_twist.linear.x = 0;
                 }
                 else if(board_slope.response.lidar_results[1]>0.4){
-                    set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-0.2,0.05);
+                    set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-0.3,0.05);
                 }
                 else {
-                    set_speed_.request.target_twist.linear.x = std::min(board_slope.response.lidar_results[1]-0.2,-0.05);
+                    set_speed_.request.target_twist.linear.x = std::min(board_slope.response.lidar_results[1]-0.3,-0.05);
                 }
                 
-                // ROS_INFO("速度发布:%f",lidar_output);
+                ROS_INFO("前进速度:%f",set_speed_.request.target_twist.linear.x);
                 lidar_prev_error = board_slope.response.lidar_results[0];
+            }
+            else if(board_slope.response.lidar_results[1]<1.0){
+                set_speed_.request.target_twist.linear.x = 0.3;
             }
         }
         if(std::abs(center_x - img_width/2) < 40 && std::abs(board_slope.response.lidar_results[0]) < 0.15 && std::abs(board_slope.response.lidar_results[1]) < 0.4){
