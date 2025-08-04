@@ -1,0 +1,18 @@
+# HSV阈值参数（白色线条检测）
+hsv_low_h: 0
+hsv_low_s: 0
+hsv_low_v: 221  # 降低亮度阈值，更容易检测到较暗的白线
+hsv_high_h: 180
+hsv_high_s: 20  # 提高饱和度阈值，允许轻微彩色
+hsv_high_v: 255
+
+# 赛道过滤参数（初始放宽设置）
+min_contour_area: 20      # 最小面积（小一点，避免过滤掉细线条）
+max_contour_area: 100000000   # 最大面积（大一点，确保能检测到）
+max_line_width: 5        # 最大宽度（放宽到10像素）
+min_line_length: 10       # 最小长度（短一点，允许分段线条）
+max_circularity: 0.8      # 最大圆形度（接近1表示圆形，放宽到0.8）
+
+# ROI参数（检测区域）
+roi_height_ratio: 0.4     # 检测图像下半部分70%的区域
+    

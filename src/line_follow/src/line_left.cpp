@@ -312,17 +312,26 @@ bool find_right_edge(Mat gray_img,Point& right_edge_point,int brightness_thresho
     //     if (flag) break;
     // }
     
+    Mat blurred_img;
+    GaussianBlur(gray_img, blurred_img, Size(5, 5), 0); // 5x5 核大小
+
      //  Harris 角点检测
     Mat harris_response;
     int blockSize = 5;     // 角点检测的邻域大小
     int apertureSize = 3;  // Sobel 算子的孔径大小
     double k = 0.04;       // Harris 检测器的自由参数
-    cornerHarris(gray_img, harris_response, blockSize, apertureSize, k, BORDER_DEFAULT);
-    // 4. 寻找 Harris 响应的最大值及其位置 (在整个图像范围内)    
+    cornerHarris(blurred_img, harris_response, blockSize, apertureSize, k, BORDER_DEFAULT);
+    // 寻找 Harris 响应的最大值及其位置 (在整个图像范围内)    
+    Mat mask = Mat::zeros(harris_response.size(), CV_8UC1); // 创建与响应图同尺寸的掩码
+    // 计算需要排除的左右边缘宽度
+    int border_width = width / 8;
+    Rect roi(border_width, 0, width - 2 * border_width, height);
+
     double min_val, max_val;    
     Point min_loc, max_loc;    
     // minMaxLoc 在整个 harris_response 图像中寻找最值    
-    minMaxLoc(harris_response, &min_val, &max_val, &min_loc, &max_loc); 
+    minMaxLoc(harris_response, &min_val, &max_val, &min_loc, &max_loc, mask);
+
     if (max_val > 0 && max_val > 1e-6 && !flag) {     
         right_edge_point = max_loc; // 将找到的点坐标赋给输出变量        
         flag = true;
@@ -602,39 +611,182 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         client_line_board.call(board);
         pose_client.call(pose);
         if(!avoid_done){
+            // if(board.response.lidar_results[0] != -1){
+            //     if(board.response.lidar_results[0]>0.37){//如果还比较远先减速
+            //         x_max = 0.22;
+            //     }
+            //     else{
+            //         ROS_INFO("最短距离%f",board.response.lidar_results[0]);
+            //         move_base_msgs::MoveBaseGoal goal;
+            //         goal.target_pose.header.frame_id = "map";
+            //         goal.target_pose.header.stamp = ros::Time::now();
+            //         goal.target_pose.pose.position.x = 3.75;//位置固定，直接硬编码
+            //         goal.target_pose.pose.position.y = pose.response.pose_at[1]-board.response.lidar_results[0]-0.13;
+            //         // 计算目标朝向：障碍物法线方向相对于小车当前的角度 + 小车当前朝向
+            //         // double goal_yaw = std::atan2(vx, -vy) + pose.response.pose_at[2];//乘2后方向关于法线对称
+            //         double goal_yaw = -1.57;
+            //         tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
+            //         geometry_msgs::Quaternion q_msg;
+            //         tf::quaternionTFToMsg(q, q_msg);
+            //         goal.target_pose.pose.orientation = q_msg;
+
+            //         ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",goal.target_pose.pose.position.x, goal.target_pose.pose.position.y, goal_yaw);
+            //         ac.sendGoal(goal);
+            //         ac.waitForResult();
+            //         cap.grab(); cap.grab(); cap.grab(); cap.grab(); cap.grab();//把缓冲区的东西丢掉，免得停车了
+            //         avoid_done = true;
+            //         ROS_INFO("避障结束");
+            //         x_max = 0.5;
+            //         double_line = true;
+            //         avoid_done= true;
+            //         nh.getParam("/line_right/double_P", p);
+            //         nh.getParam("/line_right/double_I", i);
+            //         nh.getParam("/line_right/double_D", d);
+            //         ROS_INFO("p%f",p);
+            //         ROS_INFO("双边巡线");
+            //     }
+            // }
             if(board.response.lidar_results[0] != -1){
-                if(board.response.lidar_results[0]>0.37){//如果还比较远先减速
+                if(board.response.lidar_results[0]>0.39){//如果还比较远先减速
                     x_max = 0.22;
                 }
                 else{
                     ROS_INFO("最短距离%f",board.response.lidar_results[0]);
-                    move_base_msgs::MoveBaseGoal goal;
-                    goal.target_pose.header.frame_id = "map";
-                    goal.target_pose.header.stamp = ros::Time::now();
-                    goal.target_pose.pose.position.x = 3.75;//位置固定，直接硬编码
-                    goal.target_pose.pose.position.y = pose.response.pose_at[1]-board.response.lidar_results[0]-0.13;
-                    // 计算目标朝向：障碍物法线方向相对于小车当前的角度 + 小车当前朝向
-                    // double goal_yaw = std::atan2(vx, -vy) + pose.response.pose_at[2];//乘2后方向关于法线对称
-                    double goal_yaw = -1.57;
-                    tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
-                    geometry_msgs::Quaternion q_msg;
-                    tf::quaternionTFToMsg(q, q_msg);
-                    goal.target_pose.pose.orientation = q_msg;
+                    // 立即停止当前的巡线控制
+                    twist.linear.x = 0;
+                    twist.linear.y = 0;
+                    twist.angular.z = 0;
+                    cmd_pub.publish(twist);
+                    ros::Duration(0.1).sleep(); // 等待机器人停止，不加在平移前方向会偏转
 
-                    ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",goal.target_pose.pose.position.x, goal.target_pose.pose.position.y, goal_yaw);
-                    ac.sendGoal(goal);
-                    ac.waitForResult();
-                    cap.grab(); cap.grab(); cap.grab(); cap.grab(); cap.grab();//把缓冲区的东西丢掉，免得停车了
-                    avoid_done = true;
+                    // 获取避障起始Y坐标
+                    pose_client.call(pose);
+                    double initial_y = pose.response.pose_at[1];
+
+                    // 定义避障过程中的目标点和姿态
+                    double target_yaw = -1.57;      // 目标朝向，保持前进方向
+                    double side_step_x = 3.25;      // 避障时横向平移到的X坐标
+                    double track_x = 3.75;          // 原始赛道的X坐标
+                    double forward_target_y = initial_y - board.response.lidar_results[0] - 0.15;
+
+                    // P控制器参数
+                    const double Kp_x = 1.5;      // X方向 (横向) P-gain
+                    const double Kp_y = 1.5;      // Y方向 (前进) P-gain
+                    const double Kp_yaw = 1.0;    // 角度 P-gain
+                    const double max_vel_lateral = 0.35; // 最大横向速度
+                    const double max_vel_forward = 0.35; // 最大前进速度
+                    const double max_vel_yaw = 0.4;      // 最大角速度
+                    const double tolerance_x = 0.02;     // X方向容忍误差
+                    const double tolerance_y = 0.03;     // Y方向容忍误差
+                    ros::Rate rate(20.0);                // 控制频率
+
+                    // --- 第1步: 横向平移至 x = 3.25 ---
+                    ROS_INFO("避障第1步: 横向平移至 x=%.2f", side_step_x);
+                    while (ros::ok()) {
+                        pose_client.call(pose);
+                        double current_x = pose.response.pose_at[0];
+                        double current_yaw = pose.response.pose_at[2];
+                        
+                        double error_x = side_step_x - current_x;
+                        if (std::abs(error_x) < tolerance_x) {
+                            break; // 到达目标点，完成第1步
+                        }
+
+                        // 保持朝向
+                        double error_yaw = target_yaw - current_yaw;
+                        error_yaw = atan2(sin(error_yaw), cos(error_yaw));
+
+                        // 给机器人一个负的本地Y轴速度
+                        twist.linear.y = Kp_x * error_x;
+
+                        // 限制速度
+                        twist.linear.y = std::max(-max_vel_lateral, std::min(max_vel_lateral, twist.linear.y));
+                        twist.linear.x = 0; // 此阶段不前进
+                        twist.angular.z = Kp_yaw * error_yaw;
+                        twist.angular.z = std::max(-max_vel_yaw, std::min(max_vel_yaw, twist.angular.z));
+
+                        cmd_pub.publish(twist);
+                        rate.sleep();
+                    }
+                    // 停止运动
+                    twist.linear.x = 0; twist.linear.y = 0; twist.angular.z = 0; cmd_pub.publish(twist);
+
+                    // --- 第2步: 前进至目标Y点 ---
+                    ROS_INFO("避障第2步: 前进至 y=%.2f", forward_target_y);
+                    while (ros::ok()) {
+                        pose_client.call(pose);
+                        double current_y = pose.response.pose_at[1];
+                        double current_x = pose.response.pose_at[0];
+                        double current_yaw = pose.response.pose_at[2];
+
+                        double error_y = forward_target_y - current_y;
+                        if (std::abs(error_y) < tolerance_y) {
+                            break; // 到达目标点，完成第2步
+                        }
+
+                        // 机器人本地X轴为前进方向, 对应地图-Y轴
+                        // error_y为负, 需要正的本地X轴速度
+                        twist.linear.x = -Kp_x * error_y;
+                        
+                        // 同时修正横向和角度偏差
+                        double error_x = side_step_x - current_x;
+                        twist.linear.y = -Kp_y * error_x;
+                        double error_yaw = target_yaw - current_yaw;
+                        error_yaw = atan2(sin(error_yaw), cos(error_yaw));
+                        twist.angular.z = Kp_yaw * error_yaw;
+
+                        // 限制速度
+                        twist.linear.x = std::max(0.0, std::min(max_vel_forward, twist.linear.x)); //只准前进
+                        twist.linear.y = std::max(-max_vel_lateral, std::min(max_vel_lateral, twist.linear.y));
+                        twist.angular.z = std::max(-max_vel_yaw, std::min(max_vel_yaw, twist.angular.z));
+
+                        cmd_pub.publish(twist);
+                        rate.sleep();
+                    }
+                    // 停止运动
+                    twist.linear.x = 0; twist.linear.y = 0; twist.angular.z = 0; cmd_pub.publish(twist);
+
+                    // --- 第3步: 横向平移回 x = 3.75 ---
+                    ROS_INFO("避障第3步: 横向平移回 x=%.2f", track_x);
+                    while (ros::ok()) {
+                        pose_client.call(pose);
+                        double current_x = pose.response.pose_at[0];
+                        double current_yaw = pose.response.pose_at[2];
+                        
+                        double error_x = track_x - current_x;
+                        if (std::abs(error_x) < tolerance_x) {
+                            break; // 到达目标点，完成第3步
+                        }
+
+                        double error_yaw = target_yaw - current_yaw;
+                        error_yaw = atan2(sin(error_yaw), cos(error_yaw));
+
+                        // 给机器人一个正的本地Y轴速度
+                        twist.linear.y = Kp_x * error_x;
+
+                        // 限制速度
+                        twist.linear.y = std::max(-max_vel_lateral, std::min(max_vel_lateral, twist.linear.y));
+                        twist.linear.x = 0;
+                        twist.angular.z = Kp_yaw * error_yaw;
+                        twist.angular.z = std::max(-max_vel_yaw, std::min(max_vel_yaw, twist.angular.z));
+
+                        cmd_pub.publish(twist);
+                        rate.sleep();
+                    }
+                    // 避障动作完成，彻底停止机器人
+                    twist.linear.x = 0; twist.linear.y = 0; twist.angular.z = 0; cmd_pub.publish(twist);
+
+                    // --- 清理并切换回巡线模式 ---
+                    cap.grab(); cap.grab(); cap.grab(); cap.grab(); cap.grab();
                     ROS_INFO("避障结束");
-                    x_max = 0.5;
+                    avoid_done = true;
+                    nh.getParam("/line_right/x_max_", x_max);
                     double_line = true;
-                    avoid_done= true;
                     nh.getParam("/line_right/double_P", p);
                     nh.getParam("/line_right/double_I", i);
                     nh.getParam("/line_right/double_D", d);
-                    ROS_INFO("p%f",p);
-                    ROS_INFO("双边巡线");
+                    ROS_INFO("p %f",p);
+                    ROS_INFO("切换为双边巡线");
                 }
             }
         }

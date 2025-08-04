@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(awake)
+project(track_detection)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
@@ -9,9 +9,14 @@ project(awake)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   roscpp
+  cv_bridge
+  image_transport
+  sensor_msgs
   std_msgs
 )
 
+# 查找OpenCV
+find_package(OpenCV 4 REQUIRED)
 
 # # 声明可执行文件
 # add_executable(wakeup_publisher src/wakeup_publisher.cpp)
@@ -113,13 +118,19 @@ find_package(catkin REQUIRED COMPONENTS
 ## LIBRARIES: libraries you create in this project that dependent projects also need
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
-catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES awake
- CATKIN_DEPENDS roscpp std_msgs
-#  DEPENDS system_lib
-)
+# catkin_package(
+# #  INCLUDE_DIRS include
+# #  LIBRARIES awake
+#  CATKIN_DEPENDS roscpp std_msgs
+# #  DEPENDS system_lib
+# )
 
+catkin_package(
+  INCLUDE_DIRS include
+  LIBRARIES track_detection
+  CATKIN_DEPENDS roscpp cv_bridge image_transport sensor_msgs std_msgs
+  DEPENDS OpenCV
+)
 ###########
 ## Build ##
 ###########
@@ -127,15 +138,17 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
+  include
   ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}      
 )
-
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
 #   src/${PROJECT_NAME}/awake.cpp
 # )
-
+add_library(${PROJECT_NAME}
+  src/track_detector.cpp
+)
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
 ## either from message generation or dynamic reconfigure
@@ -158,15 +171,28 @@ include_directories(
 
 ## Specify libraries to link a library or executable target against
 # 声明可执行文件
-add_executable(wakeup_publisher src/wakeup_publisher.cpp)
-add_executable(wakeup_subscriber src/wakeup_subscriber.cpp)
-
+add_executable(track_node src/track_node.cpp)
 # 链接库
-target_link_libraries(wakeup_publisher
+# target_link_libraries(wakeup_publisher
+#   ${catkin_LIBRARIES}
+# )
+# target_link_libraries(wakeup_subscriber
+#   ${catkin_LIBRARIES}
+# )
+target_link_libraries(track_node
+  ${PROJECT_NAME}
   ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )
-target_link_libraries(wakeup_subscriber
-  ${catkin_LIBRARIES}
+
+# 安装目标
+install(TARGETS ${PROJECT_NAME} track_node
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+)
+
+install(DIRECTORY include/${PROJECT_NAME}/
+  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
 #############

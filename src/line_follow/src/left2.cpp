@@ -769,82 +769,225 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         client_line_board.call(board);
         pose_client.call(pose);
         if(!avoid_done){
+            // if(board.response.lidar_results[0] != -1){
+            //     ROS_INFO("最短距离%f",board.response.lidar_results[0]);
+            //     if(board.response.lidar_results[0]>0.45){//如果还比较远先减速
+            //         x_max = 0.22;
+            //     }
+            //     else{
+            //         float vx = board.response.lidar_results[4];//存储xy分量
+            //         float vy = board.response.lidar_results[5];
+
+            //         double d = std::sqrt(1 + board.response.lidar_results[3]*board.response.lidar_results[3]);
+            //         if (out_range == false)
+            //         {
+            //             geometry_msgs::PointStamped lidar_point;
+            //             lidar_point.header.frame_id = "laser_frame";
+            //             lidar_point.header.stamp = ros::Time(0); // 使用最新tf
+            //             lidar_point.point.x = board.response.lidar_results[1] - 0.26*vy;//法向量（-vy,vx）现在必定指向y正方向（小车前方）
+            //             lidar_point.point.y = board.response.lidar_results[2] + 0.26*vx;
+            //             lidar_point.point.z = 0;//使用atan2不会有角度180度跳变
+            //             // ROS_INFO("板子在雷达坐标系下的斜率%f",lidar_point.point.z);
+            //             geometry_msgs::PointStamped point_base;
+            //             tf_listener_->transformPoint("map", lidar_point, point_base);
+                
+            //             move_base_msgs::MoveBaseGoal goal;
+            //             goal.target_pose.header.frame_id = "map";
+            //             goal.target_pose.header.stamp = ros::Time::now();
+            //             goal.target_pose.pose.position.x = point_base.point.x;
+            //             goal.target_pose.pose.position.y = point_base.point.y;
+            //             // 计算目标朝向：障碍物法线方向相对于小车当前的角度 + 小车当前朝向
+            //             double goal_yaw = std::atan2(vx, -vy) + pose.response.pose_at[2];//乘2后方向关于法线对称
+            //             tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
+            //             geometry_msgs::Quaternion q_msg;
+            //             tf::quaternionTFToMsg(q, q_msg);
+            //             goal.target_pose.pose.orientation = q_msg;
+
+            //             ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",point_base.point.x, point_base.point.y, goal_yaw);
+            //             ac.sendGoal(goal);
+            //             ac.waitForResult();
+            //         }
+            //         else
+            //         {
+            //             geometry_msgs::PointStamped lidar_point;
+            //             lidar_point.header.frame_id = "laser_frame";
+            //             lidar_point.header.stamp = ros::Time(0); // 使用最新tf
+            //             lidar_point.point.x = board.response.lidar_results[1] + 0.26;
+            //             lidar_point.point.y = board.response.lidar_results[2];
+            //             lidar_point.point.z = 0;//使用atan2不会有角度180度跳变
+            //             // ROS_INFO("板子在雷达坐标系下的斜率%f",lidar_point.point.z);
+            //             geometry_msgs::PointStamped point_base;
+            //             tf_listener_->transformPoint("map", lidar_point, point_base);
+                                            
+            //             move_base_msgs::MoveBaseGoal goal;
+            //             goal.target_pose.header.frame_id = "map";
+            //             goal.target_pose.header.stamp = ros::Time::now();
+            //             goal.target_pose.pose.position.x = 3.75;//位置固定，直接硬编码
+            //             goal.target_pose.pose.position.y = point_base.point.y;
+            //             double goal_yaw = -1.57;
+            //             tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
+            //             geometry_msgs::Quaternion q_msg;
+            //             tf::quaternionTFToMsg(q, q_msg);
+            //             goal.target_pose.pose.orientation = q_msg;
+                
+
+            //             ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",goal.target_pose.pose.position.x, point_base.point.y, goal_yaw);
+            //             ac.sendGoal(goal);
+            //             ac.waitForResult();
+            //         }
+            //         cap.grab(); cap.grab(); cap.grab(); cap.grab(); cap.grab();//把缓冲区的东西丢掉，免得停车了
+            //         ROS_INFO("避障结束");
+            //         nh.getParam("/line_right/x_max_", x_max);
+            //         avoid_done= true;
+            //         double_line = true;
+            //         nh.getParam("/line_right/double_P", p);
+            //         nh.getParam("/line_right/double_I", i);
+            //         nh.getParam("/line_right/double_D", d);
+            //         ROS_INFO("p%f",p);
+            //         ROS_INFO("双边巡线");
+            //     }
+            // }
             if(board.response.lidar_results[0] != -1){
-                ROS_INFO("最短距离%f",board.response.lidar_results[0]);
-                if(board.response.lidar_results[0]>0.45){//如果还比较远先减速
+                if(board.response.lidar_results[0]>0.39){//如果还比较远先减速
                     x_max = 0.22;
                 }
                 else{
-                    float vx = board.response.lidar_results[4];//存储xy分量
-                    float vy = board.response.lidar_results[5];
+                    ROS_INFO("最短距离%f",board.response.lidar_results[0]);
+                    // 立即停止当前的巡线控制
+                    twist.linear.x = 0;
+                    twist.linear.y = 0;
+                    twist.angular.z = 0;
+                    cmd_pub.publish(twist);
+                    ros::Duration(0.1).sleep(); // 等待机器人停止，不加在平移前方向会偏转
 
-                    double d = std::sqrt(1 + board.response.lidar_results[3]*board.response.lidar_results[3]);
-                    if (out_range == false)
-                    {
-                        geometry_msgs::PointStamped lidar_point;
-                        lidar_point.header.frame_id = "laser_frame";
-                        lidar_point.header.stamp = ros::Time(0); // 使用最新tf
-                        lidar_point.point.x = board.response.lidar_results[1] - 0.26*vy;//法向量（-vy,vx）现在必定指向y正方向（小车前方）
-                        lidar_point.point.y = board.response.lidar_results[2] + 0.26*vx;
-                        lidar_point.point.z = 0;//使用atan2不会有角度180度跳变
-                        // ROS_INFO("板子在雷达坐标系下的斜率%f",lidar_point.point.z);
-                        geometry_msgs::PointStamped point_base;
-                        tf_listener_->transformPoint("map", lidar_point, point_base);
-                
-                        move_base_msgs::MoveBaseGoal goal;
-                        goal.target_pose.header.frame_id = "map";
-                        goal.target_pose.header.stamp = ros::Time::now();
-                        goal.target_pose.pose.position.x = point_base.point.x;
-                        goal.target_pose.pose.position.y = point_base.point.y;
-                        // 计算目标朝向：障碍物法线方向相对于小车当前的角度 + 小车当前朝向
-                        double goal_yaw = std::atan2(vx, -vy) + pose.response.pose_at[2];//乘2后方向关于法线对称
-                        tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
-                        geometry_msgs::Quaternion q_msg;
-                        tf::quaternionTFToMsg(q, q_msg);
-                        goal.target_pose.pose.orientation = q_msg;
+                    // 获取避障起始Y坐标
+                    pose_client.call(pose);
+                    double initial_y = pose.response.pose_at[1];
 
-                        ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",point_base.point.x, point_base.point.y, goal_yaw);
-                        ac.sendGoal(goal);
-                        ac.waitForResult();
+                    // 定义避障过程中的目标点和姿态
+                    double target_yaw = -1.57;      // 目标朝向，保持前进方向
+                    double side_step_x = 3.25;      // 避障时横向平移到的X坐标
+                    double track_x = 3.75;          // 原始赛道的X坐标
+                    double forward_target_y = initial_y - board.response.lidar_results[0] - 0.15;
+
+                    // P控制器参数
+                    const double Kp_x = 1.5;      // X方向 (横向) P-gain
+                    const double Kp_y = 1.5;      // Y方向 (前进) P-gain
+                    const double Kp_yaw = 1.0;    // 角度 P-gain
+                    const double max_vel_lateral = 0.35; // 最大横向速度
+                    const double max_vel_forward = 0.35; // 最大前进速度
+                    const double max_vel_yaw = 0.4;      // 最大角速度
+                    const double tolerance_x = 0.02;     // X方向容忍误差
+                    const double tolerance_y = 0.03;     // Y方向容忍误差
+                    ros::Rate rate(20.0);                // 控制频率
+
+                    // --- 第1步: 横向平移至 x = 3.25 ---
+                    ROS_INFO("避障第1步: 横向平移至 x=%.2f", side_step_x);
+                    while (ros::ok()) {
+                        pose_client.call(pose);
+                        double current_x = pose.response.pose_at[0];
+                        double current_yaw = pose.response.pose_at[2];
+                        
+                        double error_x = side_step_x - current_x;
+                        if (std::abs(error_x) < tolerance_x) {
+                            break; // 到达目标点，完成第1步
+                        }
+
+                        // 保持朝向
+                        double error_yaw = target_yaw - current_yaw;
+                        error_yaw = atan2(sin(error_yaw), cos(error_yaw));
+
+                        // 给机器人一个负的本地Y轴速度
+                        twist.linear.y = Kp_x * error_x;
+
+                        // 限制速度
+                        twist.linear.y = std::max(-max_vel_lateral, std::min(max_vel_lateral, twist.linear.y));
+                        twist.linear.x = 0; // 此阶段不前进
+                        twist.angular.z = Kp_yaw * error_yaw;
+                        twist.angular.z = std::max(-max_vel_yaw, std::min(max_vel_yaw, twist.angular.z));
+
+                        cmd_pub.publish(twist);
+                        rate.sleep();
                     }
-                    else
-                    {
-                        geometry_msgs::PointStamped lidar_point;
-                        lidar_point.header.frame_id = "laser_frame";
-                        lidar_point.header.stamp = ros::Time(0); // 使用最新tf
-                        lidar_point.point.x = board.response.lidar_results[1] + 0.26;
-                        lidar_point.point.y = board.response.lidar_results[2];
-                        lidar_point.point.z = 0;//使用atan2不会有角度180度跳变
-                        // ROS_INFO("板子在雷达坐标系下的斜率%f",lidar_point.point.z);
-                        geometry_msgs::PointStamped point_base;
-                        tf_listener_->transformPoint("map", lidar_point, point_base);
-                                            
-                        move_base_msgs::MoveBaseGoal goal;
-                        goal.target_pose.header.frame_id = "map";
-                        goal.target_pose.header.stamp = ros::Time::now();
-                        goal.target_pose.pose.position.x = 3.75;//位置固定，直接硬编码
-                        goal.target_pose.pose.position.y = point_base.point.y;
-                        double goal_yaw = -1.57;
-                        tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
-                        geometry_msgs::Quaternion q_msg;
-                        tf::quaternionTFToMsg(q, q_msg);
-                        goal.target_pose.pose.orientation = q_msg;
-                
+                    // 停止运动
+                    twist.linear.x = 0; twist.linear.y = 0; twist.angular.z = 0; cmd_pub.publish(twist);
 
-                        ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",goal.target_pose.pose.position.x, point_base.point.y, goal_yaw);
-                        ac.sendGoal(goal);
-                        ac.waitForResult();
+                    // --- 第2步: 前进至目标Y点 ---
+                    ROS_INFO("避障第2步: 前进至 y=%.2f", forward_target_y);
+                    while (ros::ok()) {
+                        pose_client.call(pose);
+                        double current_y = pose.response.pose_at[1];
+                        double current_x = pose.response.pose_at[0];
+                        double current_yaw = pose.response.pose_at[2];
+
+                        double error_y = forward_target_y - current_y;
+                        if (std::abs(error_y) < tolerance_y) {
+                            break; // 到达目标点，完成第2步
+                        }
+
+                        // 机器人本地X轴为前进方向, 对应地图-Y轴
+                        // error_y为负, 需要正的本地X轴速度
+                        twist.linear.x = -Kp_x * error_y;
+                        
+                        // 同时修正横向和角度偏差
+                        double error_x = side_step_x - current_x;
+                        twist.linear.y = -Kp_y * error_x;
+                        double error_yaw = target_yaw - current_yaw;
+                        error_yaw = atan2(sin(error_yaw), cos(error_yaw));
+                        twist.angular.z = Kp_yaw * error_yaw;
+
+                        // 限制速度
+                        twist.linear.x = std::max(0.0, std::min(max_vel_forward, twist.linear.x)); //只准前进
+                        twist.linear.y = std::max(-max_vel_lateral, std::min(max_vel_lateral, twist.linear.y));
+                        twist.angular.z = std::max(-max_vel_yaw, std::min(max_vel_yaw, twist.angular.z));
+
+                        cmd_pub.publish(twist);
+                        rate.sleep();
                     }
-                    cap.grab(); cap.grab(); cap.grab(); cap.grab(); cap.grab();//把缓冲区的东西丢掉，免得停车了
+                    // 停止运动
+                    twist.linear.x = 0; twist.linear.y = 0; twist.angular.z = 0; cmd_pub.publish(twist);
+
+                    // --- 第3步: 横向平移回 x = 3.75 ---
+                    ROS_INFO("避障第3步: 横向平移回 x=%.2f", track_x);
+                    while (ros::ok()) {
+                        pose_client.call(pose);
+                        double current_x = pose.response.pose_at[0];
+                        double current_yaw = pose.response.pose_at[2];
+                        
+                        double error_x = track_x - current_x;
+                        if (std::abs(error_x) < tolerance_x) {
+                            break; // 到达目标点，完成第3步
+                        }
+
+                        double error_yaw = target_yaw - current_yaw;
+                        error_yaw = atan2(sin(error_yaw), cos(error_yaw));
+
+                        // 给机器人一个正的本地Y轴速度
+                        twist.linear.y = Kp_x * error_x;
+
+                        // 限制速度
+                        twist.linear.y = std::max(-max_vel_lateral, std::min(max_vel_lateral, twist.linear.y));
+                        twist.linear.x = 0;
+                        twist.angular.z = Kp_yaw * error_yaw;
+                        twist.angular.z = std::max(-max_vel_yaw, std::min(max_vel_yaw, twist.angular.z));
+
+                        cmd_pub.publish(twist);
+                        rate.sleep();
+                    }
+                    // 避障动作完成，彻底停止机器人
+                    twist.linear.x = 0; twist.linear.y = 0; twist.angular.z = 0; cmd_pub.publish(twist);
+
+                    // --- 清理并切换回巡线模式 ---
+                    cap.grab(); cap.grab(); cap.grab(); cap.grab(); cap.grab();
                     ROS_INFO("避障结束");
+                    avoid_done = true;
                     nh.getParam("/line_right/x_max_", x_max);
-                    avoid_done= true;
                     double_line = true;
                     nh.getParam("/line_right/double_P", p);
                     nh.getParam("/line_right/double_I", i);
                     nh.getParam("/line_right/double_D", d);
-                    ROS_INFO("p%f",p);
-                    ROS_INFO("双边巡线");
+                    ROS_INFO("p %f",p);
+                    ROS_INFO("切换为双边巡线");
                 }
             }
         }
