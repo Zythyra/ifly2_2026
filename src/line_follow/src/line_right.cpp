@@ -614,7 +614,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
             //         ROS_INFO("p%f",p);
             //         ROS_INFO("双边巡线");
             //     }
-            // }
+            // }   
             
             if(board.response.lidar_results[0] != -1){
                 if(board.response.lidar_results[0]>0.39){//如果还比较远先减速
