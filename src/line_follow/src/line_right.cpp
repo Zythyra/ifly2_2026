@@ -27,7 +27,7 @@ typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseCl
 using namespace cv;
 using namespace std;
 
-string output_file = "/home/ucar/ucar_car/src/line_follow/image/line_right.avi";//录制视频避免网络传输卡顿
+string output_file = "/home/ucar/ucar_ws/src/line_follow/image/line_right.avi";//录制视频避免网络传输卡顿
 VideoWriter out;
 int fourcc = VideoWriter::fourcc('X', 'V', 'I', 'D'); // MP4V编码
 ostringstream displayStream;
@@ -182,7 +182,7 @@ void find_track_edge(Mat& gray_img, Point& right_point, int scan_rows, int brigh
 }
 
 // 从起始点开始追踪赛道边线（添加断裂检测机制）
-void trace_edge(Point start_point, Mat& gray_img, vector<Point>& traced_points, bool& right,  
+double trace_edge(Point start_point, Mat& gray_img, vector<Point>& traced_points, bool& right,  
                 int brightness_threshold,Mat* visual_img = nullptr) {
     int height = gray_img.rows;
     int width = gray_img.cols;
@@ -277,7 +277,8 @@ void trace_edge(Point start_point, Mat& gray_img, vector<Point>& traced_points, 
     Vec4f lineParams; // 存放结果的 Vec4f
     fitLine(traced_points, lineParams, DIST_L2, 0, 0.01, 0.01);
     // ROS_INFO("有效点数%zu",traced_points.size());
-    if((lineParams[1]/lineParams[0]<0.05&&lineParams[1]/lineParams[0]>-10)||traced_points.size()<15){//不接受右线向右倾斜数量太少不要
+    double line_slope = lineParams[1]/lineParams[0];
+    if((line_slope<0.05&&line_slope>-10)||traced_points.size()<15){//不接受右线向右倾斜数量太少不要
         right = false;
     }
     // 可视化追踪过程
@@ -294,6 +295,7 @@ void trace_edge(Point start_point, Mat& gray_img, vector<Point>& traced_points, 
         putText(*visual_img, displayText1, Point(50, 100),
         FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
     }
+    return line_slope;
 }
 //如果右边丢线，就只看左边，因为右边丢线了，所以直接从最右边开始找，找到就是左线，然后把左线拟合成直线，如果左线碰到图片底端，就开始旋转，通过定位来判断是否到达终点，到达终点前不启用停车逻辑
 bool find_left_edge(Mat gray_img,Point& left_edge_point,int brightness_threshold,Mat& visualizeImg){
@@ -432,8 +434,9 @@ double double_find(Mat gray_img,int brightness_threshold, Mat& visual_img)//最�
 }
 
 
-double error_calculater(vector<Point>& traced_points,int ystart,Mat& visualizeImg){
+double error_calculater(vector<Point>& traced_points,int ystart,double& z_error,Mat& visualizeImg){
     double total_error = 0;
+    std::vector<Point2f> line;//拟合直线
     // size_t count = std::min(traced_points.size(),static_cast<size_t>(60));//注意了这里number最大就到80记得把前面对number的限制也改了
     for (size_t i=0;i<traced_points.size();i++){
         int y = ystart-i;
@@ -445,6 +448,7 @@ double error_calculater(vector<Point>& traced_points,int ystart,Mat& visualizeIm
             double mid_error = (traced_points[i].x - (280 - (214-y)*1.34)-320)*0.7 * exp(-0.064 * (i - 30.0));
             total_error += mid_error;
         }
+        line.push_back(Point2f(traced_points[i].x - (280 - (214-y)*1.34),270.0-traced_points[i].y));
     }
 
     // 可视化代码（例如在图像上绘制轨迹）
@@ -462,7 +466,7 @@ double error_calculater(vector<Point>& traced_points,int ystart,Mat& visualizeIm
 }
 
 bool line_server_callback(line_follow::line_follow::Request& req,line_follow::line_follow::Response& resp){
-    FileStorage fs("/home/ucar/ucar_car/src/line_follow/camera_info/pinhole.yaml", FileStorage::READ);
+    FileStorage fs("/home/ucar/ucar_ws/src/line_follow/camera_info/pinhole.yaml", FileStorage::READ);
     if (!fs.isOpened()) {
         cerr << "无法打开标定文件" << endl;
         return -1;
@@ -581,43 +585,8 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         client_line_board.call(board);
         pose_client.call(pose);
         if(!avoid_done){
-            // if(board.response.lidar_results[0] != -1){
-            //     if(board.response.lidar_results[0]>0.37){//如果还比较远先减速
-            //         x_max = 0.22;
-            //     }
-            //     else{
-            //         ROS_INFO("最短距离%f",board.response.lidar_results[0]);
-            //         move_base_msgs::MoveBaseGoal goal;
-            //         goal.target_pose.header.frame_id = "map";
-            //         goal.target_pose.header.stamp = ros::Time::now();
-            //         goal.target_pose.pose.position.x = 3.75;//位置固定，直接硬编码
-            //         goal.target_pose.pose.position.y = pose.response.pose_at[1]-board.response.lidar_results[0]-0.13;
-            //         // 计算目标朝向：障碍物法线方向相对于小车当前的角度 + 小车当前朝向
-            //         // double goal_yaw = std::atan2(vx, -vy) + pose.response.pose_at[2];//乘2后方向关于法线对称
-            //         double goal_yaw = -1.57;
-            //         tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
-            //         geometry_msgs::Quaternion q_msg;
-            //         tf::quaternionTFToMsg(q, q_msg);
-            //         goal.target_pose.pose.orientation = q_msg;
-
-            //         ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",goal.target_pose.pose.position.x, goal.target_pose.pose.position.y, goal_yaw);
-            //         ac.sendGoal(goal);
-            //         ac.waitForResult();
-            //         cap.grab(); cap.grab(); cap.grab(); cap.grab(); cap.grab();//把缓冲区的东西丢掉，免得停车了
-            //         ROS_INFO("避障结束");
-            //         avoid_done = true;
-            //         nh.getParam("/line_right/x_max_", x_max);
-            //         double_line = true;
-            //         nh.getParam("/line_right/double_P", p);
-            //         nh.getParam("/line_right/double_I", i);
-            //         nh.getParam("/line_right/double_D", d);
-            //         ROS_INFO("p%f",p);
-            //         ROS_INFO("双边巡线");
-            //     }
-            // }   
-            
             if(board.response.lidar_results[0] != -1){
-                if(board.response.lidar_results[0]>0.39){//如果还比较远先减速
+                if(board.response.lidar_results[0]>0.41){//如果还比较远先减速
                     x_max = 0.22;
                 }
                 else{
@@ -759,7 +728,6 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     ROS_INFO("切换为双边巡线");
                 }
             }
-
         }
 
 
@@ -793,13 +761,18 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         // imshow("test",cropped);
         // waitKey(1);
         // continue;
+        // if(pose.response.pose_at[0]>3.72){
+        //     std::cout << "Press [Enter] to continue...";
+        //     std::cin.ignore(); // 清除缓冲区
+        //     std::cin.get();    // 等待回车
+        // }
         bool right_checker = true;//右线不一定真的是右线，可能是太偏的左线，不接受右线向右倾斜，不满足条件切换逻辑
         if (right) {
             first_point_x_last = right_edge_point.x;
-            double line_error = 0;
+            double line_error = 0,z_error = 0;
             if(!double_line){
                 trace_edge(right_edge_point, gray_img, traced_right, right_checker, brightness_threshold, &cropped);
-                line_error = error_calculater(traced_right,right_edge_point.y,cropped);//有调试图片输出
+                line_error = error_calculater(traced_right,right_edge_point.y,z_error,cropped);//有调试图片输出
             }
             else{
                 line_error = double_find(gray_img,brightness_threshold,cropped);
@@ -832,7 +805,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                 left_forward = true;
                 point_forward = true;
 
-                integration += line_error*0.03;
+                integration += z_error*0.03;
                 integration = std::max(std::min(integration,abs(line_error)/integration_limit+1),-1*abs(line_error)/integration_limit-1);
                 double diff = line_error - pre_error;
                 diff = std::max(std::min(diff,50.0),-50.0);
@@ -864,7 +837,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     pointx_integration = std::max(std::min(pointx_integration,1.0),-1.0);
                     double point_diff = error_x-pointx_pre_error;
                     // twist.linear.x = std::max(twist.linear.x-0.2,0.0);
-                    twist.linear.x = 0.3;
+                    twist.linear.x = 0.23;
                     twist.angular.z = error_x*leftpoint_p + pointx_integration*leftpoint_I+point_diff*leftpoint_D;
 
                     pointx_pre_error = error_x;
@@ -896,7 +869,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         }
         int test;
         if(avoid_done && pose.response.pose_at[2]>-1.8&&pose.response.pose_at[2]<-1.3&&pose.response.pose_at[0]>3.3&&pose.response.pose_at[0]<4.2&&pose.response.pose_at[1]<1){
-            if(stop_car(gray_img,brightness_threshold,test,cropped)){
+            if(stop_car(gray_img,brightness_threshold,test,cropped)|| pose.response.pose_at[1]<-0.25){
                 ROS_INFO("巡线结束");
                 twist.linear.x = 0;
                 twist.angular.z = 0;

@@ -417,6 +417,8 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
     int the_first = -1,the_second = -1;//要记录两个板子的类别，避免重复
     set_speed_.request.target_twist.angular.z = angular_speed;
     set_speed_client_.call(set_speed_);
+
+    int last_rightest = 650;//有可能刚刚到目的地的时候，右手边出现障碍板，此时不能准确定位，先忽略，转一圈回来再说
     while(ros::ok()&&!exit_flag  && center_time){
         // ros::Time test_time = ros::Time::now();
         std::vector<std::vector<int>> result = {{-1},{-1},{-1},{-1},{-1},{-1}};
@@ -452,6 +454,7 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                     rightestx = center;
                     rightestname = result[4][i];
                     other_board = true;
+                    last_rightest = rightestx;
                 }
             }
             if(other_board){
@@ -572,26 +575,46 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                         return true;//前进加微调
                     }
                 }
-                double error = (img_width/2.0 - center_x)/100; 
+                // double error = (img_width/2.0 - center_x)/100; 
+                if(center_x <120){
+                    set_speed_.request.target_twist.angular.z = 0.3;
+                }
+                else if(center_x >=120 &&center_x <220){
+                    set_speed_.request.target_twist.angular.z = (center_x-20.0)/1000.0;
+                }
+                else if(center_x >=220 &&center_x <313){
+                    set_speed_.request.target_twist.angular.z = 0.1;
+                }
+                else if(center_x >=327 &&center_x <420){
+                    set_speed_.request.target_twist.angular.z = -0.1;
+                }
+                else if(center_x >=420 &&center_x <520){
+                    set_speed_.request.target_twist.angular.z = (center_x-320.0)/-1000.0;
+                }
+                if(center_x >=520){
+                    set_speed_.request.target_twist.angular.z = -0.3;
+                }
+                else{
+                    set_speed_.request.target_twist.angular.z = 0.0;
+                }
+                // // 离散PID计算
+                // integral += error * 0.2;       // dt=1/20≈0.05
+                // integral = clamp(integral, -1.0, 1.0);
+                // double derivative = (error - prev_error)/0.2;
+                // double output = Kp*error + Ki*integral + Kd*derivative;
+                // output = clamp(output, -0.4, 0.4);
+                // // ROS_INFO("error:%f",error);
+                // // ROS_INFO("P:%f",Kp*error);
+                // // ROS_INFO("I:%f",Ki*integral);
+                // // ROS_INFO("D:%f",Kd*derivative);
+                // // ROS_INFO("速度发布:%f",output);
                 
-                // 离散PID计算
-                integral += error * 0.2;       // dt=1/20≈0.05
-                integral = clamp(integral, -1.0, 1.0);
-                double derivative = (error - prev_error)/0.2;
-                double output = Kp*error + Ki*integral + Kd*derivative;
-                output = clamp(output, -0.4, 0.4);
-                // ROS_INFO("error:%f",error);
-                // ROS_INFO("P:%f",Kp*error);
-                // ROS_INFO("I:%f",Ki*integral);
-                // ROS_INFO("D:%f",Kd*derivative);
-                // ROS_INFO("速度发布:%f",output);
+                // // 执行旋转（限制输出范围）
+                // if(output>0)set_speed_.request.target_twist.angular.z = std::max(output,0.1);
+                // else set_speed_.request.target_twist.angular.z = std::min(output,-0.1);
+                // set_speed_client_.call(set_speed_);
                 
-                // 执行旋转（限制输出范围）
-                if(output>0)set_speed_.request.target_twist.angular.z = std::max(output,0.1);
-                else set_speed_.request.target_twist.angular.z = std::min(output,-0.1);
-                set_speed_client_.call(set_speed_);
-                
-                prev_error = error;
+                // prev_error = error;
             }
             else{
                 if((ros::Time::now()-start_time_).toSec()>10.0){

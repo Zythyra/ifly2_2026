@@ -191,41 +191,98 @@ bool checkTrafficLightWithSearch(ros::Publisher& cmd_pub) {
     return detectTrafficLightStatus() == 2;
 }
 
-void publishInitialPose(double x,double y,double yaw,tf2::Quaternion &q,ros::Publisher& initial_pose_pub_ ) {
-        geometry_msgs::PoseWithCovarianceStamped initial_pose;
-        
-        // 设置header
-        initial_pose.header.stamp = ros::Time::now();
-        initial_pose.header.frame_id = "map";  // 坐标系设置为map
-        
-        // 设置位置
-        initial_pose.pose.pose.position.x = x;
-        initial_pose.pose.pose.position.y = y;
-        initial_pose.pose.pose.position.z = 0.0;
-        
-        // 设置方向
-        q.setRPY(0, 0, yaw);
-        initial_pose.pose.pose.orientation.x = q.x();
-        initial_pose.pose.pose.orientation.y = q.y();
-        initial_pose.pose.pose.orientation.z = q.z();
-        initial_pose.pose.pose.orientation.w = q.w();
-        
-        // 设置协方差矩阵
-        boost::array<double, 36> covariance = {{
-            0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 
-            0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0076
-        }};
-        initial_pose.pose.covariance = covariance;
-        
-        // 发布初始位置
-        initial_pose_pub_.publish(initial_pose);
-        ROS_INFO("已发布初始位置: x=%.2f, y=%.2f, yaw=%.2f",
-                initial_pose.pose.pose.position.x, initial_pose.pose.pose.position.y,yaw);
+bool go_enter2(ros::ServiceClient& poseget_client,ros::Publisher& cmd_pub){
+    ztestnav2025::getpose_server pose;
+    pose.request.getpose_start = 1;
+    poseget_client.call(pose);
+    geometry_msgs::Twist twist_msg;
+    while(ros::ok()){
+        if(pose.response.pose_at[0]<4.0){
+            twist_msg.linear.y = -1.0;
+        }
+        else if(pose.response.pose_at[0]>4.5){
+            twist_msg.linear.y = 0.5;
+        }
+        else if(pose.response.pose_at[0]>=4.0 && pose.response.pose_at[0]<4.2){
+            twist_msg.linear.y = pose.response.pose_at[0]-4.25;
+        }
+        else if(pose.response.pose_at[0]>=4.3 && pose.response.pose_at[0]<4.5){
+            twist_msg.linear.y = pose.response.pose_at[0]-4.25;
+        }
+        else{
+            twist_msg.linear.y = 0;
+        }
+
+        if(pose.response.pose_at[1]<4.0){
+            twist_msg.linear.x = 0.3;
+        }
+        else if(pose.response.pose_at[1]>4.7){
+            twist_msg.linear.x = -0.2;
+        }
+        else if(pose.response.pose_at[1]>=4.0 && pose.response.pose_at[1]<4.45){
+            twist_msg.linear.x = 4.4-pose.response.pose_at[1];
+        }
+        else if(pose.response.pose_at[1]>=4.55 && pose.response.pose_at[1]<4.7){
+            twist_msg.linear.x = 4.4-pose.response.pose_at[1];
+        }
+        else{
+            twist_msg.linear.x = 0;
+        }
+
+        if(pose.response.pose_at[2]<1.4){
+            twist_msg.angular.z = 0.3;
+        }
+        else if(pose.response.pose_at[2]>1.74){
+            twist_msg.angular.z = -0.3;
+        }
+        else if(pose.response.pose_at[2]>=1.4 && pose.response.pose_at[2]<1.5){
+            twist_msg.angular.z = 1.62-pose.response.pose_at[2];
+        }
+        else if(pose.response.pose_at[2]>=1.64 && pose.response.pose_at[2]<1.74){
+            twist_msg.angular.z = 1.52-pose.response.pose_at[2];
+        }
+        else{
+            twist_msg.angular.z = 0;
+        }
+        cmd_pub.publish(twist_msg);
     }
+}
+
+void publishInitialPose(double x,double y,double yaw,tf2::Quaternion &q,ros::Publisher& initial_pose_pub_ ) {
+    geometry_msgs::PoseWithCovarianceStamped initial_pose;
+    
+    // 设置header
+    initial_pose.header.stamp = ros::Time::now();
+    initial_pose.header.frame_id = "map";  // 坐标系设置为map
+    
+    // 设置位置
+    initial_pose.pose.pose.position.x = x;
+    initial_pose.pose.pose.position.y = y;
+    initial_pose.pose.pose.position.z = 0.0;
+    
+    // 设置方向
+    q.setRPY(0, 0, yaw);
+    initial_pose.pose.pose.orientation.x = q.x();
+    initial_pose.pose.pose.orientation.y = q.y();
+    initial_pose.pose.pose.orientation.z = q.z();
+    initial_pose.pose.pose.orientation.w = q.w();
+    
+    // 设置协方差矩阵
+    boost::array<double, 36> covariance = {{
+        0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0076
+    }};
+    initial_pose.pose.covariance = covariance;
+    
+    // 发布初始位置
+    initial_pose_pub_.publish(initial_pose);
+    ROS_INFO("已发布初始位置: x=%.2f, y=%.2f, yaw=%.2f",
+            initial_pose.pose.pose.position.x, initial_pose.pose.pose.position.y,yaw);
+}
 
 int main(int argc, char *argv[])
 {
@@ -441,7 +498,8 @@ int main(int argc, char *argv[])
     else {
         ROS_INFO("前往红绿灯区域路口2");
         enter1 = false;
-        go_destination(goal,4.25,4.50,1.57,q,ac);
+        // go_destination(goal,4.25,4.50,1.57,q,ac);
+        go_enter2(poseget_client, cmd_pub);
         if (checkTrafficLightWithSearch(cmd_pub)){
             ROS_INFO("路口2可通过");
             play_audio(voice[3][1]);

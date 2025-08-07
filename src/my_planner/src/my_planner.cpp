@@ -257,17 +257,87 @@ namespace my_planner
                 // 如果代价值表明是障碍物或禁行区
                 if(cost >= 253)
                 {
-                    ROS_INFO("重新规划路径");
-                    if(final_index-target_index_<30)//判定是否到达目标点附近的距离阈值
-                    {
-                        pose_adjusting_ = true;
-                        return true;
+                    ROS_WARN("路径上有障碍,开始检查最终目标点状态");
+                    
+                    geometry_msgs::PoseStamped final_goal_pose_in_map;
+                    global_plan_.back().header.stamp = ros::Time(0);
+                    try {
+                        tf_listener_->transformPose("map", global_plan_.back(), final_goal_pose_in_map);
+                    } catch (tf::TransformException &ex) {
+                        ROS_ERROR("TF transform failed for final goal: %s", ex.what());
+                        return false; // TF 错误，请求重规划
                     }
 
-                    initial_rotation_done_ = false; // 重置初始旋转标志
-                    return false; // 返回false，触发重新规划全局路径，实现动态避障
+                    unsigned int final_cell_x, final_cell_y;
+                    if (costmap->worldToMap(final_goal_pose_in_map.pose.position.x, final_goal_pose_in_map.pose.position.y, final_cell_x, final_cell_y))
+                    {
+                        unsigned int final_map_index = costmap->getIndex(final_cell_x, final_cell_y);
+                        unsigned char final_goal_cost = map_data[final_map_index];
+
+                        if (final_goal_cost >= 253)
+                        {
+                            ROS_WARN("最终目标点 (cost=%d) 本身不可达. 从后向前搜索新的有效终点.", final_goal_cost);
+                            // 从倒数第二个点开始回溯
+                            geometry_msgs::Quaternion original_final_orientation = global_plan_.back().pose.orientation;
+
+                            for (int j = global_plan_.size() - 2; j >= 0; --j)
+                            {
+                                geometry_msgs::PoseStamped backtrack_pose_in_map;
+                                global_plan_[j].header.stamp = ros::Time(0);
+                                try {
+                                    tf_listener_->transformPose("map", global_plan_[j], backtrack_pose_in_map);
+                                } catch (tf::TransformException &ex) {
+                                    continue; // 忽略无法变换的点
+                                }
+
+                                unsigned int backtrack_cell_x, backtrack_cell_y;
+                                if (costmap->worldToMap(backtrack_pose_in_map.pose.position.x, backtrack_pose_in_map.pose.position.y, backtrack_cell_x, backtrack_cell_y))
+                                {
+                                    unsigned int backtrack_map_index = costmap->getIndex(backtrack_cell_x, backtrack_cell_y);
+                                    unsigned char backtrack_cost = map_data[backtrack_map_index];
+                                    if (backtrack_cost < 253)
+                                    {
+                                        ROS_INFO("找到新的可行终点，索引为 %d. 截断全局路径并继续执行.", j);
+                                        global_plan_.resize(j + 1);
+                                        // 重置状态，因为我们的目标已经改变
+                                        global_plan_.back().pose.orientation = original_final_orientation;//保证阶段处的点的朝向与原本终点的朝向一致
+                                        goal_reached_ = false;
+                                        pose_adjusting_ = false;
+                                        // 确保target_index不会越界
+                                        target_index_ = std::min(target_index_, (int)global_plan_.size() - 1);
+                                        goto continue_execution; // 跳出障碍检测循环，使用新路径继续
+                                    }
+                                }
+                            }
+                            // 如果回溯整个路径都找不到安全点
+                            ROS_ERROR("在整个路径中都未找到代价值小于253的有效终点. 放弃并请求重规划.");
+                            return false;
+                        }
+                        else
+                        {
+                            // 目标点可达，但路径被挡住，请求重规划以绕行
+                            ROS_INFO("路径中有障碍，但终点可达。请求全局重规划以绕行。");
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        ROS_WARN("最终目标点位于代价地图之外. 请求重规划.");
+                        return false;
+                    }
                 }
+
+
+
+
+
+
+
+
             }
+        continue_execution:;
+        // 如果路径被截断，需要更新 final_index
+        final_index = global_plan_.size()-1;
         }
         
         

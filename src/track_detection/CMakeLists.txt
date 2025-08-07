@@ -14,7 +14,14 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
 )
+# 查找Eigen库 (用于矩阵运算)
+find_package(Eigen3 REQUIRED)
 
+# 查找Boost库 (用于统计功能)
+find_package(Boost REQUIRED COMPONENTS
+  math_c99
+  random
+)
 # 查找OpenCV
 find_package(OpenCV 4 REQUIRED)
 
@@ -129,8 +136,9 @@ catkin_package(
   INCLUDE_DIRS include
   LIBRARIES track_detection
   CATKIN_DEPENDS roscpp cv_bridge image_transport sensor_msgs std_msgs
-  DEPENDS OpenCV
+  DEPENDS EIGEN3 Boost
 )
+
 ###########
 ## Build ##
 ###########
@@ -140,8 +148,11 @@ catkin_package(
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
-  ${OpenCV_INCLUDE_DIRS}      
+  ${OpenCV_INCLUDE_DIRS} 
+  ${EIGEN3_INCLUDE_DIRS}
+  ${Boost_INCLUDE_DIRS}     
 )
+
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
 #   src/${PROJECT_NAME}/awake.cpp
@@ -172,6 +183,9 @@ add_library(${PROJECT_NAME}
 ## Specify libraries to link a library or executable target against
 # 声明可执行文件
 add_executable(track_node src/track_node.cpp)
+add_executable(data_fitting_system src/data_fitting_system.cpp)
+# 编译可执行文件
+
 # 链接库
 # target_link_libraries(wakeup_publisher
 #   ${catkin_LIBRARIES}
@@ -185,16 +199,33 @@ target_link_libraries(track_node
   ${OpenCV_LIBRARIES}
 )
 
-# 安装目标
-install(TARGETS ${PROJECT_NAME} track_node
-  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+target_link_libraries(data_fitting_system
+  ${catkin_LIBRARIES}
+  ${EIGEN3_LIBRARIES}
+  ${Boost_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )
 
+# 安装目标
+
+install(TARGETS track_node
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(TARGETS data_fitting_system
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
+
+# 安装头文件 (如果有的话)
+install(DIRECTORY include/${PROJECT_NAME}/
+  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+  FILES_MATCHING PATTERN "*.h"
+  PATTERN ".svn" EXCLUDE
+)
 #############
 ## Install ##
 #############
