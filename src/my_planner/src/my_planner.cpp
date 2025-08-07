@@ -372,7 +372,7 @@ namespace my_planner
             // // ROS_INFO("终点距离%f",dist);
             // if(dist < goal_dist_threshold_)//判定是否到达目标点附近的距离阈值
             //     pose_adjusting_ = true;
-            if(final_index-target_index_<35)//判定是否到达目标点附近的距离阈值
+            if(final_index-target_index_<50)//判定是否到达目标点附近的距离阈值
                 pose_adjusting_ = true;
         }
         if(pose_adjusting_ == true)
@@ -446,28 +446,29 @@ namespace my_planner
                 }
             }
         // }
-
+        
+        if(global_plan_[0].pose.position.x < 2.4 &&global_plan_[0].pose.position.y <1.1) initial_rotation_done_ = true;//走廊环境不需要初始姿态调整，反而会出问题
         if (!initial_rotation_done_) //如果还未进行过初始姿态调整，说明是第一个目标点
         {
-        //     std::vector<cv::Point2f> initial_points;//z速度不应该是y的差距，而是前方几个点拟合成的直线角度
-        //     cv::Point2f points_centroid(0.0f, 0.0f); // 用于计算采样点的质心
-
-        //     for (int j = 5; j < 17; ++j)
-        //     {
-        //         geometry_msgs::PoseStamped point_in_base;
-        //         geometry_msgs::PoseStamped plan_point = global_plan_[j];
-        //         plan_point.header.stamp = ros::Time(0);
-        //         tf_listener_->transformPose("base_link", plan_point, point_in_base);
-        //         initial_points.push_back(cv::Point2f(point_in_base.pose.position.x,point_in_base.pose.position.y));
-        //     }
+            // std::vector<cv::Point2f> initial_points;//z速度不应该是y的差距，而是前方几个点拟合成的直线角度
+            // cv::Point2f points_centroid(0.0f, 0.0f); // 用于计算采样点的质心
+            
+            // for (int j = 5; j < 35; j+=2)
+            // {
+            //     geometry_msgs::PoseStamped point_in_base;
+            //     geometry_msgs::PoseStamped plan_point = global_plan_[j];
+            //     plan_point.header.stamp = ros::Time(0);
+            //     tf_listener_->transformPose("base_link", plan_point, point_in_base);
+            //     initial_points.push_back(cv::Point2f(point_in_base.pose.position.x,point_in_base.pose.position.y));
+            // }
         //     // 计算质心
         //     if (!initial_points.empty()) {
         //         points_centroid.x /= initial_points.size();
         //         points_centroid.y /= initial_points.size();
         //     }
-        //     cv::Vec4f line_params;
-        //     cv::fitLine(initial_points, line_params, cv::DIST_L2, 0, 0.01, 0.01);
-        //     float vx = line_params[0], vy = line_params[1];
+            // cv::Vec4f line_params;
+            // cv::fitLine(initial_points, line_params, cv::DIST_L2, 0, 0.01, 0.01);
+            // float vx = line_params[0], vy = line_params[1];
         //     // 这个质心向量 (points_centroid.x, points_centroid.y) 可靠地指向了路径的方向
         // double dot_product = vx * points_centroid.x + vy * points_centroid.y;
 
@@ -476,15 +477,20 @@ namespace my_planner
         //     vx *= -1;
         //     vy *= -1;
         // }
-        //     // if(line_params[0]>0 && initial_points[10].x<0){
-        //     //     vx *= -1;
-        //     //     vy *= -1;//因为看的是前方的点，强制Vx大于0
-        //     // }
-        //     float angle_to_target = std::atan2(vy, vx);
-
+            // ROS_INFO("初始vx%f,vy%f,目标点vx%f",vx,vy,target_pose.pose.position.x);
+            // if(target_pose.pose.position.x>0 && vx<0){
+            //     vx *= -1;
+            //     vy *= -1;//因为看的是前方的点，强制Vx大于0
+            // }
+            // if(target_pose.pose.position.x<0 && vx>0){
+            //     vx *= -1;
+            //     vy *= -1;//因为看的是前方的点，强制Vx大于0
+            // }//vx和target同号
+            // float angle_to_target = std::atan2(vy, vx);
             
-
+            // ROS_INFO("修正后vx%f,vy%f,目标点vx%f,角度%f",vx,vy,target_pose.pose.position.x,angle_to_target);
             double angle_to_target = atan2(target_pose.pose.position.y, target_pose.pose.position.x);
+            
             // ROS_INFO("开始进行初始姿态调整");
             if (std::abs(angle_to_target) < goal_yaw_tolerance_) {
                 ROS_INFO("初始姿态已对准，设置标志位并开始正常行驶。");
@@ -497,7 +503,7 @@ namespace my_planner
                 cmd_vel.linear.y = 0.0;
                 if(angle_to_target>0) cmd_vel.angular.z = std::min(std::max(angle_to_target * final_pose_angular_gain_,0.8),2.5); // 与最终姿态调整共用参数
                 else cmd_vel.angular.z = std::max(std::min(angle_to_target * final_pose_angular_gain_,-0.8),-2.5);
-                
+                // ROS_INFO("速度%f",cmd_vel.angular.z);
                 return true; 
             }
         }

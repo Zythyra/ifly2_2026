@@ -17,6 +17,7 @@
 #include "communication/msg_2.h"
 #include <std_msgs/Int8.h>
 #include <std_msgs/Int32.h>
+#include <std_srvs/Trigger.h>
 
 #include <cmath>
 //找板优化新增头文件
@@ -82,7 +83,7 @@ public:
         while (ros::ok() && !awake_received_) {
             ros::spinOnce();
             rate.sleep();
-            publishInitialPose(0.3,0.253,0,q,initial_pose_pub_ );
+            publishInitialPose(0.25,0.25,0,q,initial_pose_pub_ );
             // if((ros::Time::now()-awake_limit).toSec()>40){
             //     break;
             // }
@@ -348,6 +349,9 @@ int main(int argc, char *argv[])
     ros::Publisher audio_pub = nh.advertise<std_msgs::Int32>("/audio_alert", 10, true);
     std_msgs::Int32 msg;
 
+    ros::ServiceClient node_client = nh.serviceClient<std_srvs::Trigger>("/kill_node");
+    std_srvs::Trigger node_srv;
+
     //--------------------------------------语音唤醒等待--------------------------------//
     AwakeDetector awakeDetector(nh);
     if (!awakeDetector.waitForAwake(q,initial_pose_pub_ )) {
@@ -524,12 +528,25 @@ int main(int argc, char *argv[])
     go_destination(goal,1.25,3.75,0.0,q,ac);
     //发送仿真消息
     ros::Rate rate(1);
+    bool shut_down = false;
     // waitForContinue();
     // while (ros::ok()) {
     //     sim_talkto_car.car_msg_publish(board_name);
     //     rate.sleep();
     //     ros::spinOnce();
     //     publishInitialPose(1.25,3.75,0.0,q,initial_pose_pub_ );
+            if(!shut_down){
+                if (node_client.call(node_srv)) {
+                    if (node_srv.response.success) {
+                        ROS_INFO("成功: %s", node_srv.response.message.c_str());
+                        shut_down = true;
+                    } else {
+                        ROS_WARN("失败: %s", node_srv.response.message.c_str());
+                    }
+                } else {
+                    ROS_ERROR("服务调用失败");
+                }
+            }
     //     if(sim_talkto_car.sim_done==1){
     //         break;
     //     }
@@ -553,7 +570,8 @@ int main(int argc, char *argv[])
         msg.data = 15;
         audio_pub.publish(msg);
         play_audio(voice[3][0]);
-        go_destination(goal,2.83,3.5,-1.18,q,ac);
+        // go_destination(goal,2.83,3.5,-1.18,q,ac);
+        go_destination(goal,2.75,3.6,-1.57,q,ac);
     } 
     else {
         ROS_INFO("前往红绿灯区域路口2");
@@ -565,7 +583,8 @@ int main(int argc, char *argv[])
             msg.data = 16;
             audio_pub.publish(msg);
             play_audio(voice[3][1]);
-            go_destination(goal,4.75,3.44,-1.86,q,ac);
+            // go_destination(goal,4.75,3.44,-1.86,q,ac);
+            go_destination(goal,4.75,3.6,-1.57,q,ac);
         } 
         else {
             ROS_WARN("两个路口均未找到绿灯，执行备选方案通过路口2");
