@@ -502,7 +502,7 @@ double error_calculater(vector<Point>& traced_points,int ystart,Mat& visualizeIm
 bool line_server_callback(line_follow::line_follow::Request& req,line_follow::line_follow::Response& resp){
     FileStorage fs("/home/ucar/ucar_car/src/line_follow/camera_info/pinhole.yaml", FileStorage::READ);
     if (!fs.isOpened()) {
-        cerr << "无法打开标定文件" << endl;
+        cerr << "无法打开标定文件" << endl;//
         return -1;
     }
     ros::NodeHandle nh;
