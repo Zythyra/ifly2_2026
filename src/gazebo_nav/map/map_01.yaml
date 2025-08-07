@@ -1,4 +1,4 @@
-image: /home/ucar/ucar_ws/src/gazebo_nav/map/map_01.pgm
+image: /home/ucar/ucar_car/src/gazebo_nav/map/map_01.pgm
 resolution: 0.010000
 origin: [-10.000000, -10.000000, 0.000000]
 negate: 0

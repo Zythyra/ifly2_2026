@@ -13,7 +13,7 @@ global_costmap:
   # cost_scaling_factor: 14.0     #14.0  
   # inflation_radius: 0.33         #0.33  注：这里的参数和common_params里面的参数重复了，这里的会把前者的参数覆盖掉
   cost_scaling_factor: 15.0
-  inflation_radius: 0.21
+  inflation_radius: 0.23
   
   static_map: true
   rolling_window: false

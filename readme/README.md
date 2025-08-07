@@ -7,7 +7,7 @@
 
 以在 `~/` 为例：
 ```bash
-cd ~/ucar_ws
+cd ~/ucar_car
 catkin_make
 ```
 ## 文件结构
@@ -41,14 +41,14 @@ catkin_make
 ### 1. startup_scripts
 `initdev_mini.sh` 与 `initdev_xiao.sh` 分别对应晓mini版本的智能驾驶小车和晓版本的智能驾驶小车。
 ```bash
-cd ./ucar_ws/src/startup_scripts/
+cd ./ucar_car/src/startup_scripts/
 sudo chmod 777 ./initdev*.sh
 sudo ./initdev_mini.sh # 对应晓mini版本，晓版本勿执行这句
 sudo ./initdev_xiao.sh # 对应晓版本，晓mini版本勿执行这句
 sudo reboot # 可选，最好完成一次重启
 ```
 这个脚本完成了`/etc/udev/rules.d/ucar.rules`文件的创建与udev服务重启。
-以及，在`~/.bashrc`中添加了对`ucar_ws`的ROS环境的source。
+以及，在`~/.bashrc`中添加了对`ucar_car`的ROS环境的source。
 
 ### 2. ucar_controller
 #### 2.1 简介
@@ -62,7 +62,7 @@ sudo pip3 install empy -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 编译：
 ```bash
-cd ~/ROS/ucar_ws
+cd ~/ROS/ucar_car
 catkin_make
 ```
 #### 2.3 简单验证
@@ -104,7 +104,7 @@ roslaunch fdilink_ahrs ahrs_driver.launch
 ```bash
 roslaunch ydlidar ydlidar.launch
 ```
-对应的`launch`文件保存在：`~/ucar_ws/src/ydlidar/launch/ydlidar.launch`。
+对应的`launch`文件保存在：`~/ucar_car/src/ydlidar/launch/ydlidar.launch`。
 修改`ydlidar.launch`文件中的参数可以对`topic_name`、`frame_id`等参数进行修改。
 
 ### 5. ucar_nav
@@ -161,7 +161,7 @@ cartographer_start.launch是单独启动cartographer_ros。
 ### 7. xf_mic_asr_offline
 #### 7.1 简介
 麦克风阵列ROS驱动示例包，本包基于ROS实现了上传音频、获取唤醒角度、设置灯光、设置主麦设置唤醒词等功能。
-详细内容阅读：`ucar_ws/src/xf_mic_asr_offline/doc/麦克风阵列使用说明v1.9.x.pdf`
+详细内容阅读：`ucar_car/src/xf_mic_asr_offline/doc/麦克风阵列使用说明v1.9.x.pdf`
 
 
 # 修改记录

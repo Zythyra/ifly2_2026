@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <vector>
+#include <std_msgs/Int32.h>
 
 // 全局变量定义
 int room_index = 0;       // 当前房间号
@@ -88,6 +89,8 @@ void play_audio(const std::string& command) {
 
 // 命令行交互函数
 void command_interaction() {
+    ros::Publisher audio_pub = nh.advertise<std_msgs::String>("/audio_alert", 10);
+    std_msgs::Int32 msg;
     while (true) {
         std::cout << "\n=== 语音播报控制 ===" << std::endl;
         std::cout << "1. 唤醒提示音" << std::endl;
@@ -108,6 +111,8 @@ void command_interaction() {
             case 1: // 唤醒提示音
                 play_audio("aplay ~/ucar_car/src/broadcast/20_wav/wakeup_success.wav");
                 awake_flag = 1;
+                msg.data = 0;
+                audio_pub.publish(msg);
                 break;
 
             case 2: { // 任务类型（组0）
@@ -115,6 +120,8 @@ void command_interaction() {
                 std::cout << "输入类型索引（0-2）：";
                 std::cin >> index;
                 if (index >= 0 && index < voice[0].size()) {
+                    msg.data = 0;
+                    audio_pub.publish(msg);
                     play_audio(voice[0][index]);
                 }
                 break;
@@ -125,6 +132,8 @@ void command_interaction() {
                 std::cout << "输入物品索引（0-8）：";
                 std::cin >> index;
                 if (index >= 0 && index < voice[1].size()) {
+                    msg.data = 1;
+                    audio_pub.publish(msg);
                     play_audio(voice[1][index]);
                 }
                 break;

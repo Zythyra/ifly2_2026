@@ -314,6 +314,33 @@ bool find_right_edge(Mat gray_img,Point& right_edge_point,int brightness_thresho
         }
         if (flag) break;
     }
+
+    // Mat blurred_img;
+    // GaussianBlur(gray_img, blurred_img, Size(5, 5), 0); // 5x5 核大小
+
+    //  //  Harris 角点检测
+    // Mat harris_response;
+    // int blockSize = 5;     // 角点检测的邻域大小
+    // int apertureSize = 3;  // Sobel 算子的孔径大小
+    // double k = 0.04;       // Harris 检测器的自由参数
+    // cornerHarris(blurred_img, harris_response, blockSize, apertureSize, k, BORDER_DEFAULT);
+    // // 寻找 Harris 响应的最大值及其位置 (在整个图像范围内)    
+    // Mat mask = Mat::zeros(harris_response.size(), CV_8UC1); // 创建与响应图同尺寸的掩码
+    // // 计算需要排除的左右边缘宽度
+    // int border_width = width / 8;
+    // Rect roi(border_width, 0, width - 2 * border_width, height);
+
+    // double min_val, max_val;    
+    // Point min_loc, max_loc;    
+    // // minMaxLoc 在整个 harris_response 图像中寻找最值    
+    // minMaxLoc(harris_response, &min_val, &max_val, &min_loc, &max_loc, mask);
+
+    // if (max_val > 0 && max_val > 1e-6 && !flag) {     
+    //     right_edge_point = max_loc; // 将找到的点坐标赋给输出变量        
+    //     flag = true;
+    // }
+
+
     if(right_edge_point.x == -1){
         ROS_INFO("没找到右点");
         return false;
@@ -324,6 +351,9 @@ bool find_right_edge(Mat gray_img,Point& right_edge_point,int brightness_thresho
         }
         return false;
     }
+
+    imshow("test",visualizeImg);
+    waitKey(1);
 }
 
 
@@ -757,7 +787,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
     bool out_range = false,start = true;//出圆环判断标志,开始巡线标志，movabese可能导致巡线一开始就压线，先导航到外面，让他自己进来
     bool other_enter = false,pass_out = false,pass_enter = false,out_ready = false,pass_enter_ready = false;//绕环岛期间左巡线
     bool start_other_enter = false;//检测到第一帧另一路口的角点后变为true,如果再返回又巡线逻辑则路口结束
-    int out_ready_count = 0,other_enter_count = 0;//检测到右线25帧后判定离开，另一入口也要连续判定多帧后才能改变逻辑，避免噪声
+    int out_ready_count = 0,other_enter_count = 0,pass_enter_count = 0;//检测到右线25帧后判定离开，另一入口也要连续判定多帧后才能改变逻辑，避免噪声
     bool left_ready,avoid_done=false;//判断是否进入圆环需要一个标志位辅助，两边线都看到才算进圆环否则离圆环太远容易出问题,先避障再停车
 
     Point other_enter_last_conner = Point(700,700);//另一个入口的角点储存
@@ -769,86 +799,8 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         client_line_board.call(board);
         pose_client.call(pose);
         if(!avoid_done){
-            // if(board.response.lidar_results[0] != -1){
-            //     ROS_INFO("最短距离%f",board.response.lidar_results[0]);
-            //     if(board.response.lidar_results[0]>0.45){//如果还比较远先减速
-            //         x_max = 0.22;
-            //     }
-            //     else{
-            //         float vx = board.response.lidar_results[4];//存储xy分量
-            //         float vy = board.response.lidar_results[5];
-
-            //         double d = std::sqrt(1 + board.response.lidar_results[3]*board.response.lidar_results[3]);
-            //         if (out_range == false)
-            //         {
-            //             geometry_msgs::PointStamped lidar_point;
-            //             lidar_point.header.frame_id = "laser_frame";
-            //             lidar_point.header.stamp = ros::Time(0); // 使用最新tf
-            //             lidar_point.point.x = board.response.lidar_results[1] - 0.26*vy;//法向量（-vy,vx）现在必定指向y正方向（小车前方）
-            //             lidar_point.point.y = board.response.lidar_results[2] + 0.26*vx;
-            //             lidar_point.point.z = 0;//使用atan2不会有角度180度跳变
-            //             // ROS_INFO("板子在雷达坐标系下的斜率%f",lidar_point.point.z);
-            //             geometry_msgs::PointStamped point_base;
-            //             tf_listener_->transformPoint("map", lidar_point, point_base);
-                
-            //             move_base_msgs::MoveBaseGoal goal;
-            //             goal.target_pose.header.frame_id = "map";
-            //             goal.target_pose.header.stamp = ros::Time::now();
-            //             goal.target_pose.pose.position.x = point_base.point.x;
-            //             goal.target_pose.pose.position.y = point_base.point.y;
-            //             // 计算目标朝向：障碍物法线方向相对于小车当前的角度 + 小车当前朝向
-            //             double goal_yaw = std::atan2(vx, -vy) + pose.response.pose_at[2];//乘2后方向关于法线对称
-            //             tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
-            //             geometry_msgs::Quaternion q_msg;
-            //             tf::quaternionTFToMsg(q, q_msg);
-            //             goal.target_pose.pose.orientation = q_msg;
-
-            //             ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",point_base.point.x, point_base.point.y, goal_yaw);
-            //             ac.sendGoal(goal);
-            //             ac.waitForResult();
-            //         }
-            //         else
-            //         {
-            //             geometry_msgs::PointStamped lidar_point;
-            //             lidar_point.header.frame_id = "laser_frame";
-            //             lidar_point.header.stamp = ros::Time(0); // 使用最新tf
-            //             lidar_point.point.x = board.response.lidar_results[1] + 0.26;
-            //             lidar_point.point.y = board.response.lidar_results[2];
-            //             lidar_point.point.z = 0;//使用atan2不会有角度180度跳变
-            //             // ROS_INFO("板子在雷达坐标系下的斜率%f",lidar_point.point.z);
-            //             geometry_msgs::PointStamped point_base;
-            //             tf_listener_->transformPoint("map", lidar_point, point_base);
-                                            
-            //             move_base_msgs::MoveBaseGoal goal;
-            //             goal.target_pose.header.frame_id = "map";
-            //             goal.target_pose.header.stamp = ros::Time::now();
-            //             goal.target_pose.pose.position.x = 3.75;//位置固定，直接硬编码
-            //             goal.target_pose.pose.position.y = point_base.point.y;
-            //             double goal_yaw = -1.57;
-            //             tf::Quaternion q = tf::createQuaternionFromYaw(goal_yaw);
-            //             geometry_msgs::Quaternion q_msg;
-            //             tf::quaternionTFToMsg(q, q_msg);
-            //             goal.target_pose.pose.orientation = q_msg;
-                
-
-            //             ROS_INFO("坐标变换结果: (%.2f, %.2f, %.2f)",goal.target_pose.pose.position.x, point_base.point.y, goal_yaw);
-            //             ac.sendGoal(goal);
-            //             ac.waitForResult();
-            //         }
-            //         cap.grab(); cap.grab(); cap.grab(); cap.grab(); cap.grab();//把缓冲区的东西丢掉，免得停车了
-            //         ROS_INFO("避障结束");
-            //         nh.getParam("/line_right/x_max_", x_max);
-            //         avoid_done= true;
-            //         double_line = true;
-            //         nh.getParam("/line_right/double_P", p);
-            //         nh.getParam("/line_right/double_I", i);
-            //         nh.getParam("/line_right/double_D", d);
-            //         ROS_INFO("p%f",p);
-            //         ROS_INFO("双边巡线");
-            //     }
-            // }
             if(board.response.lidar_results[0] != -1){
-                if(board.response.lidar_results[0]>0.39){//如果还比较远先减速
+                if(board.response.lidar_results[0]>0.41){//如果还比较远先减速
                     x_max = 0.22;
                 }
                 else{
@@ -868,7 +820,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     double target_yaw = -1.57;      // 目标朝向，保持前进方向
                     double side_step_x = 3.25;      // 避障时横向平移到的X坐标
                     double track_x = 3.75;          // 原始赛道的X坐标
-                    double forward_target_y = initial_y - board.response.lidar_results[0] - 0.15;
+                    double forward_target_y = initial_y - board.response.lidar_results[0] - 0.19;
 
                     // P控制器参数
                     const double Kp_x = 1.5;      // X方向 (横向) P-gain
@@ -991,6 +943,9 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                 }
             }
         }
+                
+            
+        
 
         //----------------------------------巡线逻辑----------------------------//
         displayStream.str("");
@@ -1117,9 +1072,12 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                 putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
                 
                 if(pass_enter){//如果现在是通过路口处
-                    pass_enter_ready = true;//这个标志用来判断是否已经发生丢线，如果已经发生丢线，再重新看到右线，passenter取消
-                    ROS_INFO("回到路口");
-                    continue;
+                    pass_enter_count++;//要连续的丢线
+                    if(pass_enter_count>3){
+                        pass_enter_ready = true;//这个标志用来判断是否已经发生丢线，如果已经发生丢线，再重新看到右线，passenter取消
+                        ROS_INFO("回到入口");
+                        continue;
+                    }
                 }
                 else{
                     cmd_pub.publish(twist);//
@@ -1139,6 +1097,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     ROS_INFO("双边巡线");
                 }
                 point_confirm = 0;
+                pass_enter_count = 0;
                 right_forward = true;
                 point_forward = true;
 
@@ -1237,13 +1196,13 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
 
         int test;
         if(avoid_done && pose.response.pose_at[2]>-1.8&&pose.response.pose_at[2]<-1.3&&pose.response.pose_at[0]>3.3&&pose.response.pose_at[0]<4.2&&pose.response.pose_at[1]<1){
-            if(stop_car(gray_img,brightness_threshold,test,cropped)){
+            if(stop_car(gray_img,brightness_threshold,test,cropped)|| pose.response.pose_at[1]<-0.25){
                 ROS_INFO("巡线结束");
                 twist.linear.x = 0;
                 twist.angular.z = 0;
                 cmd_pub.publish(twist);
-                imshow("stop",cropped);
-                waitKey(0);
+                // imshow("stop",cropped);
+                // waitKey(0);
                 break;
             }
         }

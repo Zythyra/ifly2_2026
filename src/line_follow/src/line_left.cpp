@@ -26,7 +26,7 @@ typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseCl
 using namespace cv;
 using namespace std;
 
-string output_file = "/home/ucar/ucar_ws/src/line_follow/image/line_left.avi";//录制视频避免网络传输卡顿
+string output_file = "/home/ucar/ucar_car/src/line_follow/image/line_left.avi";//录制视频避免网络传输卡顿
 VideoWriter out;
 int fourcc = VideoWriter::fourcc('X', 'V', 'I', 'D'); // MP4V编码
 ostringstream displayStream;
@@ -296,74 +296,53 @@ void trace_edge(Point start_point, Mat& gray_img, vector<Point>& traced_points, 
 }
 //如果左边丢线，就只看右边，因为左边丢线了，所以直接从最左边开始找，找到就是右线，然后把右线拟合成直线，如果右线碰到图片底端，就开始旋转，通过定位来判断是否到达终点，到达终点前不启用停车逻辑
 bool find_right_edge(Mat gray_img,Point& right_edge_point,int brightness_threshold,Mat& visualizeImg){
-    int height = gray_img.rows;//270
-    int width = gray_img.cols;//640
-
+    int height = gray_img.rows;
+    int width = gray_img.cols;
     bool flag = false;
     right_edge_point = Point(-1,-1);
 
-    // for (int y = height - 1; y >= 69; y--) {
-    //     for (int x = 1; x < 490; x++) {
-    //         if (gray_img.at<uchar>(y, x) >= brightness_threshold) {
-    //             right_edge_point=Point(x, y);
-    //             flag = true;
-    //             break;
-    //         }
-    //     }
-    //     if (flag) break;
-    // }
-    std::vector<cv::Point> all_points;
-    for (int x = 0; x < width-1; x++) {
-        for (int y = height - 1; y > 0; y--) {
+    for (int y = height - 1; y >= 69; y--) {
+        for (int x = 1; x < 490; x++) {
             if (gray_img.at<uchar>(y, x) >= brightness_threshold) {
-                all_points.push_back(cv::Point(x, y));
-                // 在可视化图像上标记为紫色
-                cv::circle(visualizeImg, cv::Point(x, y), 1, cv::Scalar(255, 0, 255), -1);
-                break; // 找到该列的第一个点就跳出
+                right_edge_point=Point(x, y);
+                flag = true;
+                break;
             }
         }
+        if (flag) break;
     }
-
-    // 如果点太少，无法拟合两条直线
-    if (all_points.size() < 40) {
-        ROS_INFO("角点检测失败: 点太少(%d)", (int)all_points.size());
-    }
-     
-    std::sort(all_points.begin(), all_points.end(), 
-            [](const cv::Point& a, const cv::Point& b) {
-                return a.x < b.x;
-            });
-
-
-    std::vector<cv::Point> left_points(all_points.begin(), all_points.begin() + 50);
-    std::vector<cv::Point> right_points(all_points.end()-80, all_points.end());
     
- //  使用RANSAC拟合两条直线
-    auto left_line = fitLineRANSAC(left_points, 1.0, 1000);
-    auto right_line = fitLineRANSAC(right_points, 1.0, 1000);
-
-    double a1 = left_line.first[0], b1 = left_line.first[1], c1 = left_line.first[2];
-    double a2 = right_line.first[0], b2 = right_line.first[1], c2 = right_line.first[2];
-   
-   // 计算两条直线的交点
-    double denominator = a1 * b2 - a2 * b1;
     
-    double x = (b1 * c2 - b2 * c1) / denominator;
-    double y = (a2 * c1 - a1 * c2) / denominator;
-    right_edge_point.x = (int)x;
-    right_edge_point.y = (int)y;
 
-    // 可视化结果
-    drawLineFromEquation(visualizeImg, a1, b1, c1, cv::Scalar(255, 0, 0), 2); // 左线-蓝色
-    drawLineFromEquation(visualizeImg, a2, b2, c2, cv::Scalar(0, 255, 0), 2); // 右线-绿色
+    //  //  Harris 角点检测
+    // Mat harris_response;
+    // int blockSize = 3;     // 角点检测的邻域大小
+    // int apertureSize = 3;  // Sobel 算子的孔径大小
+    // double k = 0.04;       // Harris 检测器的自由参数
+    // cornerHarris(gray_img, harris_response, blockSize, apertureSize, k, BORDER_DEFAULT);
+    // // 寻找 Harris 响应的最大值及其位置 (在整个图像范围内)    
+    // Mat mask = Mat::zeros(harris_response.size(), CV_8UC1); // 创建与响应图同尺寸的掩码
+    // // 计算需要排除的左右边缘宽度
+    // int border_width = width / 8;
+    // Rect roi(border_width, 0, width - 2 * border_width, height);
 
+    // double min_val, max_val;    
+    // Point min_loc, max_loc;    
+    // // minMaxLoc 在整个 harris_response 图像中寻找最值    
+    // minMaxLoc(harris_response, &min_val, &max_val, &min_loc, &max_loc, mask);
+    // ROS_INFO("角点：%d,%d",max_loc.x,max_loc.y);
 
-    if (right_edge_point.x != -1) {
-            ROS_INFO("找到%d,%d",right_edge_point.x,right_edge_point.y);
-            circle(visualizeImg, right_edge_point, 7, Scalar(0, 0, 255), -1);
-    }
-    imshow("visualizeImg",visualizeImg);
-    waitKey(1);
+    // if (max_val > 0 && max_val > 1e-6 && !flag) {     
+    //     right_edge_point = max_loc; // 将找到的点坐标赋给输出变量        
+    //     flag = true;
+    // }
+    // if (right_edge_point.x != -1) {
+    //         ROS_INFO("找到%d,%d",right_edge_point.x,right_edge_point.y);
+    //         circle(visualizeImg, right_edge_point, 7, Scalar(0, 0, 255), -1);
+    // }
+    // imshow("harris_response",harris_response);
+    // imshow("visualizeImg",visualizeImg);
+    // waitKey(1);
 
     if(right_edge_point.x == -1){
         ROS_INFO("没找到右点");
@@ -661,7 +640,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     double target_yaw = -1.57;      // 目标朝向，保持前进方向
                     double side_step_x = 3.25;      // 避障时横向平移到的X坐标
                     double track_x = 3.75;          // 原始赛道的X坐标
-                    double forward_target_y = initial_y - board.response.lidar_results[0] - 0.15;
+                    double forward_target_y = initial_y - board.response.lidar_results[0] - 0.19;
 
                     // P控制器参数
                     const double Kp_x = 1.5;      // X方向 (横向) P-gain
@@ -813,10 +792,8 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         vector<Point> traced_left,right_edge_points;
         Point right_edge_point;
         
-        find_right_edge(gray_img, right_edge_point,brightness_threshold,cropped);
-        imshow("gray_img",gray_img);
-        waitKey(1);
-        continue;
+        // find_right_edge(gray_img, right_edge_point,brightness_threshold,cropped);
+        // continue;
         // 追踪右侧边线
         bool left_checker = true;//左线不一定真的是左线，可能是太偏的右线，不接受左线向左倾斜，不满足条件切换逻辑
         if (left) {

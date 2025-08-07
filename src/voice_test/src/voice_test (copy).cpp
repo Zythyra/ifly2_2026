@@ -44,7 +44,7 @@ void voice_words_callback(const std_msgs::String& msg)
 	if(str == str13){
 		voice_mode.data = 20;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_1.mp3");
+		system("play ~/ucar_car/src/mp3/voice_1.mp3");
 	}
 	/***********************************/
 	/***********************************/
@@ -67,7 +67,7 @@ void voice_words_callback(const std_msgs::String& msg)
 	else if(str == str1){
 		voice_mode.data = 1;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_1.mp3");
+		system("play ~/ucar_car/src/mp3/voice_1.mp3");
 		//cout<<"好的：小车出发"<<endl;
 	}
 	/***********************************
@@ -77,7 +77,7 @@ void voice_words_callback(const std_msgs::String& msg)
 	else if(str == str2){
 		voice_mode.data = 2;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_2.mp3");
+		system("play ~/ucar_car/src/mp3/voice_2.mp3");
 		//cout<<"好的：小车前进"<<endl;
 	}
 	/***********************************
@@ -87,7 +87,7 @@ void voice_words_callback(const std_msgs::String& msg)
 	else if(str == str3){
 		voice_mode.data = 3;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_3.mp3");
+		system("play ~/ucar_car/src/mp3/voice_3.mp3");
 		//cout<<"好的：小车后退"<<endl;
 	}
 	/***********************************
@@ -97,7 +97,7 @@ void voice_words_callback(const std_msgs::String& msg)
 	else if(str == str4){
 		voice_mode.data = 4;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_4.mp3");
+		system("play ~/ucar_car/src/mp3/voice_4.mp3");
 		//cout<<"好的：小车左转"<<endl;
 	}
 	/***********************************
@@ -107,7 +107,7 @@ void voice_words_callback(const std_msgs::String& msg)
 	else if(str == str5){
 		voice_mode.data = 5;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_5.mp3");
+		system("play ~/ucar_car/src/mp3/voice_5.mp3");
 		//cout<<"好的：小车右转"<<endl;
 	}
 	/***********************************
@@ -117,7 +117,7 @@ void voice_words_callback(const std_msgs::String& msg)
 	else if(str == str6){
 		voice_mode.data = 6;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_6.mp3");
+		system("play ~/ucar_car/src/mp3/voice_6.mp3");
 		//cout<<"好的：小车左移"<<endl;
 	}
 	/***********************************
@@ -127,7 +127,7 @@ void voice_words_callback(const std_msgs::String& msg)
 	else if(str == str7){
 		voice_mode.data = 7;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_7.mp3");
+		system("play ~/ucar_car/src/mp3/voice_7.mp3");
 		//cout<<"好的：小车右移"<<endl;
 	}
 
@@ -154,7 +154,7 @@ void voice_words_callback(const std_msgs::String& msg)
 		//cout<<"小车已被唤醒，请说语音指令"<<endl;
 		voice_mode.data = 10;
 		voice_mode_pub.publish(voice_mode);
-		system("play ~/ucar_ws/src/mp3/voice_10.mp3");
+		system("play ~/ucar_car/src/mp3/voice_10.mp3");
 	}
 	
 }

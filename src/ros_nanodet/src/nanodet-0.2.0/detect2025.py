@@ -26,7 +26,7 @@ except ImportError as e:
 predictor = init()
 rospy.init_node("nanodet_detect", anonymous=True)
 
-frame = cv2.imread('/home/ucar/ucar_car/ypicture/picture_14.jpg')
+frame = cv2.imread('/home/ucar/ucar_car/src/ros_nanodet/images/capture_0.jpg')
 _ = detect(frame,predictor)# 识别
 _ = detect(frame,predictor)# 识别2次
 _ = detect(frame,predictor)
@@ -56,8 +56,13 @@ def shutdown_cap(response):
         response.y1.append(-1)
         response.class_name.append(-1)
         rospy.loginfo("关闭摄像头")
-def open_cap():
+def open_cap(response):
     global camera_active, cap
+    response.x0.append(-1)
+    response.y0.append(-1)
+    response.x1.append(-1)
+    response.y1.append(-1)
+    response.class_name.append(-1)
     if camera_active:
         # rospy.logwarn("摄像头被重复打开")
         return
@@ -69,24 +74,34 @@ def open_cap():
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         camera_active = True
         rospy.loginfo("摄像头成功打开")
-def clear_cap_buffer():
+def clear_cap_buffer(response):
     global cap
+    response.x0.append(-1)
+    response.y0.append(-1)
+    response.x1.append(-1)
+    response.y1.append(-1)
+    response.class_name.append(-1)
+    cap.grab()
     cap.grab()#摄像头会缓存n帧，把这丢掉才是最新的照片
     
 
 #首次启动要发个-1启动摄像头，发送-2关闭摄像头防止冲突
 def detect_start(req):
     global camera_active, cap, out
-    start_time = time.time()
+    # start_time = time.time()
     response = detect_result_srvResponse()
+    min_score = 0.5
     if req.detect_start==-1:
-        open_cap()
+        open_cap(response)
+        return response
     if req.detect_start==-2:
         shutdown_cap(response)
         return response
     if req.detect_start==-3:
-        clear_cap_buffer()#清空缓存区
-    
+        clear_cap_buffer(response)#清空缓存区
+        return response
+    if req.detect_start==4:
+        min_score = 0.25
     rec, frame = cap.read()
     frame = whitebalance.process(frame)
     # print("拍照耗时")
@@ -110,7 +125,7 @@ def detect_start(req):
                 response.class_name.append(int(label))
                 color = (0, 0, 0)  # 绿色边框
                 cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), color, 2)  # 2是边框粗细
-                text = f"{label}: {score:.2f}"
+                text = f"{label}: {score:.2f}:{int(bbox[3])-int(bbox[1])}"
                 (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
                 cv2.rectangle(frame,  (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),color, thickness=2)
                 cv2.putText(frame,text,(int(bbox[0]), int(bbox[1])+ 5), cv2.FONT_HERSHEY_SIMPLEX,0.5,(0, 0, 0),2)

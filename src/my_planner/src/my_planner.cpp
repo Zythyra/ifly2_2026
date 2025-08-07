@@ -104,22 +104,22 @@ namespace my_planner
         // std::cout << "Press [Enter] to continue...";
         // std::cin.ignore(); // 清除缓冲区
         // std::cin.get();    // 等待回车
-        ROS_INFO("查看全局路径规划");
-        ROS_INFO("起点%f,%f",global_plan_[0].pose.position.x,global_plan_[0].pose.position.y);
-        geometry_msgs::PoseStamped pose;
-        tf::StampedTransform transform;
-        try {
-            tf_listener_->lookupTransform("map", "base_link", ros::Time(0), transform);
-            pose.header.frame_id = "map";
-            pose.header.stamp = ros::Time::now();
-            pose.pose.position.x = transform.getOrigin().x();
-            pose.pose.position.y = transform.getOrigin().y();
-            pose.pose.orientation = tf::createQuaternionMsgFromYaw(
-                tf::getYaw(transform.getRotation()));
-        } catch (tf::TransformException &ex) {
-            ROS_ERROR("获取机器人位姿失败: %s", ex.what());
-        }
-        ROS_INFO("实际机器人位置: (%.3f, %.3f)", pose.pose.position.x,pose.pose.position.y);
+        ROS_INFO("查看全局路径规划,一共%zu个点",global_plan_.size());
+        // ROS_INFO("起点%f,%f",global_plan_[0].pose.position.x,global_plan_[0].pose.position.y);
+        // geometry_msgs::PoseStamped pose;
+        // tf::StampedTransform transform;
+        // try {
+        //     tf_listener_->lookupTransform("map", "base_link", ros::Time(0), transform);
+        //     pose.header.frame_id = "map";
+        //     pose.header.stamp = ros::Time::now();
+        //     pose.pose.position.x = transform.getOrigin().x();
+        //     pose.pose.position.y = transform.getOrigin().y();
+        //     pose.pose.orientation = tf::createQuaternionMsgFromYaw(
+        //         tf::getYaw(transform.getRotation()));
+        // } catch (tf::TransformException &ex) {
+        //     ROS_ERROR("获取机器人位姿失败: %s", ex.what());
+        // }
+        // ROS_INFO("实际机器人位置: (%.3f, %.3f)", pose.pose.position.x,pose.pose.position.y);
         // size_t number = global_plan_.size();
         // for(int i=0;i<20;i++){
         //     ROS_INFO("全局规划特殊点x%f,y%f",global_plan_[number*i/20].pose.position.x,global_plan_[number*i/20].pose.position.y);
@@ -549,34 +549,16 @@ namespace my_planner
         // 对动态增益进行限幅，保证安全和稳定
         dynamic_x_gain = std::max(3.5, dynamic_x_gain); // 最小增益，防止失速
         // dynamic_x_gain = std::min(dynamic_x_gain, path_linear_x_gain_); // 最大增益，防止飙车不需要了，指数本来就限幅
-        // ROS_INFO("当前dynamic_x_gain=%f",dynamic_x_gain);
+        // ROS_INFO("dynamic_x_gain=%f",dynamic_x_gain);
         // ROS_INFO("当前平均curvature=%f",avrage_curvature);
 
-
-
-
-        //--------------------修改y速度的逻辑-----------------------
-        double min_y_deviation = target_pose.pose.position.y; // 首先，默认使用原始预瞄点的y偏差
-        // 定义回溯搜索的起始点索引，并确保它不小于0
-        int search_start_index = std::max(0, (int)target_index_ - 10);
-        // 遍历从 search_start_index 到 target_index_ 前一个点的这个区间
         std::vector<cv::Point2f> slope_points;//z速度不应该是y的差距，而是前方几个点拟合成的直线角度
-        for (int j = search_start_index; j < target_index_; ++j)
+        for (int j = cur_start; j < cur_final; j+=3)
         {
             geometry_msgs::PoseStamped point_in_base;
-            // 复制一份路径点，并设置时间戳为0以获取最新的坐标变换
-            geometry_msgs::PoseStamped plan_point = global_plan_[j];
-            plan_point.header.stamp = ros::Time(0);
-            // 将该路径点从全局坐标系（map）转换到机器人基座坐标系（base_link）
-            tf_listener_->transformPose("base_link", plan_point, point_in_base);
-
+            global_plan_[j].header.stamp = ros::Time(0);
+            tf_listener_->transformPose("base_link", global_plan_[j], point_in_base);
             slope_points.push_back(cv::Point2f(point_in_base.pose.position.x,point_in_base.pose.position.y));
-            // 检查当前点的y偏差的绝对值是否比已记录的最小偏差的绝对值还要小
-            if (std::abs(point_in_base.pose.position.y) < std::abs(min_y_deviation))
-            {
-                // 如果是，则更新最小偏差值（更新时保留其原始符号，用于控制方向）
-                min_y_deviation = point_in_base.pose.position.y;
-            }
         }
         cv::Vec4f line_params;
         cv::fitLine(slope_points, line_params, cv::DIST_L2, 0, 0.01, 0.01);
@@ -586,20 +568,85 @@ namespace my_planner
             vy *= -1;//因为看的是前方的点，强制Vx大于0
         }
         float angle_rad = std::atan2(vy, vx);
+
+//-------------------------------------------------不再使用曲率，对前方100cm的点拟合直线，残差越大就越慢，可以排除锐角转弯导致的曲率问题
+        cur_final = std::min(target_index_+(int)(last_cmdvel_x_*100),final_index);//多看10cm
+        cur_start = std::max(target_index_ - 15 , 0 );
+        std::vector<cv::Point2f> sampled_points;
+        double line_error = 1.0;//没算出来说明速度很慢，保持原来速度就行了
+
+        if (target_index_ >= 5) 
+        {
+            // ROS_INFO("起点%d,终点%d,全局终点%d,速度%d",cur_start,cur_final,final_index,(int)(last_cmdvel_x_*100));     
+            for (int i = cur_start; i < cur_final;i+=5)
+            {
+                cv::Point2f point(global_plan_[i].pose.position.x,global_plan_[i].pose.position.y);
+                sampled_points.push_back(point);
+            }
+            if (sampled_points.size() > 5) {
+                cv::Vec4f line_params;
+                cv::fitLine(sampled_points, line_params, cv::DIST_L2, 0, 0.01, 0.01);
+                float vx = line_params[0];
+                float vy = line_params[1];
+                float x0 = line_params[2];
+                float y0 = line_params[3];
+                // 计算残差统计量
+                int total_point = (int)sampled_points.size();
+                float sum_residual = 0.0f,max_residual = 0.0f;
+                int valid_points = 0;
+                
+                for(int j=0;j<total_point;j++){
+                    cv::Point2f point = sampled_points[j];
+                    // 点到直线距离公式: |(y-y0)*vx - (x-x0)*vy| / sqrt(vx²+vy²)
+                    // 由于fitLine返回的单位向量模长为1，分母可以简化为1
+                    float dist = std::abs((point.y - y0) * vx - (point.x - x0) * vy);
+                    
+                    if (dist < 10.0f) { // 过滤异常值
+                        if(dist>max_residual){
+                            max_residual = dist;
+                        }
+                        sum_residual += dist*(1.5-j/(float)total_point);//加权
+                        valid_points++;
+                    }
+                }
+                float avg_residual = sum_residual / valid_points;
+                line_error = exp(-40*avg_residual);
+                // ROS_INFO("当前残差%f",avg_residual);//
+            }
+        }
+        dynamic_x_gain = dynamic_x_gain*line_error;
+        // ROS_INFO("修正dynamic_x_gain=%f",dynamic_x_gain);
+
+        //--------------------修改y速度的逻辑-----------------------
+        double min_y_deviation = target_pose.pose.position.y; // 首先，默认使用原始预瞄点的y偏差
+        // 定义回溯搜索的起始点索引，并确保它不小于0
+        int search_start_index = std::max(0, (int)target_index_ - 10);
+        // 遍历从 search_start_index 到 target_index_ 前一个点的这个区间
+        
+        for (int j = search_start_index; j < target_index_; ++j)
+        {
+            geometry_msgs::PoseStamped point_in_base;
+            // 复制一份路径点，并设置时间戳为0以获取最新的坐标变换
+            geometry_msgs::PoseStamped plan_point = global_plan_[j];
+            plan_point.header.stamp = ros::Time(0);
+            // 将该路径点从全局坐标系（map）转换到机器人基座坐标系（base_link）
+            tf_listener_->transformPose("base_link", plan_point, point_in_base);
+            // 检查当前点的y偏差的绝对值是否比已记录的最小偏差的绝对值还要小
+            if (std::abs(point_in_base.pose.position.y) < std::abs(min_y_deviation))
+            {
+                // 如果是，则更新最小偏差值（更新时保留其原始符号，用于控制方向）
+                min_y_deviation = point_in_base.pose.position.y;
+            }
+        }
+        
         cmd_vel.linear.x = target_pose.pose.position.x * dynamic_x_gain;//小车运动速度比例系数
+        // ROS_INFO("前进速度是%f",cmd_vel.linear.x);
         // cmd_vel.linear.y = target_pose.pose.position.y * path_linear_y_gain_;
         // cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_;
         cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_ + (min_y_deviation - y_pre_error) * y_diff_gain_;//y速度也使用pd调节,防止在过弯后刹不住车蹭墙
         
         
-        
-        
-        
-        
-        
-        
-        
-        
+        last_cmdvel_x_ = cmd_vel.linear.x;//记录当前速度，与前馈控制有关
         
         
         // cmd_vel.angular.z = angle_rad * path_angular_gain_ + (angle_rad-z_pre_error)*diff_gain_;

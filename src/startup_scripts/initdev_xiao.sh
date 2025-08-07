@@ -1,5 +1,5 @@
 #!/bin/bash
-echo 'source /home/ucar/ucar_ws/devel/setup.bash' >> /home/ucar/.bashrc # 小车底盘
+echo 'source /home/ucar/ucar_car/devel/setup.bash' >> /home/ucar/.bashrc # 小车底盘
 echo 'KERNEL=="ttyUSB*", SUBSYSTEMS=="usb",ATTRS{idVendor}=="10c4",ATTRS{idProduct}=="ea60",KERNELS=="1-2.3",NAME="ttyUSB0",SYMLINK+="base_serial_port"' >   /etc/udev/rules.d/ucar.rules
 echo 'KERNEL=="ttyUSB*", SUBSYSTEMS=="usb",ATTRS{idVendor}=="10c4",ATTRS{idProduct}=="ea60",KERNELS=="1-2.1",NAME="ttyUSB1",SYMLINK+="lidar_serial_port"' >> /etc/udev/rules.d/ucar.rules
 echo 'KERNEL=="video*", SUBSYSTEMS=="usb",ATTRS{idVendor}=="0edc",ATTRS{idProduct}=="2050",KERNELS=="1-2.4",NAME="video0",SYMLINK+="ucar_video"' >>  /etc/udev/rules.d/ucar.rules

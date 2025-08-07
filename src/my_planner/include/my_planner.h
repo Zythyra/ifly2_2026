@@ -65,7 +65,7 @@ namespace my_planner
             double y_pre_error;//y速度也使用pd调节,防止在过弯后刹不住车蹭墙
             double y_diff_gain_;
 
-
+            double last_cmdvel_x_ = 0.5;
     };
 } // namespace my_planner
  

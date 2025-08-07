@@ -16,6 +16,7 @@
 #include "communication/msg_1.h"
 #include "communication/msg_2.h"
 #include <std_msgs/Int8.h>
+#include <std_msgs/Int32.h>
 
 #include <cmath>
 //找板优化新增头文件
@@ -29,6 +30,43 @@ int awake_flag = 0;      // 语音唤醒标志位
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
 
+
+void publishInitialPose(double x,double y,double yaw,tf2::Quaternion &q,ros::Publisher& initial_pose_pub_ ) {
+    geometry_msgs::PoseWithCovarianceStamped initial_pose;
+    
+    // 设置header
+    initial_pose.header.stamp = ros::Time::now();
+    initial_pose.header.frame_id = "map";  // 坐标系设置为map
+    
+    // 设置位置
+    initial_pose.pose.pose.position.x = x;
+    initial_pose.pose.pose.position.y = y;
+    initial_pose.pose.pose.position.z = 0.0;
+    
+    // 设置方向
+    q.setRPY(0, 0, yaw);
+    initial_pose.pose.pose.orientation.x = q.x();
+    initial_pose.pose.pose.orientation.y = q.y();
+    initial_pose.pose.pose.orientation.z = q.z();
+    initial_pose.pose.pose.orientation.w = q.w();
+    
+    // 设置协方差矩阵
+    boost::array<double, 36> covariance = {{
+        0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0076
+    }};
+    initial_pose.pose.covariance = covariance;
+    
+    // 发布初始位置
+    initial_pose_pub_.publish(initial_pose);
+    ROS_INFO("已发布初始位置: x=%.2f, y=%.2f, yaw=%.2f",
+            initial_pose.pose.pose.position.x, initial_pose.pose.pose.position.y,yaw);
+}
+
 class AwakeDetector {
 public:
     AwakeDetector(ros::NodeHandle& nh) : nh_(nh), awake_received_(false) {
@@ -37,13 +75,14 @@ public:
     }
 
     // 等待唤醒信号
-    bool waitForAwake() {
+    bool waitForAwake(tf2::Quaternion &q,ros::Publisher& initial_pose_pub_ ) {
         ROS_INFO("等待语音唤醒信号...");
-        ros::Rate rate(10);  // 10Hz检查频率
+        ros::Rate rate(1);  // 10Hz检查频率
         ros::Time awake_limit = ros::Time::now();//防止超时
         while (ros::ok() && !awake_received_) {
             ros::spinOnce();
             rate.sleep();
+            publishInitialPose(0.3,0.253,0,q,initial_pose_pub_ );
             // if((ros::Time::now()-awake_limit).toSec()>40){
             //     break;
             // }
@@ -79,7 +118,7 @@ public:
 
     bool sim_done = 0;
     int sim_room = -1;
-    int sim_detect_class = 1;
+    int sim_detect_class = 0;
     void simreturn(const communication::msg_2::ConstPtr& sim_result){
         ROS_INFO("房间编号：%d,检测类型：%d", sim_result->room, sim_result->detected_class);
         sim_room = sim_result->room;
@@ -197,13 +236,13 @@ bool go_enter2(ros::ServiceClient& poseget_client,ros::Publisher& cmd_pub){
     poseget_client.call(pose);
     geometry_msgs::Twist twist_msg;
     while(ros::ok()){
-        if(pose.response.pose_at[0]<4.0){
-            twist_msg.linear.y = -1.0;
+        if(pose.response.pose_at[0]<3.7){
+            twist_msg.linear.y = -0.6;
         }
         else if(pose.response.pose_at[0]>4.5){
-            twist_msg.linear.y = 0.5;
+            twist_msg.linear.y = 0.3;
         }
-        else if(pose.response.pose_at[0]>=4.0 && pose.response.pose_at[0]<4.2){
+        else if(pose.response.pose_at[0]>=3.7 && pose.response.pose_at[0]<4.2){
             twist_msg.linear.y = pose.response.pose_at[0]-4.25;
         }
         else if(pose.response.pose_at[0]>=4.3 && pose.response.pose_at[0]<4.5){
@@ -214,16 +253,16 @@ bool go_enter2(ros::ServiceClient& poseget_client,ros::Publisher& cmd_pub){
         }
 
         if(pose.response.pose_at[1]<4.0){
-            twist_msg.linear.x = 0.3;
+            twist_msg.linear.x = 0.2;
         }
         else if(pose.response.pose_at[1]>4.7){
-            twist_msg.linear.x = -0.2;
+            twist_msg.linear.x = -0.1;
         }
         else if(pose.response.pose_at[1]>=4.0 && pose.response.pose_at[1]<4.45){
-            twist_msg.linear.x = 4.4-pose.response.pose_at[1];
+            twist_msg.linear.x = 4.5-pose.response.pose_at[1];
         }
         else if(pose.response.pose_at[1]>=4.55 && pose.response.pose_at[1]<4.7){
-            twist_msg.linear.x = 4.4-pose.response.pose_at[1];
+            twist_msg.linear.x = 4.5-pose.response.pose_at[1];
         }
         else{
             twist_msg.linear.x = 0;
@@ -246,42 +285,6 @@ bool go_enter2(ros::ServiceClient& poseget_client,ros::Publisher& cmd_pub){
         }
         cmd_pub.publish(twist_msg);
     }
-}
-
-void publishInitialPose(double x,double y,double yaw,tf2::Quaternion &q,ros::Publisher& initial_pose_pub_ ) {
-    geometry_msgs::PoseWithCovarianceStamped initial_pose;
-    
-    // 设置header
-    initial_pose.header.stamp = ros::Time::now();
-    initial_pose.header.frame_id = "map";  // 坐标系设置为map
-    
-    // 设置位置
-    initial_pose.pose.pose.position.x = x;
-    initial_pose.pose.pose.position.y = y;
-    initial_pose.pose.pose.position.z = 0.0;
-    
-    // 设置方向
-    q.setRPY(0, 0, yaw);
-    initial_pose.pose.pose.orientation.x = q.x();
-    initial_pose.pose.pose.orientation.y = q.y();
-    initial_pose.pose.pose.orientation.z = q.z();
-    initial_pose.pose.pose.orientation.w = q.w();
-    
-    // 设置协方差矩阵
-    boost::array<double, 36> covariance = {{
-        0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 
-        0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0076
-    }};
-    initial_pose.pose.covariance = covariance;
-    
-    // 发布初始位置
-    initial_pose_pub_.publish(initial_pose);
-    ROS_INFO("已发布初始位置: x=%.2f, y=%.2f, yaw=%.2f",
-            initial_pose.pose.pose.position.x, initial_pose.pose.pose.position.y,yaw);
 }
 
 int main(int argc, char *argv[])
@@ -342,9 +345,12 @@ int main(int argc, char *argv[])
     ros::ServiceClient clear_costmaps_client_ = nh.serviceClient<std_srvs::Empty>("/move_base/clear_costmaps");
     ros::Publisher initial_pose_pub_ = nh.advertise<geometry_msgs::PoseWithCovarianceStamped>("/initialpose", 1);
 
+    ros::Publisher audio_pub = nh.advertise<std_msgs::Int32>("/audio_alert", 10, true);
+    std_msgs::Int32 msg;
+
     //--------------------------------------语音唤醒等待--------------------------------//
     AwakeDetector awakeDetector(nh);
-    if (!awakeDetector.waitForAwake()) {
+    if (!awakeDetector.waitForAwake(q,initial_pose_pub_ )) {
         ROS_ERROR("未接收到唤醒信号，程序退出");
         return 1;
     }
@@ -371,6 +377,8 @@ int main(int argc, char *argv[])
     }
     // //board_class 为 1（蔬菜）、2（水果）、3（甜品）
     if (board_class >= 1 && board_class <= 3  ) {
+        msg.data = board_class-1;
+        audio_pub.publish(msg);
         play_audio(voice[0][board_class-1]);
     }
 
@@ -392,18 +400,80 @@ int main(int argc, char *argv[])
     //然后去中间，识别目标，或者定位遮挡视野的板子
     double targetx, targety, targetz, targetx2, targety2, targetz2;
     bool target2flag = false,targetflag = false,use_forward = false;
-    if(mecanumController.turn_and_find_plus(17,board_class,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
-        if(use_forward){
-            board_name = mecanumController.forward_and_adjust(board_class,0.5);
+    if(mecanumController.turn_and_find_plus(17,board_class,0.52,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
+        board_name = mecanumController.forward_and_adjust(board_class,0.35);
+        if(board_name<0){//出现这种情况，比较糟糕，要么是路被封死了，要么是走一半目标丢了
+            if(mecanumController.turn_and_find_plus(17,board_class,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
+                where_board.request.lidar_process_start = 4;
+                client_find_board.call(where_board);
+                std::vector<float> position = mecanumController.getCurrentPose();
+                ROS_INFO("出现了比较糟糕的情况，旋转找到了，前进失败，板子%f",where_board.response.lidar_results[0]);
+                ROS_INFO("定位%f,%f,%f",position[0],position[1],position[2]);
+                if(where_board.response.lidar_results[1]<0){
+                    ROS_INFO("不能直线前进，用movebase");//需要再次请求雷达服务，准确计算目的地
+                    where_board.request.lidar_process_start = 5;
+                    client_find_board.call(where_board);
+                    geometry_msgs::PointStamped scan_point;
+                    scan_point.header.frame_id = "base_link";
+                    scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
+                    scan_point.point.x = where_board.response.lidar_results[1];
+                    scan_point.point.y = where_board.response.lidar_results[2];
+                    scan_point.point.z = 0.0;
+                    geometry_msgs::PointStamped output_point;
+                    try {
+                        mecanumController.tf_buffer_.transform(scan_point, output_point, "map");
+                        ROS_INFO("map下目的地坐标: (%.2f, %.2f)",output_point.point.x, output_point.point.y);
+                    }
+                    catch (tf2::TransformException &ex) {
+                        ROS_ERROR("坐标系变换失败: %s", ex.what());
+                    }
+                    go_destination(goal,output_point.point.x,output_point.point.y,where_board.response.lidar_results[3]+position[2],q,ac);
+                    mecanumController.cap_buffer_clear();
+                    board_name = mecanumController.forward_and_adjust(board_class,0.5);
+                    if(board_name<0){
+                        ROS_ERROR("拣货失败");
+                    }
+                    else{
+                        flag=true;
+                    }
+                }
+            }
+            else{//板子被挡了，中间看不到
+                if(targetflag){
+                    double passx, passy, passz, passx2, passy2, passz2;
+                    bool find1,find2;
+                    ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
+                    go_destination(goal,targetx,targety,targetz,q,ac);
+                    mecanumController.cap_buffer_clear();
+                    if(mecanumController.turn_and_find_plus(4.25,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                        board_name = mecanumController.forward_and_adjust(board_class,0.5);
+                        flag=true;
+                    }
+                    else if(mecanumController.turn_and_find_plus(8.5,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                        board_name = mecanumController.forward_and_adjust(board_class,0.5);
+                        flag=true;
+                    }
+                }
+                if(target2flag && !flag){
+                    double passx, passy, passz, passx2, passy2, passz2;
+                    bool find1,find2;
+                    ROS_INFO("前往%f,%f,%f",targetx2, targety2, targetz2);
+                    go_destination(goal,targetx2, targety2, targetz2,q,ac);
+                    mecanumController.cap_buffer_clear();
+                    if(mecanumController.turn_and_find_plus(4.25,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                        board_name = mecanumController.forward_and_adjust(board_class,0.5);
+                        flag=true;
+                    }
+                    else if(mecanumController.turn_and_find_plus(8.5,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                        board_name = mecanumController.forward_and_adjust(board_class,0.5);
+                        flag=true;
+                    }
+                }
+            }
         }
         else{
-            ROS_INFO("前往%f,%f,%f",targetx2,targety2,targetz2);
-            go_destination(goal,targetx2,targety2,targetz2,q,ac);
-            mecanumController.cap_buffer_clear();
-            mecanumController.adjust(board_class,0.4);
-            board_name = mecanumController.forward(board_class,0.3);
+            flag=true;
         }
-        flag=true;
     }
     else{//板子被挡了，中间看不到
         if(targetflag){
@@ -413,19 +483,11 @@ int main(int argc, char *argv[])
             go_destination(goal,targetx,targety,targetz,q,ac);
             mecanumController.cap_buffer_clear();
             if(mecanumController.turn_and_find_plus(5.0,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
-                go_destination(goal,passx2, passy2, passz2,q,ac);
-                mecanumController.cap_buffer_clear();
-                mecanumController.adjust(board_class,0.4);
-                mecanumController.forward(board_class,0.3);
+                board_name = mecanumController.forward_and_adjust(board_class,0.5);
                 flag=true;
             }
             else if(mecanumController.turn_and_find_plus(11.0,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
-                go_destination(goal,passx2, passy2, passz2,q,ac);
-                mecanumController.cap_buffer_clear();
-                mecanumController.adjust(board_class,0.4);
-                mecanumController.forward(board_class,0.3);
+                board_name = mecanumController.forward_and_adjust(board_class,0.5);
                 flag=true;
             }
         }
@@ -436,19 +498,11 @@ int main(int argc, char *argv[])
             go_destination(goal,targetx2, targety2, targetz2,q,ac);
             mecanumController.cap_buffer_clear();
             if(mecanumController.turn_and_find_plus(5.0,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
-                go_destination(goal,passx2, passy2, passz2,q,ac);
-                mecanumController.cap_buffer_clear();
-                mecanumController.adjust(board_class,0.4);
-                mecanumController.forward(board_class,0.3);
+                board_name = mecanumController.forward_and_adjust(board_class,0.5);
                 flag=true;
             }
             else if(mecanumController.turn_and_find_plus(11.0,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                ROS_INFO("前往%f,%f,%f",passx2, passy2, passz2);
-                go_destination(goal,passx2, passy2, passz2,q,ac);
-                mecanumController.cap_buffer_clear();
-                mecanumController.adjust(board_class,0.4);
-                mecanumController.forward(board_class,0.3);
+                board_name = mecanumController.forward_and_adjust(board_class,0.5);
                 flag=true;
             }
         }
@@ -460,7 +514,8 @@ int main(int argc, char *argv[])
     mecanumController.cap_close();
     ROS_INFO("%d",board_name);
     if (board_name >= 0 && board_name <= 9 && flag==1) {
-        ROS_INFO("播报");
+        msg.data = board_name + 3;
+        audio_pub.publish(msg);
         play_audio(voice[1][board_name]);
     }
     
@@ -474,11 +529,14 @@ int main(int argc, char *argv[])
     //     sim_talkto_car.car_msg_publish(board_name);
     //     rate.sleep();
     //     ros::spinOnce();
+    //     publishInitialPose(1.25,3.75,0.0,q,initial_pose_pub_ );
     //     if(sim_talkto_car.sim_done==1){
     //         break;
     //     }
     // }
     // if(sim_talkto_car.sim_room>=0){
+    //     msg.data = board_name + 11;
+    //     audio_pub.publish(msg);
     //     play_audio(voice[2][sim_talkto_car.sim_room-1]);
     // }
     // else {
@@ -491,17 +549,21 @@ int main(int argc, char *argv[])
     ROS_INFO("前往红绿灯区域路口1");
     go_destination(goal,3.25,4.50,1.57,q,ac);  
     if (checkTrafficLightWithSearch(cmd_pub)){
-        ROS_INFO("路口1可通过");
+        // ROS_INFO("路口1可通过");
+        msg.data = 15;
+        audio_pub.publish(msg);
         play_audio(voice[3][0]);
         go_destination(goal,2.83,3.5,-1.18,q,ac);
     } 
     else {
         ROS_INFO("前往红绿灯区域路口2");
         enter1 = false;
-        // go_destination(goal,4.25,4.50,1.57,q,ac);
-        go_enter2(poseget_client, cmd_pub);
+        go_destination(goal,4.25,4.50,1.57,q,ac);
+        // go_enter2(poseget_client, cmd_pub);
         if (checkTrafficLightWithSearch(cmd_pub)){
-            ROS_INFO("路口2可通过");
+            // ROS_INFO("路口2可通过");
+            msg.data = 16;
+            audio_pub.publish(msg);
             play_audio(voice[3][1]);
             go_destination(goal,4.75,3.44,-1.86,q,ac);
         } 
@@ -529,7 +591,9 @@ int main(int argc, char *argv[])
             ROS_ERROR("视觉巡线失败....");
         }
     }
-    
+
+    msg.data = 17 + board_name*3 + sim_talkto_car.sim_detect_class;
+    audio_pub.publish(msg);
     play_audio(voice[4+board_name][sim_talkto_car.sim_detect_class-board_name/3*3]);
     ros::spin();
 

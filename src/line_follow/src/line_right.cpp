@@ -11,7 +11,7 @@
 #include "ztestnav2025/getpose_server.h"
 #include "ztestnav2025/lidar_process.h"
 // #include "ztestnav2025/set_speed.h"
-
+//停车的时候画面大部分会超出赛道，找赛道的算法需要考虑同一个画面亮度不均匀
 #include <tf/tf.h>
 #include <tf/transform_listener.h>
 #include <tf/transform_datatypes.h>
@@ -27,7 +27,7 @@ typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseCl
 using namespace cv;
 using namespace std;
 
-string output_file = "/home/ucar/ucar_ws/src/line_follow/image/line_right.avi";//录制视频避免网络传输卡顿
+string output_file = "/home/ucar/ucar_car/src/line_follow/image/line_right.avi";//录制视频避免网络传输卡顿
 VideoWriter out;
 int fourcc = VideoWriter::fourcc('X', 'V', 'I', 'D'); // MP4V编码
 ostringstream displayStream;
@@ -126,7 +126,7 @@ std::pair<std::vector<double>, std::vector<int>> fitLineRANSAC(
 int brightness_threshold_calculator(Mat& gray_img){//寻找跳变最剧烈的那个点，这个点的左值就是图像二值化阈值
     int max_brightness_change = 0;
     int best_binary_brightness = 180;//给个默认值，别一会没找到
-    for (int y = 269; y > 69; y--) {
+    for (int y = 269; y > 100; y--) {
         for (int x = 1; x < 638; x++) {
             int current = (int)gray_img.at<uchar>(y, x);
             int next = (int)gray_img.at<uchar>(y, x + 1);
@@ -138,6 +138,7 @@ int brightness_threshold_calculator(Mat& gray_img){//寻找跳变最剧烈的那
             }
         }
     }
+    ROS_INFO("赛道阈值%d",best_binary_brightness);
     return best_binary_brightness;
 }
 
@@ -145,15 +146,15 @@ bool stop_car(Mat& gray,int brightness_threshold,int& point,Mat& visual_img){
     int white_count = 0;
     for (int y = 227; y >= 200; y--) {//
         for (int x = 1; x < 639; x++) {
-            if (gray.at<uchar>(y, x)>=brightness_threshold){ 
+            if (gray.at<uchar>(y, x)>=brightness_threshold){ //停车逻辑要换算法
                 white_count++;
                 circle(visual_img, Point(x,y), 2, Scalar(0, 0, 0), -1);
             }
         }
     }
     point = white_count;
-    // ROS_INFO("停车白点数量%d",white_count);
-    if (white_count>4058){
+    ROS_INFO("停车白点数量%d",white_count);
+    if (white_count>2058){
         return true;
     }
     return false;
@@ -466,7 +467,7 @@ double error_calculater(vector<Point>& traced_points,int ystart,double& z_error,
 }
 
 bool line_server_callback(line_follow::line_follow::Request& req,line_follow::line_follow::Response& resp){
-    FileStorage fs("/home/ucar/ucar_ws/src/line_follow/camera_info/pinhole.yaml", FileStorage::READ);
+    FileStorage fs("/home/ucar/ucar_car/src/line_follow/camera_info/pinhole.yaml", FileStorage::READ);
     if (!fs.isOpened()) {
         cerr << "无法打开标定文件" << endl;
         return -1;
@@ -606,7 +607,7 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
                     double target_yaw = -1.57;      // 目标朝向，保持前进方向
                     double side_step_x = 3.25;      // 避障时横向平移到的X坐标
                     double track_x = 3.75;          // 原始赛道的X坐标
-                    double forward_target_y = initial_y - board.response.lidar_results[0] - 0.15;
+                    double forward_target_y = initial_y - board.response.lidar_results[0] - 0.19;
 
                     // P控制器参数
                     const double Kp_x = 1.5;      // X方向 (横向) P-gain
@@ -747,11 +748,11 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         Point right_edge_point = Point(-1, -1);//
         int last_scanned_y;
         find_track_edge(gray_img,right_edge_point, scan_rows, brightness_threshold);
-        if (right && (first_point_x_last - right_edge_point.x>250) &&pose.response.pose_at[0]>3.0){//如果右边线丢了或者右边界首个点发生剧烈左移动
+        if ((right && (first_point_x_last - right_edge_point.x>250) &&pose.response.pose_at[0]>3.0)&&!double_line){//如果右边线丢了或者右边界首个点发生剧烈左移动
             right = false;
             ROS_INFO("找左侧点%d,%d",first_point_x_last,right_edge_point.x);
         }
-        else if(!right && (right_edge_point.x-first_point_x_last>250||right_edge_point.x>500 )){//左线发生剧烈偏移说明又看到右线了左跳右的幅度一般很剧烈|| (right_edge_point.y>170&&right_edge_point.x>300)
+        else if((!right && (right_edge_point.x-first_point_x_last>250||right_edge_point.x>500 )&&!double_line)){//左线发生剧烈偏移说明又看到右线了左跳右的幅度一般很剧烈|| (right_edge_point.y>170&&right_edge_point.x>300)
             right = true;
             ROS_INFO("找右侧线:%d,%d",right_edge_point.x,first_point_x_last);
         }
@@ -869,13 +870,13 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         }
         int test;
         if(avoid_done && pose.response.pose_at[2]>-1.8&&pose.response.pose_at[2]<-1.3&&pose.response.pose_at[0]>3.3&&pose.response.pose_at[0]<4.2&&pose.response.pose_at[1]<1){
-            if(stop_car(gray_img,brightness_threshold,test,cropped)|| pose.response.pose_at[1]<-0.25){
+            if(stop_car(gray_img,brightness_threshold,test,cropped)){
                 ROS_INFO("巡线结束");
                 twist.linear.x = 0;
                 twist.angular.z = 0;
                 cmd_pub.publish(twist);
-                // imshow("stop",cropped);
-                // waitKey(0);
+                imshow("stop",cropped);
+                waitKey(0);
                 break;
             }
         }

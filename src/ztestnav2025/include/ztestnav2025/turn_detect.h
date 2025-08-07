@@ -62,6 +62,7 @@ private:
 
     ros::ServiceClient adjust_client_;
     ztestnav2025::lidar_process board_slope;//lidarprocess客户端
+    ztestnav2025::lidar_process avoid_block;
 
     // dynamic_reconfigure::Server<ztestnav2025::drConfig> server_;//动态参数
 
@@ -76,6 +77,7 @@ private:
     double width_per_pixel = 10.7118/img_width;
     double height_per_pixel = 3.7066/img_height;
 
+    std::vector<int> box_height_40cm = {110,160,82,125,110,130,138,108,145};//['chili', 'tomato', 'potato', 'banana', 'apple', 'watermelon','cola', 'cake', 'milk']
 };
 
 #endif
