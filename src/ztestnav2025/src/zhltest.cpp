@@ -89,15 +89,20 @@ int main(int argc, char *argv[]){
     std::vector<std::vector<int>> a = {{-1},{-1},{-1},{-1},{-1},{-1}};
     mecanumController.detect(a,-1);
     mecanumController.cap_buffer_clear();
-    go_destination(goal,1.0,2.3,0,q,ac);  
+    go_destination(goal,0.6,2.3,0,q,ac);  
     //然后去中间，识别目标，或者定位遮挡视野的板子
     // go_destination(goal,0.75,1.75,1.57,q,ac); 
     double targetx, targety, targetz, targetx2, targety2, targetz2;
     bool target2flag = false,targetflag = false,use_forward = false;
     if(mecanumController.turn_and_find_plus(17,3,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
+        if(!use_forward)//如果返回false，就先绕行再用原有逻辑靠近
+        {
+            ROS_INFO("有障碍物，先绕行");
+            go_destination(goal, targetx2, targety2, targetz2, q, ac);
+        }
         board_name = mecanumController.forward_and_adjust(3,0.35);
         if(board_name<0){//出现这种情况，比较糟糕，要么是路被封死了，要么是走一半目标丢了
-            if(mecanumController.turn_and_find_plus(17,1,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
+            if(mecanumController.turn_and_find_plus(17,3,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
                 where_board.request.lidar_process_start = 4;
                 client_find_board.call(where_board);
                 std::vector<float> position = mecanumController.getCurrentPose();
@@ -123,7 +128,7 @@ int main(int argc, char *argv[]){
                     }
                     go_destination(goal,output_point.point.x,output_point.point.y,where_board.response.lidar_results[3]+position[2],q,ac);
                     mecanumController.cap_buffer_clear();
-                    board_name = mecanumController.forward_and_adjust(1,0.5);
+                    board_name = mecanumController.forward_and_adjust(3,0.5);
                     if(board_name<0){
                         ROS_ERROR("拣货失败");
                     }
@@ -139,12 +144,12 @@ int main(int argc, char *argv[]){
                     ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
                     go_destination(goal,targetx,targety,targetz,q,ac);
                     mecanumController.cap_buffer_clear();
-                    if(mecanumController.turn_and_find_plus(5.0,1,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                        board_name = mecanumController.forward_and_adjust(1,0.5);
+                    if(mecanumController.turn_and_find_plus(5.0,3,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                        board_name = mecanumController.forward_and_adjust(3,0.5);
                         flag=true;
                     }
-                    else if(mecanumController.turn_and_find_plus(11.0,1,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                        board_name = mecanumController.forward_and_adjust(1,0.5);
+                    else if(mecanumController.turn_and_find_plus(11.0,3,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                        board_name = mecanumController.forward_and_adjust(3,0.5);
                         flag=true;
                     }
                 }
@@ -154,12 +159,12 @@ int main(int argc, char *argv[]){
                     ROS_INFO("前往%f,%f,%f",targetx2, targety2, targetz2);
                     go_destination(goal,targetx2, targety2, targetz2,q,ac);
                     mecanumController.cap_buffer_clear();
-                    if(mecanumController.turn_and_find_plus(5.0,1,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                        board_name = mecanumController.forward_and_adjust(1,0.5);
+                    if(mecanumController.turn_and_find_plus(5.0,3,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                        board_name = mecanumController.forward_and_adjust(3,0.5);
                         flag=true;
                     }
-                    else if(mecanumController.turn_and_find_plus(11.0,1,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                        board_name = mecanumController.forward_and_adjust(1,0.5);
+                    else if(mecanumController.turn_and_find_plus(11.0,3,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                        board_name = mecanumController.forward_and_adjust(3,0.5);
                         flag=true;
                     }
                 }
@@ -169,19 +174,30 @@ int main(int argc, char *argv[]){
             flag=true;
         }
     }
-    else{//板子被挡了，中间看不到
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    else{//板子被挡了，中间看不到,绕到两个板的后面
         if(targetflag){
             double passx, passy, passz, passx2, passy2, passz2;
             bool find1,find2;
             ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
             go_destination(goal,targetx,targety,targetz,q,ac);
             mecanumController.cap_buffer_clear();
-            if(mecanumController.turn_and_find_plus(5.0,1,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                board_name = mecanumController.forward_and_adjust(1,0.5);
+            if(mecanumController.turn_and_find_plus(5.0,3,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                board_name = mecanumController.forward_and_adjust(3,0.5);
                 flag=true;
             }
-            else if(mecanumController.turn_and_find_plus(11.0,1,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                board_name = mecanumController.forward_and_adjust(1,0.5);
+            else if(mecanumController.turn_and_find_plus(11.0,3,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                board_name = mecanumController.forward_and_adjust(3,0.5);
                 flag=true;
             }
         }
@@ -191,12 +207,12 @@ int main(int argc, char *argv[]){
             ROS_INFO("前往%f,%f,%f",targetx2, targety2, targetz2);
             go_destination(goal,targetx2, targety2, targetz2,q,ac);
             mecanumController.cap_buffer_clear();
-            if(mecanumController.turn_and_find_plus(5.0,1,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                board_name = mecanumController.forward_and_adjust(1,0.5);
+            if(mecanumController.turn_and_find_plus(5.0,3,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                board_name = mecanumController.forward_and_adjust(3,0.5);
                 flag=true;
             }
-            else if(mecanumController.turn_and_find_plus(11.0,1,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                board_name = mecanumController.forward_and_adjust(1,0.5);
+            else if(mecanumController.turn_and_find_plus(11.0,3,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
+                board_name = mecanumController.forward_and_adjust(3,0.5);
                 flag=true;
             }
         }
