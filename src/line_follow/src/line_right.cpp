@@ -142,6 +142,34 @@ int brightness_threshold_calculator(Mat& gray_img){//寻找跳变最剧烈的那
     return best_binary_brightness;
 }
 
+void threshold_image(Mat& gray){
+    int adaptive_block = 23;    // 自适应邻域大小（基数）
+    int adaptive_c = -15;       // 阈值偏移量（关键参数）
+    int min_contour_area = 60; // 最小轮廓面积阈值
+
+    cv::Mat binary;
+    cv::adaptiveThreshold(
+        gray, binary, 255, 
+        cv::ADAPTIVE_THRESH_MEAN_C, // 使用局部均值
+        cv::THRESH_BINARY,           // 二值化类型
+        adaptive_block,             // 邻域大小（必须奇数）
+        adaptive_c                   // 关键偏移量
+    );
+    std::vector<std::vector<cv::Point>> contours;
+    std::vector<cv::Vec4i> hierarchy;
+    cv::findContours(binary, contours, hierarchy, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    cv::Mat denoised = cv::Mat::zeros(binary.size(), CV_8UC1);
+    // 过滤小面积轮廓（可能是噪声）
+    for(size_t i = 0; i < contours.size(); i++) {
+        double area = cv::contourArea(contours[i]);
+        if(area > min_contour_area) {
+            cv::drawContours(denoised, contours, static_cast<int>(i), 
+                            cv::Scalar(255), cv::FILLED);
+        }
+    }
+    gray = denoised.clone();
+}
+
 bool stop_car(Mat& gray,int brightness_threshold,int& point,Mat& visual_img){
     int white_count = 0;
     for (int y = 227; y >= 200; y--) {//
@@ -543,6 +571,14 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
     Mat image,undistorted;
     Rect roi(0, 210, 640, 270);
 
+    // 标定导致图像有黑边，创建一个掩膜把黑边遮住
+    cv::Mat testImage = cv::Mat::ones(Size(640, 480), CV_8UC1) * 255;
+    cv::Mat undistortedtest;
+    cv::remap(testImage, undistortedtest, map1, map2,INTER_LINEAR, BORDER_CONSTANT, Scalar(0, 0, 0));
+    cv::Mat mask;
+    mask = undistortedtest(roi).clone();
+
+
     double p,i,d,integration,pre_error,leftpoint_p,leftpoint_I,leftpoint_D,x_max,integration_limit,out_turn,out_forward;
     nh.getParam("/line_right/right_P", p);
     nh.getParam("/line_right/right_I", i);
@@ -744,7 +780,10 @@ bool line_server_callback(line_follow::line_follow::Request& req,line_follow::li
         split(cropped, channels);
         gray_img = channels[2];//红色通道代替灰度图
         int brightness_threshold = brightness_threshold_calculator(gray_img);  // 亮度变化阈值就是跳变最剧烈点的左值
-
+        threshold_image(gray_img);
+        cv::bitwise_and(gray_img, mask, gray_img);//掩膜覆盖黑边
+        imshow("test",gray_img);
+        waitKey(1);
         Point right_edge_point = Point(-1, -1);//
         int last_scanned_y;
         find_track_edge(gray_img,right_edge_point, scan_rows, brightness_threshold);

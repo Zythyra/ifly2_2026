@@ -169,7 +169,7 @@ add_executable(line_right src/line_right.cpp)
 add_executable(line_left src/line_left.cpp)
 add_executable(right2 src/right2.cpp)
 add_executable(left2 src/left2.cpp)
-# add_executable(dynamic_awb src/dynamic_awb.cpp)
+add_executable(dynamic_awb src/dynamic_awb.cpp)
 add_executable(wb src/wb.cpp)
 
 ## Rename C++ executable without prefix
@@ -200,10 +200,10 @@ target_link_libraries(left2
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
 )
-# target_link_libraries(dynamic_awb
-#   ${catkin_LIBRARIES}
-#   ${OpenCV_LIBS}
-# )
+target_link_libraries(dynamic_awb
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+)
 target_link_libraries(wb
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
