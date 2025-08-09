@@ -103,7 +103,7 @@ def detect_start(req):
     if req.detect_start==4:
         min_score = 0.25
     rec, frame = cap.read()
-    frame = whitebalance.process(frame)
+    # frame = whitebalance.process(frame)
     # print("拍照耗时")
     # print(time.time()-start_time)
     if not rec:

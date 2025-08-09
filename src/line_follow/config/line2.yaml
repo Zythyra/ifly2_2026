@@ -14,4 +14,6 @@ double_D: 0.017
 other_enter_pointx: 0.002
 other_enter_pointy: 0.002
 
+out_forward: 0.075
+out_turn: -1.0
 x_max_: 0.5

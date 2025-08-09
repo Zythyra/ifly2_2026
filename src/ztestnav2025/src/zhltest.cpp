@@ -18,7 +18,7 @@
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
 void goal_set(move_base_msgs::MoveBaseGoal &goal,double x,double y,double yaw,tf2::Quaternion q){
-    q.setRPY(0, 0, yaw);
+    q.setRPY(0, 0, yaw); 
     goal.target_pose.header.stamp = ros::Time::now();
     goal.target_pose.pose.position.x = x;
     goal.target_pose.pose.position.y = y;
@@ -89,7 +89,7 @@ int main(int argc, char *argv[]){
     std::vector<std::vector<int>> a = {{-1},{-1},{-1},{-1},{-1},{-1}};
     mecanumController.detect(a,-1);
     mecanumController.cap_buffer_clear();
-    go_destination(goal,0.6,2.3,0,q,ac);  
+    go_destination(goal,1.25,3.75,0,q,ac);  
     //然后去中间，识别目标，或者定位遮挡视野的板子
     // go_destination(goal,0.75,1.75,1.57,q,ac); 
     double targetx, targety, targetz, targetx2, targety2, targetz2;
@@ -98,7 +98,15 @@ int main(int argc, char *argv[]){
         if(!use_forward)//如果返回false，就先绕行再用原有逻辑靠近
         {
             ROS_INFO("有障碍物，先绕行");
-            go_destination(goal, targetx2, targety2, targetz2, q, ac);
+            if (std::min(abs(targetx2-0),abs(targetx2 - 2.5))>0.4 && std::min(abs(targety2 - 2),abs(targety2 - 5))>0.4)//终点太靠墙直接视觉过去也能避开
+            {
+                go_destination(goal, targetx2, targety2, targetz2, q, ac);
+            }
+            else{
+                ROS_INFO ("障碍物较远,直接前进");
+                
+            }
+            
         }
         board_name = mecanumController.forward_and_adjust(3,0.35);
         if(board_name<0){//出现这种情况，比较糟糕，要么是路被封死了，要么是走一半目标丢了
@@ -217,6 +225,44 @@ int main(int argc, char *argv[]){
             }
         }
     }
+    //如果上面的逻辑都没能找到板，就前往出口和入口旋转找板
+    if (!flag)
+    {
+        ROS_INFO("前往出口处找板");
+        go_destination(goal, 2.25, 4.25, 1.1, q, ac);
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(7, 3, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            board_name = mecanumController.forward_and_adjust(3,0.35);
+            if(board_name >= 0)
+            {
+                flag = true;
+            }
+        }
+
+    }
+    if (!flag)
+    {
+        ROS_INFO("前往入口处找板");
+        go_destination(goal, 0.3, 2.25, 0, q, ac);
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(7, 3, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            board_name = mecanumController.forward_and_adjust(3,0.35);
+            if(board_name >= 0)
+            {
+                flag = true; 
+            }
+        }
+
+    }
+    
+
+
+
+
 
 
     // mecanumController.adjust(2,0.4);//

@@ -1,10 +1,7 @@
-right_P: 0.007
+right_P: 0.01
 right_I: 0.05
-right_D: 0.017
+right_D: 0.02
 integration_limit: 150.0
-righty_P: 0.001
-righty_I: 0.0
-righty_D: 0.0
 
 leftpoint_p: 0.004
 leftpoint_I: 0.05
@@ -16,4 +13,4 @@ double_D: 0.017
 
 out_forward: 0.075
 out_turn: -1.0
-x_max_: 0.5
+x_max_: 0.7

@@ -405,6 +405,18 @@ int main(int argc, char *argv[])
     double targetx, targety, targetz, targetx2, targety2, targetz2;
     bool target2flag = false,targetflag = false,use_forward = false;
     if(mecanumController.turn_and_find_plus(17,board_class,0.52,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
+        if (!use_forward)
+        {
+            if (std::min(abs(targetx2-0),abs(targetx2 - 2.5))>0.4 && std::min(abs(targety2 - 2),abs(targety2 - 5))>0.4)//终点太靠墙直接视觉过去也能避开
+            {
+                ROS_INFO ("有障碍物，先绕行");
+                go_destination(goal, targetx2, targety2, targetz2, q, ac);
+            }
+            else{
+                ROS_INFO ("障碍物较远,直接前进");
+
+            }
+        }
         board_name = mecanumController.forward_and_adjust(board_class,0.35);
         if(board_name<0){//出现这种情况，比较糟糕，要么是路被封死了，要么是走一半目标丢了
             if(mecanumController.turn_and_find_plus(17,board_class,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
@@ -510,6 +522,39 @@ int main(int argc, char *argv[])
                 flag=true;
             }
         }
+    }
+    //如果上面的逻辑都没能找到板，就前往出口和入口旋转找板
+    if (!flag)
+    {
+        ROS_INFO("前往出口处找板");
+        go_destination(goal, 2.25, 4.25, 1.1, q, ac);
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(7, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            if(board_name >= 0)
+            {
+                flag = true;
+            }
+        }
+
+    }
+    if (!flag)
+    {
+        ROS_INFO("前往入口处找板");
+        go_destination(goal, 0.3, 2.25, 0, q, ac);
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(7, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            if(board_name >= 0)
+            {
+                flag = true; 
+            }
+        }
+
     }
 
     if (!flag){

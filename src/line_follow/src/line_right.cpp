@@ -79,7 +79,7 @@ private:
 public:
     // 构造函数：初始化所有组件
     LineFollowerNode() : 
-        nh_("~"), 
+        nh_(""), 
         output_file_("/home/ucar/ucar_car/src/line_follow/image/line_right.avi"),
         fourcc_(VideoWriter::fourcc('X', 'V', 'I', 'D')),
         roi_(0, 210, 640, 270),
@@ -108,13 +108,6 @@ public:
         // 4. 读取相机标定文件并初始化去畸变
         if (!loadCalibrationFile()) {
             ROS_FATAL("标定文件加载失败，节点无法启动");
-            ros::shutdown();
-            return;
-        }
-
-        // 5. 初始化相机和视频录制
-        if (!initCameraAndVideo()) {
-            ROS_FATAL("相机或视频初始化失败，节点无法启动");
             ros::shutdown();
             return;
         }
@@ -162,7 +155,7 @@ private:
         ROS_INFO("等待lidar_process服务中...");
         client_line_board_ = nh_.serviceClient<ztestnav2025::lidar_process>("/lidar_process/lidar_process");
         board_.request.lidar_process_start = -2;
-        if (!client_line_board_.waitForExistence(ros::Duration(10.0))) {
+        if (!client_line_board_.waitForExistence()) {
             ROS_FATAL("超时未连接到lidar_process服务");
             ros::shutdown();
         }
@@ -170,9 +163,9 @@ private:
 
         // 初始化位姿服务客户端
         ROS_INFO("等待坐标获取服务中...");
-        pose_client_ = nh_.serviceClient<ztestnav2025::getpose_server>("getpose_server");
+        pose_client_ = nh_.serviceClient<ztestnav2025::getpose_server>("/getpose_server");
         pose_.request.getpose_start = 1;
-        if (!pose_client_.waitForExistence(ros::Duration(10.0))) {
+        if (!pose_client_.waitForExistence()) {
             ROS_FATAL("超时未连接到getpose_server服务");
             ros::shutdown();
         }
@@ -181,7 +174,7 @@ private:
         // 初始化MoveBase客户端
         ac_ = new MoveBaseClient("move_base", true);
         ROS_INFO("等待movebase服务中...");
-        if (!ac_->waitForServer(ros::Duration(10.0))) {
+        if (!ac_->waitForServer()) {
             ROS_FATAL("超时未连接到move_base服务");
             ros::shutdown();
         }
@@ -189,7 +182,7 @@ private:
 
         // 初始化动态配置客户端
         reconfigure_client_ = nh_.serviceClient<dynamic_reconfigure::Reconfigure>("/move_base/set_parameters");
-        if (!reconfigure_client_.waitForExistence(ros::Duration(10.0))) {
+        if (!reconfigure_client_.waitForExistence()) {
             ROS_FATAL("超时未连接到动态配置服务");
             ros::shutdown();
         }
@@ -269,7 +262,11 @@ private:
     // 服务回调函数（核心逻辑）
     bool line_server_callback(line_follow::line_follow::Request& req, line_follow::line_follow::Response& resp) {
         Mat image, undistorted, cropped, gray_img;
-
+        // 5. 初始化相机和视频录制
+        if (!initCameraAndVideo()) {
+            ROS_FATAL("相机或视频初始化失败，节点无法启动");
+            ros::shutdown();
+        }
         while (ros::ok()) {
             // 避障逻辑
             handleObstacleAvoidance();
@@ -277,8 +274,7 @@ private:
             // 读取并预处理图像
             cap_.read(image);
             if (image.empty()) continue;
-            remap(image, undistorted, map1_, map2_, INTER_LINEAR); // 去畸变
-            cropped = undistorted(roi_);
+            cropped = image(roi_);
             flip(cropped, cropped, 1); // 翻转图像
             vector<Mat> channels;
             split(cropped, channels);
@@ -307,6 +303,11 @@ private:
                 break;
             }
         }
+        bool avoid_done_ = false;                     // 避障完成标志
+        bool double_line_ = false;                    // 双边巡线标志
+        bool left_point_start_ = false;               // 左点追踪标志
+        bool point_forward_ = true;                  // 左点前进标志
+        int trace_failed_count_ = 0;              // 追踪失败计数
         return true;
     }
 
@@ -591,7 +592,7 @@ private:
     // 停车检测
     bool stop_car(Mat& gray, int& point, Mat& visual_img) {
         int white_count = 0;
-        for (int y = 227; y >= 200; y--) {
+        for (int y = 254; y >= 227; y--) {
             for (int x = 1; x < 639; x++) {
                 if (gray.at<uchar>(y, x) == 255) {
                     white_count++;
@@ -687,7 +688,7 @@ private:
                     center_y--;
                     if (fail_count >= 4) { broken = true; break; }
                 }
-                if (center_y <= 0) break;
+                if (center_y <= 0 || racetracks[idx].points.size()>60) break;
             }
 
             // 计算斜率

@@ -41,7 +41,7 @@ save_count = 74
 while True:
     # start = time.time()
     rec, frame = cap.read()
-    frame = whitebalance.process(frame)
+    # frame = whitebalance.process(frame)
     # print(rec)
     if not rec:
         print("Failed to read frame from video capture device.")
@@ -51,7 +51,7 @@ while True:
     for label in res:
         for bbox in res[label]:
             score = bbox[-1]
-            if score>0.5:
+            if score>0.4:
                 # print("find object")
                 x0, y0, x1, y1 = [int(i) for i in bbox[:4]]
                 color = COLOR_MAP.get(label, (0, 255, 255))  # 默认黄色

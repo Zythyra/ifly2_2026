@@ -447,7 +447,7 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                 if(result[4][i] >= (z-1)*3 && result[4][i] < z*3){//如果直接把二维码匹配项找到了，直接进入对准逻辑
                     find_count++;
                     ROS_INFO("检测到%d帧目标",find_count);
-                    if(find_count>3){
+                    if(find_count>1){
                         find = true;
                         ROS_INFO("找到目标");
                         start_time_ = ros::Time::now();
@@ -635,8 +635,8 @@ bool MecanumController::turn_and_find_plus(double find_time,int z,double angular
                 if((ros::Time::now()-start_time_).toSec()>10.0){
                     exit_flag = true;
                 }
-                set_speed_.request.target_twist.angular.z = 0.4;
-                set_speed_client_.call(set_speed_);
+                // set_speed_.request.target_twist.angular.z = 0.4;
+                // set_speed_client_.call(set_speed_);
             }
             // ROS_INFO("耗时%f",(ros::Time::now()-test_time).toSec());
         }
@@ -712,17 +712,17 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                 set_speed_.request.target_twist.angular.z = -1.1;
             }
             else{
-                set_speed_.request.target_twist.angular.z = 0.0;
+                set_speed_.request.target_twist.angular.z = 0.0; 
             }
             if(avoid_block.response.lidar_results[0]<2){//可能是障碍物，要避障
                 // ROS_INFO("避障%f",avoid_block.response.lidar_results[0]);
                 set_speed_.request.target_twist.linear.x = 0.35;
                 if(avoid_block.response.lidar_results[0] > 0 && avoid_block.response.lidar_results[0] <1){//右边有障碍物
-                    set_speed_.request.target_twist.linear.y = 0.15;
+                    set_speed_.request.target_twist.linear.y = 0.20;
                     set_speed_.request.target_twist.angular.z -= set_speed_.request.target_twist.linear.y;
                 }
                 if(avoid_block.response.lidar_results[0] > 1 && avoid_block.response.lidar_results[0] <2){
-                    set_speed_.request.target_twist.linear.y = -0.15;
+                    set_speed_.request.target_twist.linear.y = -0.20;
                     set_speed_.request.target_twist.angular.z -= set_speed_.request.target_twist.linear.y;
                 }
                 // ROS_INFO("平移速度%f,旋转速度%f",set_speed_.request.target_twist.linear.y,set_speed_.request.target_twist.angular.z);
@@ -790,7 +790,7 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                 }
             }
             ROS_INFO("视觉误差为%d,速度为%f",center_x,set_speed_.request.target_twist.linear.y);
-            if(std::abs(center_x - img_width/2) < 80 && std::abs(board_slope.response.lidar_results[0]) < 0.15 && std::abs(board_slope.response.lidar_results[1]-0.3) < 0.05){
+            if(std::abs(center_x - img_width/2) < 120 && std::abs(board_slope.response.lidar_results[0]) < 0.15 && std::abs(board_slope.response.lidar_results[1]-0.3) < 0.05){
                 count++;
                 set_speed_.request.target_twist.linear.x = 0;
                 set_speed_.request.target_twist.linear.y = 0;
@@ -798,6 +798,9 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                 set_speed_client_.call(set_speed_);
                 ROS_INFO("满足退出条件第%d次",count);
                 if (count>3){
+                    set_speed_.request.target_twist.linear.x = 0;
+                    set_speed_.request.target_twist.linear.y = 0;
+                    set_speed_.request.target_twist.angular.z = 0;
                     set_speed_.request.work = false;
                     set_speed_client_.call(set_speed_);
                     return target_board;//连续三帧都合格才退出
