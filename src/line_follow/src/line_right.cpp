@@ -65,7 +65,7 @@ private:
     double p_, i_, d_;                    // PID参数
     double leftpoint_p_, leftpoint_I_, leftpoint_D_; // 左点控制参数
     double x_max_, integration_limit_;    // 速度和积分限制
-    double out_turn_, out_forward_;       // 旋转和前进参数
+    double out_turn_, out_forward_,out_turn_angel_;       // 旋转和前进参数
     double integration_, pre_error_;      // 积分和前向误差
     double pointx_integration_, pointx_pre_error_; // 左点积分和前向误差
 
@@ -142,6 +142,7 @@ private:
         nh_.getParam("/line_right/integration_limit", integration_limit_);
         nh_.getParam("/line_right/out_forward", out_forward_);
         nh_.getParam("/line_right/out_turn", out_turn_);
+        nh_.getParam("/line_right/out_turn_angel", out_turn_angel_);
         ROS_INFO("参数加载完成: P=%.2f, I=%.2f, D=%.2f", p_, i_, d_);
     }
 
@@ -324,7 +325,7 @@ private:
                 ROS_INFO("触发避障，最短距离: %.2f", board_.response.lidar_results[0]);
                 executeObstacleAvoidanceSequence();
                 avoid_done_ = true;
-                nh_.getParam("/line_right/x_max_", x_max_);
+                x_max_ = 0.7;
                 double_line_ = true;
                 nh_.getParam("/line_right/double_P", p_);
                 nh_.getParam("/line_right/double_I", i_);
@@ -483,9 +484,11 @@ private:
             
             // 旋转到位后切换模式
             pose_client_.call(pose_);
-            if (pose_.response.pose_at[2] < -1.4) {
+            // ROS_INFO("角度%f,位姿%f",out_turn_angel_,pose_.response.pose_at[2]);
+            if (pose_.response.pose_at[2] < out_turn_angel_) {
                 left_point_start_ = false;
                 double_line_ = true;
+                x_max_ = 0.5;
                 nh_.getParam("/line_right/double_P", p_);
                 nh_.getParam("/line_right/double_I", i_);
                 nh_.getParam("/line_right/double_D", d_);
@@ -525,7 +528,7 @@ private:
     // 正常巡线逻辑
     void runNormalTracking(Mat& gray_img, Mat& cropped) {
         displayStream_.str("");
-        vector<Point> start_points = find_track_edge(gray_img, 300, 70, cropped);
+        vector<Point> start_points = find_track_edge(gray_img, 340, 70, cropped);
         RaceTrack racetrack;  // 现在RaceTrack已声明，可正常使用
 
         if (trace_edge(gray_img, start_points, racetrack, cropped)) {
@@ -658,12 +661,16 @@ private:
 
                     if (left_check && gray_img.at<uchar>(center_y, cand_x2) == 255 && gray_img.at<uchar>(center_y, cand_x2 - 1) == 0) {
                         racetracks[idx].points.emplace_back(cand_x2, center_y);
+                        right_found = false;
                         left_found = true;
                         center_x = cand_x2;
+                        break;
                     }
-                    if (!left_found && right_check && gray_img.at<uchar>(center_y, cand_x) == 0 && gray_img.at<uchar>(center_y, cand_x + 1) == 255) {
+                    if (right_check && gray_img.at<uchar>(center_y, cand_x) == 0 && gray_img.at<uchar>(center_y, cand_x + 1) == 255) {
                         right_found = true;
+                        left_found = false;
                         center_x = cand_x + 1;
+                        break;
                     }
                 }
 
@@ -768,6 +775,7 @@ private:
                         if (last_up) racetracks[idx].direction_change++;
                         last_down = true;
                         last_up = false;
+                        break;
                     }
                     if (!found && up_check && gray_img.at<uchar>(center_y - dy, center_x) == 255 && gray_img.at<uchar>(center_y - dy + 1, center_x) == 0) {
                         racetracks[idx].points.emplace_back(center_x + 1, center_y - dy);
@@ -776,6 +784,7 @@ private:
                         if (last_down) racetracks[idx].direction_change++;
                         last_down = false;
                         last_up = true;
+                        break;
                     }
                 }
 
@@ -785,7 +794,7 @@ private:
                 } else {
                     fail_count++;
                     center_x++;
-                    if (fail_count >= 20) { broken = true; break; }
+                    if (fail_count >= 10) { broken = true; break; }
                 }
             }
             if (racetracks[idx].points.size() > 120) racetracks[idx].left_point = true;
