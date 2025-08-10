@@ -142,6 +142,7 @@ bool trace_edge(Mat& gray_img, vector<Point> start_points, RaceTrack& racetrack,
                 }
                 if (!left_found && right_check && gray_img.at<uchar>(center_y, cand_x) == 0 && gray_img.at<uchar>(center_y, cand_x + 1) == 255) {
                     right_found = true;
+                    racetracks[idx].points.emplace_back(cand_x+1, center_y);
                     count++;
                     center_x = cand_x + 1;
                 }
@@ -214,7 +215,7 @@ bool trace_edge(Mat& gray_img, vector<Point> start_points, RaceTrack& racetrack,
         }
         ostringstream oss;
         oss << "slope: " << racetrack.slope << " direction_change: " << racetrack.direction_change;
-        putText(visual_img, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visual_img, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         return true;
     }
     return false;
@@ -299,7 +300,7 @@ bool find_left_edge(Mat gray_img, Point& left_point, Mat& visualizeImg) {
         left_point = best_point;
         ostringstream oss;
         oss << "左点: (" << best_point.x << "," << best_point.y << ")";
-        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         return true;
     }
     return false;
@@ -419,7 +420,7 @@ bool find_other_coner_edge(Mat gray_img,Point& left_edge_point,Mat& visualizeImg
         }
         ostringstream oss;
         oss << "direction_change " << racetracks[best_idx].direction_change;
-        putText(visualizeImg, oss.str(), Point(50, 150), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visualizeImg, oss.str(), Point(50, 150), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         return true;
     }
     return false;
@@ -516,7 +517,7 @@ bool find_other_coner_edge2(Mat gray_img,Point& left_edge_point,Mat& visualizeIm
         }
         ostringstream oss;
         oss << "direction_change " << racetracks[best_idx].direction_change;
-        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         circle(visualizeImg, left_edge_point, 9, Scalar(0, 0, 255), -1);
         return true;
     }
@@ -599,7 +600,7 @@ int recently_white(Mat gray_img,Mat& visualizeImg){//回到路口的时候，只
         }
         ostringstream oss;
         oss << "前点: (" << racetrack.points[0].x << "," << racetrack.points[0].y << ")";
-        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         return racetrack.points[0].y;
     }
     return -1;
@@ -988,6 +989,7 @@ public:
                     // twist.linear.x = (205-left_edge_point.y)*other_enter_pointx_+0.1;
                     // twist.angular.z = (553-left_edge_point.x)*other_enter_pointy_+0.2;
                     // twist.linear.x = x_max_;
+                    twist.linear.x = 0.3;
                     twist.angular.z = twist.linear.x*(point_2_speeda-left_edge_point.x)/point_2_speedk;
                     // ROS_INFO("增益是%f",(point_2_speeda-left_edge_point.x)/point_2_speedk);
                     if(left_edge_point.x>450 || left_edge_point.y >180){
@@ -997,7 +999,7 @@ public:
                     }
                     displayStream <<"x:"<< twist.linear.x<<"z:"<< twist.angular.z<<"erx:"<<205-left_edge_point.y<<"ery:"<<553-left_edge_point.x;
                     string displayText = displayStream.str();
-                    putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                 }
                 else if (trace_edge(gray_img, start_points, racetrack, cropped)) {
                     // 成功追踪到赛道
@@ -1018,7 +1020,7 @@ public:
 
                     // 显示信息
                     displayStream << "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " twistz: " << twist.angular.z;
-                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                     if(pass_out_done){
                         right_trace++;
                         if(right_trace>10){
@@ -1050,11 +1052,11 @@ public:
                 }
                 // if(find_coner && other_enter_last_conner.y>100){
                 if(find_coner){
-                    // twist.linear.x = x_max_;
+                    twist.linear.x = 0.3;
                     twist.angular.z = twist.linear.x*(point_2_speeda-other_enter_last_conner.x)/point_2_speedk/1.5;
                     displayStream <<"x:"<< twist.linear.x<<"z:"<< twist.angular.z<<"positionx"<<other_enter_last_conner.x<<"posiony"<<other_enter_last_conner.y;
                     string displayText = displayStream.str();
-                    putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                     out_.write(cropped);
                     if(other_enter_last_conner.y>200){
                         other_enter = false;
@@ -1081,7 +1083,7 @@ public:
 
                         // 显示信息
                         displayStream << "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " twistz: " << twist.angular.z;
-                        putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                        putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5,Scalar(255, 255, 0), 1);
                     }
                     out_.write(cropped);
                 }
@@ -1103,7 +1105,7 @@ public:
                     pre_error_ = line_error;
                     // 显示信息
                     displayStream << "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " twistz: " << twist.angular.z;
-                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                 }
                 else{
                     pass_enter_count++;//要连续的丢线
@@ -1127,7 +1129,7 @@ public:
                         }
                         displayStream <<"z:"<< twist.angular.z<<"x:  "<<twist.linear.x<<"recent:"<<recent;
                         string displayText = displayStream.str();
-                        putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                        putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                         out_.write(cropped);
                     }
                 }
@@ -1176,7 +1178,7 @@ public:
 
                         // 显示信息
                         displayStream << "leftxerror: " << error_x << " P: " << error_x*leftpoint_p_ << " I: " << pointx_integration*leftpoint_i_;
-                        putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                        putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                     }
                     out_.write(cropped);
                 }
@@ -1198,7 +1200,7 @@ public:
 
                     // 显示信息
                     displayStream << "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " vz: " << twist.angular.z;
-                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5,Scalar(255, 255, 0), 1);
                 } else {
                     // 追踪失败计数
                     trace_failed_count_++;
@@ -1226,7 +1228,7 @@ public:
 
                 // 显示信息
                 displayStream << "doubleerror: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " vz: " << twist.angular.z;
-                putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                 out_.write(cropped);
             }
 

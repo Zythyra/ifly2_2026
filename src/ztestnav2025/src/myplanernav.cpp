@@ -78,7 +78,7 @@ public:
     // 等待唤醒信号
     bool waitForAwake(tf2::Quaternion &q,ros::Publisher& initial_pose_pub_ ) {
         ROS_INFO("等待语音唤醒信号...");
-        ros::Rate rate(1);  // 10Hz检查频率
+        ros::Rate rate(2);  // 10Hz检查频率
         ros::Time awake_limit = ros::Time::now();//防止超时
         while (ros::ok() && !awake_received_) {
             ros::spinOnce();
@@ -302,7 +302,7 @@ int main(int argc, char *argv[])
         {7, "蛋糕"},
         {8, "牛奶"}
     };
-    ROS_INFO("主干代码开始，初始化对象，等待服务中"); 
+    ROS_INFO("省赛主干代码开始，初始化对象，等待服务中"); 
     //-----------------------------------初始化movebase，实例对象---------------------------//
     ros::init(argc,argv,"myplannernav");
     ros::NodeHandle nh;
@@ -343,7 +343,8 @@ int main(int argc, char *argv[])
     Sim_talkto_car sim_talkto_car(nh);
     ros::Publisher cmd_pub = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 1);
     //清理代价地图和重新amcl定位
-    ros::ServiceClient clear_costmaps_client_ = nh.serviceClient<std_srvs::Empty>("/move_base/clear_costmaps");
+    ros::ServiceClient clear_costmaps_client = nh.serviceClient<std_srvs::Empty>("/move_base/clear_costmaps");
+    std_srvs::Empty srv;
     ros::Publisher initial_pose_pub_ = nh.advertise<geometry_msgs::PoseWithCovarianceStamped>("/initialpose", 1);
 
     ros::Publisher audio_pub = nh.advertise<std_msgs::Int32>("/audio_alert", 10, true);
@@ -383,7 +384,9 @@ int main(int argc, char *argv[])
     if (board_class >= 1 && board_class <= 3  ) {
         msg.data = board_class-1;
         audio_pub.publish(msg);
+        ros::Time test = ros::Time::now();
         play_audio(voice[0][board_class-1]);
+        ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
     }
 
     // go_destination(goal,0.50,2.25,3.14,q,ac);
@@ -565,7 +568,9 @@ int main(int argc, char *argv[])
     if (board_name >= 0 && board_name <= 9 && flag==1) {
         msg.data = board_name + 3;
         audio_pub.publish(msg);
+        ros::Time test = ros::Time::now();
         play_audio(voice[1][board_name]);
+        ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
     }
     
     //-----------------------------------------------仿真开始--------------------------------------------//
@@ -574,35 +579,40 @@ int main(int argc, char *argv[])
     //发送仿真消息
     ros::Rate rate(1);
     bool shut_down = false;
-    while (ros::ok()) {
-        sim_talkto_car.car_msg_publish(board_name);
-        rate.sleep();
-        ros::spinOnce();
-        publishInitialPose(1.25,3.75,0.0,q,initial_pose_pub_ );
-            if(!shut_down){
-                if (node_client.call(node_srv)) {
-                    if (node_srv.response.success) {
-                        ROS_INFO("成功: %s", node_srv.response.message.c_str());
-                        shut_down = true;
-                    } else {
-                        ROS_WARN("失败: %s", node_srv.response.message.c_str());
-                    }
-                } else {
-                    ROS_ERROR("服务调用失败");
-                }
-            }
-        if(sim_talkto_car.sim_done==1){
-            break;
-        }
-    }
-    if(sim_talkto_car.sim_room>=0){
-        msg.data = board_name + 11;
-        audio_pub.publish(msg);
-        play_audio(voice[2][sim_talkto_car.sim_room-1]);
-    }
-    else {
-        ROS_INFO("仿真失败");
-    }
+    // while (ros::ok()) {
+    //     sim_talkto_car.car_msg_publish(board_name);
+    //     rate.sleep();
+    //     ros::spinOnce();
+    //     publishInitialPose(1.25,3.75,0.0,q,initial_pose_pub_ );
+    //         if(!shut_down){
+    //             if (node_client.call(node_srv)) {
+    //                 if (node_srv.response.success) {
+    //                     ROS_INFO("成功: %s", node_srv.response.message.c_str());
+    //                     shut_down = true;
+    //                 } else {
+    //                     ROS_WARN("失败: %s", node_srv.response.message.c_str());
+    //                 }
+    //             } else {
+    //                 ROS_ERROR("服务调用失败");
+    //             }
+    //             if (clear_costmaps_client.call(srv)) { // 发送请求
+    //                 ROS_INFO("清理代价地图");
+    //             } else {
+    //                 ROS_ERROR("清理失败");
+    //             }
+    //         }
+    //     if(sim_talkto_car.sim_done==1){
+    //         break;
+    //     }
+    // }
+    // if(sim_talkto_car.sim_room>=0){
+    //     msg.data = sim_talkto_car.sim_room + 11;
+    //     audio_pub.publish(msg);
+    //     play_audio(voice[2][sim_talkto_car.sim_room-1]);
+    // }
+    // else {
+    //     ROS_INFO("仿真失败");
+    // }
     
 
     //--------------------------------------------前往红绿灯识别区域--------------------------------------------//
@@ -640,7 +650,7 @@ int main(int argc, char *argv[])
     //-----------------------------------------视觉巡线---------------------------------------------//
     if(enter1){
         if(line_client1.call(linefollow_start)){
-            ROS_INFO("视觉巡线结束");
+            ROS_INFO("省赛右边视觉巡线结束");
         }
         else{
             ROS_ERROR("视觉巡线失败....");
@@ -648,14 +658,14 @@ int main(int argc, char *argv[])
     }
     else{
         if(line_client2.call(linefollow_start)){//
-            ROS_INFO("视觉巡线结束");
+            ROS_INFO("省赛左边视觉巡线结束");
         }
         else{
             ROS_ERROR("视觉巡线失败....");
         }
     }
 
-    msg.data = 17 + board_name*3 + sim_talkto_car.sim_detect_class;
+    msg.data = 17 + board_name*3 + sim_talkto_car.sim_detect_class%3;
     audio_pub.publish(msg);
     play_audio(voice[4+board_name][sim_talkto_car.sim_detect_class-board_name/3*3]);
     ros::spin();

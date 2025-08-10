@@ -165,7 +165,7 @@ add_executable(zhltest src/zhltest.cpp)
 add_executable(tf_pose_get src/tf_pose_get.cpp)
 add_executable(lidar_process src/lidar_process.cpp)
 add_executable(myplanernav src/myplanernav.cpp)
-add_executable(myplanernav2 src/myplanernav.cpp)
+add_executable(myplanernav2 src/myplanernav2.cpp)
 add_executable(simple_move_control src/simple_move_control.cpp)
 
 

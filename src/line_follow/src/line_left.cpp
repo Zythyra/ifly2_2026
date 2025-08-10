@@ -438,8 +438,7 @@ private:
                       << " I: " << integration_*i_ 
                       << " D: " << diff*d_ 
                       << " 角速度: " << twist_.angular.z;
-        putText(cropped, displayStream_.str(), Point(50, 50),
-                FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         out_.write(cropped);
     }
 
@@ -490,8 +489,7 @@ private:
             displayStream_ << "左点误差: " << error_x 
                           << " P: " << error_x*leftpoint_p_ 
                           << " I: " << pointx_integration_*leftpoint_I_;
-            putText(cropped, displayStream_.str(), Point(50, 50),
-                    FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+            putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         }
         out_.write(cropped);
     }
@@ -524,8 +522,7 @@ private:
                           << " I: " << integration_*i_ 
                           << " D: " << diff*d_ 
                           << " 角速度: " << twist_.angular.z;
-            putText(cropped, displayStream_.str(), Point(50, 50),
-                    FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+            putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         } else {
             // 追踪失败计数
             trace_failed_count_++;
@@ -702,7 +699,7 @@ private:
             }
             ostringstream oss;
             oss << "斜率: " << racetrack.slope << " 方向变化: " << racetrack.direction_change;
-            putText(visual_img, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+            putText(visual_img, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
             return true;
         }
         return false;
@@ -795,7 +792,7 @@ private:
             right_point = best_point;
             ostringstream oss;
             oss << "左点: (" << best_point.x << "," << best_point.y << ")";
-            putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+            putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
             return true;
         }
         return false;

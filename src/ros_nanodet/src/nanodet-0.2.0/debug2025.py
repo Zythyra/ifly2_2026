@@ -59,7 +59,7 @@ while True:
                 
                 # 绘制标签文本[7](@ref)
                 text = f"{label}: {score:.2f}:{(x0+x1)/2}"
-                print((x0+x1)/2)
+                print(score)
                 cv2.putText(frame, text, (x0, y0-10), FONT, FONT_SCALE,color,THICKNESS)
     # print(time.time()-start)
     cv2.imshow('Detection Results', frame)

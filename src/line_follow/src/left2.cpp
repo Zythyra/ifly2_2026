@@ -134,8 +134,9 @@ bool trace_edge(Mat& gray_img, vector<Point> start_points, RaceTrack& racetrack,
                 bool right_check = (cand_x < width - 1);
 
                 if (right_check && gray_img.at<uchar>(center_y, cand_x) == 0 && gray_img.at<uchar>(center_y, cand_x - 1) == 255) {
-                    right_found = true;
+                    racetracks[idx].points.emplace_back(cand_x - 1, center_y);
                     count++;
+                    right_found = true;
                     center_x = cand_x - 1;
                 }
 
@@ -143,6 +144,7 @@ bool trace_edge(Mat& gray_img, vector<Point> start_points, RaceTrack& racetrack,
                     racetracks[idx].points.emplace_back(cand_x2, center_y);
                     count++;
                     circle(visual_img, Point((cand_x2, center_y)), 2, Scalar(255, 255, 0), -1);
+                    // ROS_INFO("找到%d,%d",cand_x2,center_y);
                     left_found = true;
                     center_x = cand_x2;
                 }
@@ -167,7 +169,6 @@ bool trace_edge(Mat& gray_img, vector<Point> start_points, RaceTrack& racetrack,
             }
             if (center_y <= 0) break;
         }
-
         // 计算斜率
         if (racetracks[idx].points.size() > 15) {
             Vec4f lineParams;
@@ -191,7 +192,7 @@ bool trace_edge(Mat& gray_img, vector<Point> start_points, RaceTrack& racetrack,
             // }
             racetracks[idx].slope = lineParams[1] / lineParams[0];
         } else {
-            racetracks[idx].slope = -2.0;
+            racetracks[idx].slope = 2.0;
         }
     }
 
@@ -214,8 +215,8 @@ bool trace_edge(Mat& gray_img, vector<Point> start_points, RaceTrack& racetrack,
             circle(visual_img, p, 2, Scalar(0, 255, 0), -1);
         }
         ostringstream oss;
-        oss << "slope: " << racetrack.slope << " direction_change: " << racetrack.direction_change;
-        putText(visual_img, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        oss << "slope: " << racetrack.slope << " direction_change: " << racetrack.direction_change<< "total_trace: " << point_number;
+        putText(visual_img, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         return true;
     }
     return false;
@@ -292,7 +293,8 @@ bool find_right_edge(Mat gray_img, Point& right_point, Mat& visualizeImg) {
     if (best_idx != -1) {
         RaceTrack racetrack = racetracks[best_idx];  // 现在可正常使用
         Point best_point(0, 0);
-        for (size_t i = 0; i < racetrack.points.size(); i += 3) {
+        int direction_change_count = 0;//第一个拐点，不能识别最低点，因为障碍板可能在视野范围内
+        for (size_t i = 5; i < racetrack.points.size(); i += 5) {
             if (racetrack.points[i].y > best_point.y) best_point = racetrack.points[i];
             circle(visualizeImg, racetrack.points[i], 2, Scalar(255, 0, 0), -1);
         }
@@ -300,7 +302,7 @@ bool find_right_edge(Mat gray_img, Point& right_point, Mat& visualizeImg) {
         right_point = best_point;
         ostringstream oss;
         oss << "rightedge: (" << best_point.x << "," << best_point.y << ")";
-        putText(visualizeImg, oss.str(), Point(50, 150), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visualizeImg, oss.str(), Point(50, 150), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         return true;
     }
     return false;
@@ -343,17 +345,17 @@ bool find_other_coner_edge(Mat gray_img,Point& right_edge_point,Mat& visualizeIm
                 bool left_check = (cand_x2 > 1);
                 bool right_check = (cand_x < 638);
 
-                if (left_check && gray_img.at<uchar>(center_y, cand_x2) == 255 && gray_img.at<uchar>(center_y, cand_x2 + 1) == 0) {
+                if (left_check && gray_img.at<uchar>(center_y, cand_x2) == 255 && gray_img.at<uchar>(center_y, cand_x2 - 1) == 0) {
                     racetracks[idx].points.emplace_back(cand_x2, center_y);
                     count++;
                     center_x = cand_x2;
                     left_found = true;
                     break;
                 }
-                if (right_check && gray_img.at<uchar>(center_y, cand_x) == 0 && gray_img.at<uchar>(center_y, cand_x - 1) == 255) {
-                    racetracks[idx].points.emplace_back(cand_x - 1, center_y);
+                if (right_check && gray_img.at<uchar>(center_y, cand_x) == 255 && gray_img.at<uchar>(center_y, cand_x - 1) == 0) {
+                    racetracks[idx].points.emplace_back(cand_x, center_y);
                     count++;
-                    center_x = cand_x - 1;
+                    center_x = cand_x;
                     right_found = true;
                     break;
                 }
@@ -409,7 +411,7 @@ bool find_other_coner_edge(Mat gray_img,Point& right_edge_point,Mat& visualizeIm
     }
     if (best_idx != -1) {
         Point test = racetracks[best_idx].points[racetracks[best_idx].points.size()-1];
-        ROS_INFO("有待选点%d,%d",test.x,test.y);
+        // ROS_INFO("有待选点%d,%d",test.x,test.y);
         if(test.x>620 || test.x<140 || test.y>250 || test.y <60){
             return false;//刚开始点不会跑到边上去
         }
@@ -420,7 +422,7 @@ bool find_other_coner_edge(Mat gray_img,Point& right_edge_point,Mat& visualizeIm
         }
         ostringstream oss;
         oss << "direction_change " << racetracks[best_idx].direction_change;
-        putText(visualizeImg, oss.str(), Point(50, 150), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visualizeImg, oss.str(), Point(50, 150), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         return true;
     }
     return false;
@@ -458,14 +460,14 @@ bool find_other_coner_edge2(Mat gray_img,Point& right_edge_point,Mat& visualizeI
                 bool up_check = (center_y - dy > 2);
                 bool down_check = (center_y + dy < 268);
 
-                if (down_check && gray_img.at<uchar>(center_y + dy, center_x) == 255 && gray_img.at<uchar>(center_y + dy - 1, center_x) == 0) {
+                if (down_check && gray_img.at<uchar>(center_y + dy, center_x) == 255 && gray_img.at<uchar>(center_y + dy + 1, center_x) == 0) {
                     racetracks[idx].points.emplace_back(center_x, center_y + dy);
                     found = true;
                     center_y += dy;
                     count++;
                     break;
                 }
-                if (!found && up_check && gray_img.at<uchar>(center_y - dy, center_x) == 255 && gray_img.at<uchar>(center_y - dy - 1, center_x) == 0) {
+                if (!found && up_check && gray_img.at<uchar>(center_y - dy, center_x) == 255 && gray_img.at<uchar>(center_y - dy +1, center_x) == 0) {
                     racetracks[idx].points.emplace_back(center_x, center_y - dy);
                     found = true;
                     center_y -= dy;
@@ -517,7 +519,7 @@ bool find_other_coner_edge2(Mat gray_img,Point& right_edge_point,Mat& visualizeI
         }
         ostringstream oss;
         oss << "direction_change " << racetracks[best_idx].direction_change;
-        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         circle(visualizeImg, right_edge_point, 9, Scalar(0, 0, 255), -1);
         return true;
     }
@@ -612,7 +614,7 @@ int recently_white(Mat gray_img,Mat& visualizeImg){//回到路口的时候，只
         }
         ostringstream oss;
         oss << "前点: (" << racetrack.points[0].x << "," << racetrack.points[0].y << ")";
-        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+        putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         return racetrack.points[0].y;
     }
     return -1;
@@ -754,30 +756,6 @@ public:
         ROS_INFO("参数加载P: %f", x_max_);
     }
     bool line_server_callback(line_follow::line_follow::Request& req,line_follow::line_follow::Response& resp){
-        // ros::ServiceClient reconfigure_client = nh.serviceClient<dynamic_reconfigure::Reconfigure>("/move_base/set_parameters");
-        // reconfigure_client.waitForExistence();
-        // dynamic_reconfigure::ReconfigureRequest request;
-        // dynamic_reconfigure::ReconfigureResponse response;
-        // dynamic_reconfigure::DoubleParameter planner_frequency;
-        // planner_frequency.name = "planner_frequency";
-        // planner_frequency.value = 0.0;
-        // request.config.doubles.push_back(planner_frequency);
-        // if (reconfigure_client.call(request, response)) {
-        //     ROS_INFO("参数更新成功");
-        //     double new_value;
-        //     if (ros::param::get("/move_base/planner_frequency", new_value)) {
-        //         ROS_INFO("Current planner_frequency: %.2f", new_value);
-        //     }
-        // } else {
-        //     ROS_ERROR("参数更新失败");
-        // }
-
-
-        // ROS_INFO("tf变换");
-        // tf::TransformListener* tf_listener_;
-        // tf_listener_ = new tf::TransformListener();
-
-
         // 1. 读取图像并转换为灰度图
         cv::VideoCapture cap("/dev/video0", cv::CAP_V4L2);
         if (!cap.isOpened()) {
@@ -810,16 +788,17 @@ public:
         bool other_enter = false,pass_out = true,pass_enter = false,out_ready = false,pass_enter_ready = false;//绕环岛期间左巡线
         int out_ready_count = 0,other_enter_count = 0,pass_enter_count = 0;//检测到右线25帧后判定离开，另一入口也要连续判定多帧后才能改变逻辑，避免噪声
 
-        Point other_enter_last_conner = Point(-1,-1);//另一个入口的角点储存
+        Point other_enter_last_conner = Point(700,700);//另一个入口的角点储存
         //-----------从开始到离开出口阶段需要的标志位-----------//
         bool left_point_start_ = false;
         int trace_failed_count_ = 0;
         //--------------从离开出口到错误出口的标志位----------//
         bool pass_out_done = false;
         int right_trace = 0;
-
+        //--------------从错误出口到入口--------//
+        bool trace_recover = false;
+        int trace_recover_count = 0;
         while(ros::ok()){
-            // ROS_INFO("进入循环");
             // ROS_INFO("耗时:%f",(ros::Time::now()-frame_start).toSec());
             // frame_start = ros::Time::now();
             //----------------------------------避障逻辑----------------------------//
@@ -987,7 +966,8 @@ public:
             split(cropped, channels);
             gray_img = channels[2];//红色通道代替灰度图
             threshold_image(gray_img);
-
+            cv::cvtColor(gray_img, cropped, cv::COLOR_GRAY2BGR);
+            // imshow("test",gray_img);
             //-----------------------------预处理结束开始计算赛道误差
             if(pass_out){//第一次通过出口，忽略并离开
                 vector<Point> start_points = find_track_edge(gray_img, 340, 130, cropped);
@@ -995,10 +975,8 @@ public:
                 if(left_point_start_){
                     Point left_edge_point;
                     find_right_edge(gray_img, left_edge_point,cropped);
-                    // twist.linear.x = (205-left_edge_point.y)*other_enter_pointx_+0.1;
-                    // twist.angular.z = (553-left_edge_point.x)*other_enter_pointy_+0.2;
-                    // twist.linear.x = x_max_;
-                    twist.angular.z = twist.linear.x*(640-point_2_speeda-left_edge_point.x)/point_2_speedk*-1;
+                    twist.linear.x = 0.3;
+                    twist.angular.z = twist.linear.x*(640-point_2_speeda-left_edge_point.x)/point_2_speedk;
                     // ROS_INFO("增益是%f",(point_2_speeda-left_edge_point.x)/point_2_speedk);
                     if(left_edge_point.x<90 || left_edge_point.y >180){
                         pass_out_done = true;
@@ -1007,7 +985,7 @@ public:
                     }
                     displayStream <<"x:"<< twist.linear.x<<"z:"<< twist.angular.z<<"erx:"<<205-left_edge_point.y<<"ery:"<<553-left_edge_point.x;
                     string displayText = displayStream.str();
-                    putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                 }
                 else if (trace_edge(gray_img, start_points, racetrack, cropped)) {
                     // 成功追踪到赛道
@@ -1028,7 +1006,7 @@ public:
 
                     // 显示信息
                     displayStream << "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " twistz: " << twist.angular.z;
-                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                     if(pass_out_done){
                         right_trace++;
                         if(right_trace>10){
@@ -1039,6 +1017,10 @@ public:
                     }
                 } else {
                     // 追踪失败计数
+                    if(abs(twist.linear.x)<0.1 && abs(twist.angular.z)<0.1){
+                        twist.linear.x = 0.3;
+                        twist.angular.z = -0.3;
+                    }
                     trace_failed_count_++;
                     if (trace_failed_count_ > 5 && !pass_out_done) {
                         left_point_start_ = true;
@@ -1050,7 +1032,8 @@ public:
 
             if(other_enter){//到达另一个路口，这次右边不会断线，拐弯要强制执行
                 bool find_coner = false;
-                if(other_enter_last_conner.x<320){
+                ROS_INFO("到达另一个入口");
+                if(other_enter_last_conner.x>320){
                     find_coner = find_other_coner_edge(gray_img,other_enter_last_conner,cropped);//发现拐点，强制执行
                     // ROS_INFO("逻辑1,x%d,y%d,find%d",other_enter_last_conner.x,other_enter_last_conner.y,find_coner);
                 }
@@ -1060,21 +1043,22 @@ public:
                 }
                 // if(find_coner && other_enter_last_conner.y>100){
                 if(find_coner){
-                    // twist.linear.x = x_max_;
-                    twist.angular.z = twist.linear.x*(640-point_2_speeda-other_enter_last_conner.x)/point_2_speedk/-1.5;
-                    displayStream <<"x:"<< twist.linear.x<<"z:"<< twist.angular.z<<"positionx"<<other_enter_last_conner.x<<"posiony"<<other_enter_last_conner.y;
+                    if(other_enter_last_conner.y<200) twist.linear.x = 0.3;
+                    else twist.linear.x = 0;
+                    twist.angular.z = twist.linear.x*(640-point_2_speeda-other_enter_last_conner.x)/point_2_speedk/1.5;
+                    displayStream <<"x:"<< twist.linear.x<<"z:"<< twist.angular.z<<"other_enter";
                     string displayText = displayStream.str();
-                    putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                     out_.write(cropped);
                     if(other_enter_last_conner.y>200){
+                        trace_recover = true;
                         other_enter = false;
-                        pass_enter = true;//这个的逻辑塞到后面去了
                         // out_ready = true;
                         ROS_INFO("离开另一个路口");
                     }
                 }
                 else {
-                    vector<Point> start_points = find_track_edge(gray_img, 340, 70, cropped);
+                    vector<Point> start_points = find_track_edge(gray_img, 340, 180, cropped);
                     RaceTrack racetrack;  // 现在RaceTrack已声明，可正常使用
                     if(trace_edge(gray_img, start_points, racetrack, cropped)){
                         double line_error = error_calculater(racetrack.points, cropped);
@@ -1091,10 +1075,49 @@ public:
 
                         // 显示信息
                         displayStream << "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " twistz: " << twist.angular.z;
-                        putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                        putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+                    }else{
+                        twist.linear.x = 0.3;
+                        twist.angular.z = -0.3;//没找到线就这样干
                     }
                     out_.write(cropped);
                 }
+            }
+
+            if(trace_recover){
+                ROS_INFO("大概率断线，恢复中");
+                vector<Point> start_points = find_track_edge(gray_img, 340, 180, cropped);
+                RaceTrack racetrack;  // 现在RaceTrack已声明，可正常使用
+                if(trace_edge(gray_img, start_points, racetrack, cropped)){
+                    trace_recover_count++;
+                    if(trace_recover_count>7){
+                        trace_recover = false;
+                        pass_enter = true;//这个的逻辑塞到后面去了
+                        ROS_INFO("从断线状态恢复");
+                    }
+                    double line_error = error_calculater(racetrack.points, cropped);
+                    // PID计算
+                    integration_ += line_error * 0.03;
+                    integration_ = clamp(integration_, -abs(line_error)/integration_limit_ -1, abs(line_error)/integration_limit_ +1);
+                    double diff = line_error - pre_error_;
+                    diff = clamp(diff, -50.0, 50.0);
+                    
+                    // 速度控制
+                    twist.linear.x = x_max_ / exp(abs(line_error) / 100.0);
+                    twist.angular.z = clamp(line_error*p_ + integration_*i_ + diff*d_, -1.0, 1.0);
+                    pre_error_ = line_error;
+
+                    // 显示信息
+                    displayStream <<"trace_recover"<< "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ ;
+                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+                }
+                else{
+                    twist.linear.x = 0.3;
+                    twist.angular.z = -0.3;//没找到线就这样干
+                    displayStream <<"trace_recover";
+                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+                }
+                out_.write(cropped);
             }
 
             if(pass_enter){//此处赛道和底部不是连续的，特殊处理
@@ -1112,8 +1135,8 @@ public:
                     twist.angular.z = clamp(line_error*p_ + integration_*i_ + diff*d_, -1.0, 1.0);
                     pre_error_ = line_error;
                     // 显示信息
-                    displayStream << "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " twistz: " << twist.angular.z;
-                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    displayStream <<"pass_enter"<< "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ ;
+                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                 }
                 else{
                     pass_enter_count++;//要连续的丢线
@@ -1137,7 +1160,7 @@ public:
                         }
                         displayStream <<"z:"<< twist.angular.z<<"x:  "<<twist.linear.x<<"recent:"<<recent;
                         string displayText = displayStream.str();
-                        putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                        putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                         out_.write(cropped);
                     }
                 }
@@ -1161,8 +1184,8 @@ public:
                             twist.angular.z = out_turn_*-1;
                             while(ros::ok){
                                 // 旋转到位后切换模式
-                                pose_client.call(pose);
-                                ROS_INFO("位置%f,角度%f",pose.response.pose_at[2],out_turn_angel_);
+                                pose_client.call(pose);//
+                                ROS_INFO("位置%f,角度%f",pose.response.pose_at[2],-3.14-out_turn_angel_);
                                 if (pose.response.pose_at[2] > -3.14-out_turn_angel_ && pose.response.pose_at[2]<-0.2) {
                                     left_point_start_ = false;
                                     double_line = true;
@@ -1186,7 +1209,7 @@ public:
 
                         // 显示信息
                         displayStream << "leftxerror: " << error_x << " P: " << error_x*leftpoint_p_ << " I: " << pointx_integration*leftpoint_i_;
-                        putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                        putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                     }
                     out_.write(cropped);
                 }
@@ -1208,7 +1231,7 @@ public:
 
                     // 显示信息
                     displayStream << "error: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " vz: " << twist.angular.z;
-                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                    putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                 } else {
                     // 追踪失败计数
                     trace_failed_count_++;
@@ -1236,7 +1259,7 @@ public:
 
                 // 显示信息
                 displayStream << "doubleerror: " << line_error << " P: " << line_error*p_ << " I: " << integration_*i_ << " D: " << diff*d_ << " vz: " << twist.angular.z;
-                putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+                putText(cropped, displayStream.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                 out_.write(cropped);
             }
 

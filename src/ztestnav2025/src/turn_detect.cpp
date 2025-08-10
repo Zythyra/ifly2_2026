@@ -766,11 +766,11 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                         set_speed_.request.target_twist.angular.z = 0;
                     } 
                     else if(board_slope.response.lidar_results[0]>0){
-                        set_speed_.request.target_twist.angular.z = std::max(board_slope.response.lidar_results[0],0.1f);
+                        set_speed_.request.target_twist.angular.z = std::min(std::max(board_slope.response.lidar_results[0],0.1f),1.0f);
                         set_speed_.request.target_twist.linear.y += set_speed_.request.target_twist.angular.z*-0.6;
                     }
                     else{
-                        set_speed_.request.target_twist.angular.z = std::min(board_slope.response.lidar_results[0],-0.1f);
+                        set_speed_.request.target_twist.angular.z = std::max(std::min(board_slope.response.lidar_results[0],-0.1f),-1.0f);
                         set_speed_.request.target_twist.linear.y += set_speed_.request.target_twist.angular.z*-0.6;
                     }
                     ROS_INFO("板子斜率为%f,速度%f",board_slope.response.lidar_results[0],set_speed_.request.target_twist.angular.z);
