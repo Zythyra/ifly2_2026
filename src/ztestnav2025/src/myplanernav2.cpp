@@ -639,7 +639,7 @@ int main(int argc, char *argv[])
 
     //-----------------------------------------视觉巡线---------------------------------------------//
     if(enter1){
-        if(line_client1.call(linefollow_start)){
+        if(line_client3.call(linefollow_start)){
             ROS_INFO("视觉巡线结束");
         }
         else{
@@ -647,7 +647,7 @@ int main(int argc, char *argv[])
         }
     }
     else{
-        if(line_client2.call(linefollow_start)){//
+        if(line_client4.call(linefollow_start)){//
             ROS_INFO("视觉巡线结束");
         }
         else{

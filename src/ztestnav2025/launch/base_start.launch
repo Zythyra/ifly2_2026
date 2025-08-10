@@ -1,13 +1,13 @@
 <launch>
   <include file="$(find ucar_controller)/launch/base_driver.launch" />
   <include file="$(find ydlidar)/launch/ydlidar.launch"/>
-  <!-- <node pkg="ros_nanodet" type="detect2025.py" name="detect2025" output="screen"/> -->
+  <node pkg="ros_nanodet" type="detect2025.py" name="detect2025" output="screen"/>
   <node pkg="node_manager" type="node_manager_server" name="node_manager_server" output="screen"/>
   <rosparam command="load" file="/home/ucar/ucar_car/src/ztestnav2025/cfg/detect.yaml" ns="myplanernav" />
   
-  <!-- <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+  <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
         <arg name="address" value="192.168.31.99" />
-  </include>  -->
+  </include> 
   <!--  启动底盘 雷达 麦克风-->
   <!-- <node pkg="awake" type="wa" name="detect2025" output="screen"/> -->
 </launch> 
