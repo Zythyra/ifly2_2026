@@ -231,9 +231,30 @@ private:
         return true;
     }
 
+    int brightness_threshold_calculator(Mat& gray_img,Mat& visualizeImg){//寻找跳变最剧烈的那个点，这个点的左值就是图像二值化阈值
+        int max_brightness_change = 0;
+        int best_binary_brightness = 180;//给个默认值，别一会没找到
+        Point threshold_keypoint;
+        for (int y = 220; y > 60; y--) {
+            for (int x = 30; x < 638; x++) {
+                int current = (int)gray_img.at<uchar>(y, x);
+                int next = (int)gray_img.at<uchar>(y, x + 1);
+                if (next>=150&&current>80){   
+                    if (next - current >= max_brightness_change) {
+                        max_brightness_change = next - current;
+                        best_binary_brightness = next-25;
+                        threshold_keypoint = Point(x,y);
+                    }
+                }
+            }
+        }
+        circle(visualizeImg, threshold_keypoint, 7, Scalar(0, 255, 255), -1);
+        return best_binary_brightness;
+    }
+
     // 服务回调函数（核心逻辑）
     bool line_server_callback(line_follow::line_follow::Request& req, line_follow::line_follow::Response& resp) {
-        Mat image, undistorted, cropped, gray_img;
+        Mat image, brightness_threshold_image, cropped, gray_img;
         // 5. 初始化相机和视频录制
         if (!initCameraAndVideo()) {
             ROS_FATAL("相机或视频初始化失败，节点无法启动");
@@ -251,8 +272,14 @@ private:
             vector<Mat> channels;
             split(cropped, channels);
             gray_img = channels[2]; // 红色通道作为灰度图
+            int brightness_threshold = brightness_threshold_calculator(gray_img,cropped);
+            threshold(gray_img, brightness_threshold_image, brightness_threshold, 255, THRESH_BINARY);
             threshold_image(gray_img);
-
+            if(!avoid_done_){
+                cv::bitwise_and(gray_img, brightness_threshold_image, gray_img);
+            }
+            cv::cvtColor(gray_img, cropped, cv::COLOR_GRAY2BGR);
+            
             // 巡线逻辑分支
             if (double_line_) {
                 runDoubleLineTracking(gray_img, cropped);
@@ -280,6 +307,8 @@ private:
         bool right_point_start_ = false;               // 左点追踪标志
         bool point_forward_ = true;                  // 左点前进标志
         int trace_failed_count_ = 0;              // 追踪失败计数
+        cap_.release();
+        out_.release();
         return true;
     }
 

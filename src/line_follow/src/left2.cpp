@@ -46,25 +46,44 @@ T clamp(T value, T min_val, T max_val) {
 }
 
 void threshold_image(Mat& gray) {
-        int adaptive_block = 45;
-        int adaptive_c = -15;
-        int min_contour_area = 250;
+    int adaptive_block = 45;
+    int adaptive_c = -15;
+    int min_contour_area = 250;
 
-        Mat binary;
-        adaptiveThreshold(gray, binary, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY, adaptive_block, adaptive_c);
-        vector<vector<Point>> contours;
-        vector<Vec4i> hierarchy;
-        findContours(binary, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-        Mat denoised = Mat::zeros(binary.size(), CV_8UC1);
-        for (size_t i = 0; i < contours.size(); i++) {
-            if (contourArea(contours[i]) > min_contour_area) {
-                drawContours(denoised, contours, i, Scalar(255), FILLED);
+    Mat binary;
+    adaptiveThreshold(gray, binary, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY, adaptive_block, adaptive_c);
+    vector<vector<Point>> contours;
+    vector<Vec4i> hierarchy;
+    findContours(binary, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+    Mat denoised = Mat::zeros(binary.size(), CV_8UC1);
+    for (size_t i = 0; i < contours.size(); i++) {
+        if (contourArea(contours[i]) > min_contour_area) {
+            drawContours(denoised, contours, i, Scalar(255), FILLED);
+        }
+    }
+    gray = denoised.clone();
+}
+
+int brightness_threshold_calculator(Mat& gray_img,Mat& visualizeImg){//寻找跳变最剧烈的那个点，这个点的左值就是图像二值化阈值
+    int max_brightness_change = 0;
+    int best_binary_brightness = 180;//给个默认值，别一会没找到
+    Point threshold_keypoint;
+    for (int y = 269; y > 100; y--) {
+        for (int x = 30; x < 638; x++) {
+            int current = (int)gray_img.at<uchar>(y, x);
+            int next = (int)gray_img.at<uchar>(y, x + 1);
+            if (next>=150&&current>80){   
+                if (next - current >= max_brightness_change) {
+                    max_brightness_change = next - current;
+                    best_binary_brightness = next-25;
+                    threshold_keypoint = Point(x,y);
+                }
             }
         }
-        gray = denoised.clone();
     }
-
-
+    circle(visualizeImg, threshold_keypoint, 7, Scalar(0, 255, 255), -1);
+    return best_binary_brightness;
+}
 
 bool stop_car(Mat& gray, int& point, Mat& visual_img) {
     int white_count = 0;
@@ -293,8 +312,16 @@ bool find_right_edge(Mat gray_img, Point& right_point, Mat& visualizeImg) {
     if (best_idx != -1) {
         RaceTrack racetrack = racetracks[best_idx];  // 现在可正常使用
         Point best_point(0, 0);
-        int direction_change_count = 0;//第一个拐点，不能识别最低点，因为障碍板可能在视野范围内
+        int direction_change_count = 0,end_ = 0;//第一个拐点，不能识别最低点，因为障碍板可能在视野范围内
         for (size_t i = 5; i < racetrack.points.size(); i += 5) {
+            circle(visualizeImg, racetrack.points[i], 2, Scalar(255, 0, 0), -1);
+            if (racetrack.points[i].y < racetrack.points[i-5].y) direction_change_count++;
+            if(direction_change_count>3) {
+                end_ = i;
+                break;
+            }
+        }
+        for(int i=0;i<end_;i++){
             if (racetrack.points[i].y > best_point.y) best_point = racetrack.points[i];
             circle(visualizeImg, racetrack.points[i], 2, Scalar(255, 0, 0), -1);
         }
@@ -360,7 +387,7 @@ bool find_other_coner_edge(Mat gray_img,Point& right_edge_point,Mat& visualizeIm
                     break;
                 }
             }
-            if(count>5){
+            if(count>3){
                 if((racetracks[idx].points.back().x - lastx)*(lastx-last_lastx)*last_lastx<0){//意思就是说看x坐标的变化，先增后减差积为负,多*一个零保证初始不会算错一个数字
                     racetracks[idx].direction_change++;
                 }
@@ -385,17 +412,19 @@ bool find_other_coner_edge(Mat gray_img,Point& right_edge_point,Mat& visualizeIm
 
     // 选择最优赛道
     int best_idx = -1,first_index = -1,second_index = -1;
-    float first = 2.1,second = 1.8;//先找出最平滑的两条赛道，然后筛选出靠左的一个
+    float first = 2.1,second = 1.8;//先找出最平滑的两条赛道，然后筛选出靠右的一个
     for (int i = 0; i < point_number; i++) {
-        float direction_change_in_total = racetracks[i].direction_change/(float)racetracks[i].points.size();
-        if (direction_change_in_total<first) {
-            first = direction_change_in_total;
-            first_index = i;
-        }
-        else if(direction_change_in_total<second){
-            second = direction_change_in_total;
-            second_index = i;
-        }
+        // if(racetracks[i].points.size()>15){
+            float direction_change_in_total = racetracks[i].direction_change/(float)racetracks[i].points.size();
+            if (direction_change_in_total<first) {
+                first = direction_change_in_total;
+                first_index = i;
+            }
+            else if(direction_change_in_total<second){
+                second = direction_change_in_total;
+                second_index = i;
+            }
+        // }
     }
 
     if(second>0.1){
@@ -475,7 +504,7 @@ bool find_other_coner_edge2(Mat gray_img,Point& right_edge_point,Mat& visualizeI
                     break;
                 }
             }
-            if(count>5){
+            if(count>3){
                 if((racetracks[idx].points.back().x - lastx)*(lastx-last_lastx)*last_lastx<0){//意思就是说看x坐标的变化，先增后减差积为负,多*一个零保证初始不会算错一个数字
                     racetracks[idx].direction_change++;
                 }
@@ -785,7 +814,7 @@ public:
         bool avoid_done = false;//避障结束后不急着走，先平移恢复一下
 
         bool out_range = false,start = true;//出圆环判断标志,开始巡线标志，movabese可能导致巡线一开始就压线，先导航到外面，让他自己进来
-        bool other_enter = false,pass_out = true,pass_enter = false,out_ready = false,pass_enter_ready = false;//绕环岛期间左巡线
+        bool other_enter = false,pass_out = true,pass_enter = false,pass_enter_ready = false;//绕环岛期间左巡线
         int out_ready_count = 0,other_enter_count = 0,pass_enter_count = 0;//检测到右线25帧后判定离开，另一入口也要连续判定多帧后才能改变逻辑，避免噪声
 
         Point other_enter_last_conner = Point(700,700);//另一个入口的角点储存
@@ -797,7 +826,12 @@ public:
         int right_trace = 0;
         //--------------从错误出口到入口--------//
         bool trace_recover = false;
-        int trace_recover_count = 0;
+        int trace_recover_count = 0,lose_point = 0;
+        //--------------从入口到驶离--------//
+        bool out_ready = false,start_enter = false;
+        int normal_trace_count = 0;
+
+
         while(ros::ok()){
             // ROS_INFO("耗时:%f",(ros::Time::now()-frame_start).toSec());
             // frame_start = ros::Time::now();
@@ -961,11 +995,16 @@ public:
 
             Mat cropped = image(roi);
             flip(cropped, cropped, 1);
-            Mat gray_img;
+            Mat gray_img,brightness_threshold_image;
             vector<Mat> channels;
             split(cropped, channels);
             gray_img = channels[2];//红色通道代替灰度图
+            int brightness_threshold = brightness_threshold_calculator(gray_img,cropped);
+            threshold(gray_img, brightness_threshold_image, brightness_threshold, 255, THRESH_BINARY);
             threshold_image(gray_img);
+            if(!avoid_done){
+                cv::bitwise_and(gray_img, brightness_threshold_image, gray_img);
+            }
             cv::cvtColor(gray_img, cropped, cv::COLOR_GRAY2BGR);
             // imshow("test",gray_img);
             //-----------------------------预处理结束开始计算赛道误差
@@ -1051,10 +1090,17 @@ public:
                     putText(cropped, displayText, Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
                     out_.write(cropped);
                     if(other_enter_last_conner.y>200){
-                        trace_recover = true;
-                        other_enter = false;
-                        // out_ready = true;
-                        ROS_INFO("离开另一个路口");
+                        lose_point ++;
+                        if(lose_point>3){
+                            trace_recover = true;
+                            trace_recover_count = 0;
+                            other_enter = false;
+                            // out_ready = true;
+                            ROS_INFO("离开另一个路口");
+                        }
+                    }
+                    else{
+                        lose_point = 0;
                     }
                 }
                 else {
@@ -1092,7 +1138,12 @@ public:
                     trace_recover_count++;
                     if(trace_recover_count>7){
                         trace_recover = false;
-                        pass_enter = true;//这个的逻辑塞到后面去了
+                        if(out_ready){
+                            out_range = true;
+                        }
+                        else{
+                            pass_enter = true;//这个的逻辑塞到后面去了
+                        }
                         ROS_INFO("从断线状态恢复");
                     }
                     double line_error = error_calculater(racetrack.points, cropped);
@@ -1124,6 +1175,16 @@ public:
                 vector<Point> maybe_start_point = find_track_edge(gray_img, 340, 123, cropped);
                 RaceTrack racetrack;  // 现在RaceTrack已声明，可正常使用
                 if(trace_edge(gray_img, maybe_start_point, racetrack, cropped)){
+                    if(start_enter){
+                        normal_trace_count++;
+                        if(normal_trace_count>10){
+                            out_range = true;
+                            pass_enter = false;
+                            trace_failed_count_ = 0;//这两个标志位前面用过了，复原一下
+                            left_point_start_ = false;
+                            ROS_INFO("准备离开圆环");
+                        }
+                    }
                     double line_error = error_calculater(racetrack.points, cropped);
                     // PID计算
                     integration_ += line_error * 0.03;
@@ -1142,6 +1203,7 @@ public:
                     pass_enter_count++;//要连续的丢线
                     if(pass_enter_count>3){
                         ROS_INFO("回到路口");
+                        start_enter = true;
                         int recent = recently_white(gray_img,cropped);
                         if(recent<170){
                             twist.linear.x = 0.4;
@@ -1152,7 +1214,9 @@ public:
                             twist.angular.z = -1.5;
                         }
                         if(pose.response.pose_at[2]>-2.355 && pose.response.pose_at[2]< -0.7){//准备好出圆环后看到80帧画面，就出圆环
-                            out_range = true;
+                            out_ready = true;
+                            trace_recover = true;
+                            trace_recover_count = 0;
                             pass_enter = false;
                             trace_failed_count_ = 0;//这两个标志位前面用过了，复原一下
                             left_point_start_ = false;

@@ -1,24 +1,6 @@
-right_P: 0.015
-right_I: 0.05
-right_D: 0.06
-integration_limit: 150.0
-
-leftpoint_p: 0.004
-leftpoint_I: 0.05
-leftpoint_D: 0.017
-
-double_P: 0.005
-double_I: 0.05
-double_D: 0.017
-
-out_turn_angel: -1.3
-out_forward: 0.075
-out_turn: -1.0
-x_max_: 0.9
-
 # right_P: 0.015
 # right_I: 0.05
-# right_D: 0.04
+# right_D: 0.06
 # integration_limit: 150.0
 
 # leftpoint_p: 0.004
@@ -32,7 +14,25 @@ x_max_: 0.9
 # out_turn_angel: -1.3
 # out_forward: 0.075
 # out_turn: -1.0
-# x_max_: 0.7
+# x_max_: 0.9
+
+right_P: 0.015
+right_I: 0.05
+right_D: 0.04
+integration_limit: 150.0
+
+leftpoint_p: 0.004
+leftpoint_I: 0.05
+leftpoint_D: 0.017
+
+double_P: 0.005
+double_I: 0.05
+double_D: 0.017
+
+out_turn_angel: -1.3
+out_forward: 0.075
+out_turn: -1.0
+x_max_: 0.7
 
 # right_P: 0.007
 # right_I: 0.05
