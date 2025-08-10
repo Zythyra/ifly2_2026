@@ -105,12 +105,6 @@ public:
         // 3. 初始化ROS客户端和发布者
         initRosComponents();
 
-        // 4. 读取相机标定文件并初始化去畸变
-        if (!loadCalibrationFile()) {
-            ROS_FATAL("标定文件加载失败，节点无法启动");
-            ros::shutdown();
-            return;
-        }
 
         ROS_INFO("所有组件初始化完成");
     }
@@ -213,29 +207,6 @@ private:
         } else {
             ROS_ERROR("参数更新失败");
         }
-    }
-
-    // 加载相机标定文件
-    bool loadCalibrationFile() {
-        FileStorage fs("/home/ucar/ucar_car/src/line_follow/camera_info/pinhole.yaml", FileStorage::READ);
-        if (!fs.isOpened()) {
-            ROS_ERROR("无法打开标定文件");
-            return false;
-        }
-        fs["camera_matrix"] >> cameraMatrix_;
-        fs["distortion_coefficients"] >> distCoeffs_;
-        fs.release();
-
-        // 初始化去畸变映射表
-        Mat optimalMatrix = getOptimalNewCameraMatrix(
-            cameraMatrix_, distCoeffs_, Size(640, 480), 1, Size(640, 480)
-        );
-        initUndistortRectifyMap(
-            cameraMatrix_, distCoeffs_, Mat(), optimalMatrix,
-            Size(640, 480), CV_32FC1, map1_, map2_
-        );
-        ROS_INFO("标定文件加载和去畸变初始化完成");
-        return true;
     }
 
     // 初始化相机和视频录制
@@ -683,7 +654,7 @@ private:
                     last_left = false;
                     last_right = true;
                 }
-                if (last_right && left_found) {
+                else if (last_right && left_found) {
                     racetracks[idx].direction_change++;
                     last_left = true;
                     last_right = false;

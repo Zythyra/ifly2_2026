@@ -462,7 +462,7 @@ private:
         pre_error_ = line_error;
 
         // 显示信息
-        displayStream_ << "双边误差: " << line_error 
+        displayStream_ << "doubleerror: " << line_error 
                       << " P: " << line_error*p_ 
                       << " I: " << integration_*i_ 
                       << " D: " << diff*d_ 
@@ -516,11 +516,8 @@ private:
             pointx_pre_error_ = error_x;
 
             // 显示信息
-            displayStream_ << "左点误差: " << error_x 
-                          << " P: " << error_x*leftpoint_p_ 
-                          << " I: " << pointx_integration_*leftpoint_I_;
-            putText(cropped, displayStream_.str(), Point(50, 50),
-                    FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+            displayStream_ << "lefterror: " << error_x << " P: " << error_x*leftpoint_p_ << " I: " << pointx_integration_*leftpoint_I_;
+            putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
         }
         out_.write(cropped);
     }
