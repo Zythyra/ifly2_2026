@@ -608,7 +608,9 @@ int main(int argc, char *argv[])
     // if(sim_talkto_car.sim_room>=0){
     //     msg.data = sim_talkto_car.sim_room + 11;
     //     audio_pub.publish(msg);
+        // ros::Time test = ros::Time::now();
     //     play_audio(voice[2][sim_talkto_car.sim_room-1]);
+        // ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
     // }
     // else {
     //     ROS_INFO("仿真失败");
@@ -623,7 +625,9 @@ int main(int argc, char *argv[])
         // ROS_INFO("路口1可通过");
         msg.data = 15;
         audio_pub.publish(msg);
+        ros::Time test = ros::Time::now();
         play_audio(voice[3][0]);
+        ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
         // go_destination(goal,2.83,3.5,-1.18,q,ac);
         go_destination(goal,2.75,3.6,-1.57,q,ac);
     } 
@@ -636,13 +640,17 @@ int main(int argc, char *argv[])
             // ROS_INFO("路口2可通过");
             msg.data = 16;
             audio_pub.publish(msg);
+            ros::Time test = ros::Time::now();
             play_audio(voice[3][1]);
+            ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
             // go_destination(goal,4.75,3.44,-1.86,q,ac);
             go_destination(goal,4.75,3.6,-1.57,q,ac);
         } 
         else {
             ROS_WARN("两个路口均未找到绿灯，执行备选方案通过路口2");
+            ros::Time test = ros::Time::now();
             play_audio(voice[3][1]);
+            ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
             go_destination(goal,4.75,3.44,-1.86,q,ac);
         }
     }
@@ -667,7 +675,9 @@ int main(int argc, char *argv[])
 
     msg.data = 17 + board_name*3 + sim_talkto_car.sim_detect_class%3;
     audio_pub.publish(msg);
+    ros::Time test = ros::Time::now();
     play_audio(voice[4+board_name][sim_talkto_car.sim_detect_class-board_name/3*3]);
+    ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
     ros::spin();
 
     return 0;
