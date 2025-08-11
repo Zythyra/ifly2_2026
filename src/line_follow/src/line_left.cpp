@@ -365,6 +365,8 @@ private:
         const double tolerance_x = 0.02;
         const double tolerance_y = 0.03;
         ros::Rate rate(20.0);
+        track_x = pose_.response.pose_at[0];//不硬编码为3.75，使用当前坐标
+        side_step_x = track_x - 0.5;
 
         // 第1步：横向平移至side_step_x
         ROS_INFO("避障第1步: 横向平移至 x=%.2f", side_step_x);
@@ -372,6 +374,7 @@ private:
             pose_client_.call(pose_);
             double current_x = pose_.response.pose_at[0];
             double current_yaw = pose_.response.pose_at[2];
+
             double error_x = side_step_x - current_x;
             if (fabs(error_x) < tolerance_x) break;
 
@@ -900,9 +903,9 @@ private:
             int y = traced_points[i].y;
             double mid_error;
             if (i <= 30.0) {
-                mid_error = (traced_points[i].x + (280 - (188 - y) * 1.34) - 320) * (1 - i / 100);
+                mid_error = (traced_points[i].x + (240 - (188 - y) * 1.34) - 320) * (1 - i / 100);//280
             } else {
-                mid_error = (traced_points[i].x + (280 - (188 - y) * 1.34) - 320) * 0.7 * exp(-0.064 * (i - 30.0));
+                mid_error = (traced_points[i].x + (240 - (188 - y) * 1.34) - 320) * 0.7 * exp(-0.064 * (i - 30.0));
             }
             total_error += mid_error;
         }
@@ -910,7 +913,7 @@ private:
         // 绘制轨迹
         for (int i = 0; i < traced_points.size(); i++) {
             int y = traced_points[i].y;
-            Point pt(traced_points[i].x + (280 - (188 - y) * 1.34), traced_points[i].y);
+            Point pt(traced_points[i].x + (240 - (188 - y) * 1.34), traced_points[i].y);
             circle(visualizeImg, pt, 3, Scalar(0, 255, 0), -1);
         }
 

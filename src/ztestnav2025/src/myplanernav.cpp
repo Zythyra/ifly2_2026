@@ -579,42 +579,42 @@ int main(int argc, char *argv[])
     //发送仿真消息
     ros::Rate rate(1);
     bool shut_down = false;
-    // while (ros::ok()) {
-    //     sim_talkto_car.car_msg_publish(board_name);
-    //     rate.sleep();
-    //     ros::spinOnce();
-    //     publishInitialPose(1.25,3.75,0.0,q,initial_pose_pub_ );
-    //         if(!shut_down){
-    //             if (node_client.call(node_srv)) {
-    //                 if (node_srv.response.success) {
-    //                     ROS_INFO("成功: %s", node_srv.response.message.c_str());
-    //                     shut_down = true;
-    //                 } else {
-    //                     ROS_WARN("失败: %s", node_srv.response.message.c_str());
-    //                 }
-    //             } else {
-    //                 ROS_ERROR("服务调用失败");
-    //             }
-    //             if (clear_costmaps_client.call(srv)) { // 发送请求
-    //                 ROS_INFO("清理代价地图");
-    //             } else {
-    //                 ROS_ERROR("清理失败");
-    //             }
-    //         }
-    //     if(sim_talkto_car.sim_done==1){
-    //         break;
-    //     }
-    // }
-    // if(sim_talkto_car.sim_room>=0){
-    //     msg.data = sim_talkto_car.sim_room + 11;
-    //     audio_pub.publish(msg);
-        // ros::Time test = ros::Time::now();
-    //     play_audio(voice[2][sim_talkto_car.sim_room-1]);
-        // ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
-    // }
-    // else {
-    //     ROS_INFO("仿真失败");
-    // }
+    while (ros::ok()) {
+        sim_talkto_car.car_msg_publish(board_name);
+        rate.sleep();
+        ros::spinOnce();
+        publishInitialPose(1.25,3.75,0.0,q,initial_pose_pub_ );
+        if(!shut_down){
+            if (node_client.call(node_srv)) {
+                if (node_srv.response.success) {
+                    ROS_INFO("成功: %s", node_srv.response.message.c_str());
+                    shut_down = true;
+                } else {
+                    ROS_WARN("失败: %s", node_srv.response.message.c_str());
+                }
+            } else {
+                ROS_ERROR("服务调用失败");//
+            }
+            if (clear_costmaps_client.call(srv)) { // 发送请求
+                ROS_INFO("清理代价地图");
+            } else {
+                ROS_ERROR("清理失败");
+            }
+        }
+        if(sim_talkto_car.sim_done==1){
+            break;
+        }
+    }
+    if(sim_talkto_car.sim_room>=0){
+        msg.data = sim_talkto_car.sim_room + 11;
+        audio_pub.publish(msg);
+        ros::Time test = ros::Time::now();
+        play_audio(voice[2][sim_talkto_car.sim_room-1]);
+        ROS_INFO("播报耗时%f",(ros::Time::now()-test).toSec());
+    }
+    else {
+        ROS_INFO("仿真失败");
+    }
     
 
     //--------------------------------------------前往红绿灯识别区域--------------------------------------------//

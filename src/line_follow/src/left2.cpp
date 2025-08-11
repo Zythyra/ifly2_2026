@@ -722,9 +722,9 @@ double error_calculater(vector<Point>& traced_points, Mat& visualizeImg) {
         int y = traced_points[i].y;
         double mid_error;
         if (i <= 30.0) {
-            mid_error = (traced_points[i].x + (280 - (188 - y) * 1.34) - 320) * (1 - i / 100);
+            mid_error = (traced_points[i].x + (240 - (188 - y) * 1.34) - 320) * (1 - i / 100);
         } else {
-            mid_error = (traced_points[i].x + (280 - (188 - y) * 1.34) - 320) * 0.7 * exp(-0.064 * (i - 30.0));
+            mid_error = (traced_points[i].x + (240 - (188 - y) * 1.34) - 320) * 0.7 * exp(-0.064 * (i - 30.0));
         }
         total_error += mid_error;
     }
@@ -732,7 +732,7 @@ double error_calculater(vector<Point>& traced_points, Mat& visualizeImg) {
     // 绘制轨迹
     for (int i = 0; i < traced_points.size(); i++) {
         int y = traced_points[i].y;
-        Point pt(traced_points[i].x + (280 - (188 - y) * 1.34), traced_points[i].y);
+        Point pt(traced_points[i].x + (240 - (188 - y) * 1.34), traced_points[i].y);
         circle(visualizeImg, pt, 3, Scalar(0, 255, 0), -1);
     }
 
@@ -858,7 +858,7 @@ public:
 
                         // 定义避障过程中的目标点和姿态
                         double target_yaw = -1.57;      // 目标朝向，保持前进方向
-                        double side_step_x = 3.25;      // 避障时横向平移到的X坐标
+                        double side_step_x = 3.20;      // 避障时横向平移到的X坐标
                         double track_x = 3.75;          // 原始赛道的X坐标
                         double forward_target_y = initial_y - board.response.lidar_results[0] - 0.19;
 
@@ -872,6 +872,8 @@ public:
                         const double tolerance_x = 0.02;     // X方向容忍误差
                         const double tolerance_y = 0.03;     // Y方向容忍误差
                         ros::Rate rate(20.0);                // 控制频率
+                        track_x = pose.response.pose_at[0];//不硬编码为3.75，使用当前坐标
+                        side_step_x = track_x - 0.5;
 
                         // --- 第1步: 横向平移至 x = 3.25 ---
                         ROS_INFO("避障第1步: 横向平移至 x=%.2f", side_step_x);
