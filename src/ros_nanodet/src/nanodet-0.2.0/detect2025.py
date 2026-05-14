@@ -101,7 +101,7 @@ def detect_start(req):
         clear_cap_buffer(response)#清空缓存区
         return response
     if req.detect_start==4:
-        min_score = 0.25
+        min_score = 0.45
     rec, frame = cap.read()
     # frame = whitebalance.process(frame)
     # print("拍照耗时")

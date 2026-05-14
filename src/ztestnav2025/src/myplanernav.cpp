@@ -390,7 +390,7 @@ int main(int argc, char *argv[])
     }
 
     // go_destination(goal,0.50,2.25,3.14,q,ac);
-    go_destination(goal,1.25,3.75,0,q,ac);
+    go_destination(goal,1.25,3.75,-1.57,q,ac);
     ROS_INFO("走廊环境导航完成");
 
 
@@ -400,14 +400,14 @@ int main(int argc, char *argv[])
     bool flag=false;//判断到达与否
     //第一点视觉识别
     //视觉识别开始，先传个-1把摄像头打开
-    publishInitialPose(1.25,3.75,0,q,initial_pose_pub_ );
+    publishInitialPose(1.25,3.75,-1.57,q,initial_pose_pub_ );
     std::vector<std::vector<int>> a = {{-1},{-1},{-1},{-1},{-1},{-1}};
     mecanumController.detect(a,-1);
     
     //然后去中间，识别目标，或者定位遮挡视野的板子
     double targetx, targety, targetz, targetx2, targety2, targetz2;
     bool target2flag = false,targetflag = false,use_forward = false;
-    if(mecanumController.turn_and_find_plus(17,board_class,0.52,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
+    if(mecanumController.turn_and_find_plus(17,board_class,0.6,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
         if (!use_forward)
         {
             if (std::min(abs(targetx2-0),abs(targetx2 - 2.5))>0.4 && std::min(abs(targety2 - 2),abs(targety2 - 5))>0.4)//终点太靠墙直接视觉过去也能避开
@@ -420,7 +420,7 @@ int main(int argc, char *argv[])
 
             }
         }
-        board_name = mecanumController.forward_and_adjust(board_class,0.35);
+        board_name = mecanumController.forward_and_adjust(board_class,0.43);
         if(board_name<0){//出现这种情况，比较糟糕，要么是路被封死了，要么是走一半目标丢了
             if(mecanumController.turn_and_find_plus(17,board_class,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
                 where_board.request.lidar_process_start = 4;

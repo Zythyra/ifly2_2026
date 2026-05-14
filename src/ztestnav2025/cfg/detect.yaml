@@ -10,4 +10,6 @@ turn_find_p: 0.1
 turn_find_i: 0.1
 turn_find_d: 0.08
 
+speed: 0.02
+
 lidar_board_backdisdance: 0.29

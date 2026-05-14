@@ -60,6 +60,7 @@ private:
     ostringstream displayStream_;         // 信息显示流
     Rect roi_;                            // 图像裁剪区域
     Mat map1_, map2_;                     // 去畸变映射表
+    int center_distance;
 
     // 控制参数
     double p_, i_, d_;                    // PID参数
@@ -137,7 +138,8 @@ private:
         nh_.getParam("/line_right/out_forward", out_forward_);
         nh_.getParam("/line_right/out_turn", out_turn_);
         nh_.getParam("/line_right/out_turn_angel", out_turn_angel_);
-        ROS_INFO("参数加载完成: P=%.2f, I=%.2f, D=%.2f", p_, i_, d_);
+        nh_.getParam("/line_right/center_distance", center_distance);
+        ROS_INFO("参数加载完成: center_distance=%d", center_distance);
     }
 
     // 初始化ROS组件（客户端、发布者等）
@@ -321,8 +323,8 @@ private:
 
         if (board_.response.lidar_results[0] != -1) {
             // 距离过近时执行避障
-            if (board_.response.lidar_results[0] <= 0.41) {
-                ROS_INFO("触发避障，最短距离: %.2f", board_.response.lidar_results[0]);
+            if (board_.response.lidar_results[0] <= 0.5) {
+                // ROS_INFO("触发避障，最短距离: %.2f", board_.response.lidar_results[0]);
                 executeObstacleAvoidanceSequence();
                 avoid_done_ = true;
                 x_max_ = 0.7;
@@ -903,9 +905,9 @@ private:
             int y = traced_points[i].y;
             double mid_error;
             if (i <= 30.0) {
-                mid_error = (traced_points[i].x + (240 - (188 - y) * 1.34) - 320) * (1 - i / 100);//280
+                mid_error = (traced_points[i].x + (center_distance - (188 - y) * 1.34) - 320) * (1 - i / 100);//280
             } else {
-                mid_error = (traced_points[i].x + (240 - (188 - y) * 1.34) - 320) * 0.7 * exp(-0.064 * (i - 30.0));
+                mid_error = (traced_points[i].x + (center_distance - (188 - y) * 1.34) - 320) * 0.7 * exp(-0.064 * (i - 30.0));
             }
             total_error += mid_error;
         }
@@ -913,7 +915,7 @@ private:
         // 绘制轨迹
         for (int i = 0; i < traced_points.size(); i++) {
             int y = traced_points[i].y;
-            Point pt(traced_points[i].x + (240 - (188 - y) * 1.34), traced_points[i].y);
+            Point pt(traced_points[i].x + (center_distance - (188 - y) * 1.34), traced_points[i].y);
             circle(visualizeImg, pt, 3, Scalar(0, 255, 0), -1);
         }
 

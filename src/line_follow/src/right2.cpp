@@ -40,6 +40,8 @@ struct RaceTrack {
     bool left_point;               // 是否为左赛道标志
 };
 
+int center_distance;
+
 template <typename T>
 T clamp(T value, T min_val, T max_val) {
     return std::max(min_val, std::min(value, max_val));
@@ -709,9 +711,9 @@ double error_calculater(vector<Point>& traced_points, Mat& visualizeImg) {
         int y = traced_points[i].y;
         double mid_error;
         if (i <= 30.0) {
-            mid_error = (traced_points[i].x - (240 - (188 - y) * 1.34) - 320) * (1 - i / 100);
+            mid_error = (traced_points[i].x - (center_distance - (188 - y) * 1.34) - 320) * (1 - i / 100);
         } else {
-            mid_error = (traced_points[i].x - (240 - (188 - y) * 1.34) - 320) * 0.7 * exp(-0.064 * (i - 30.0));
+            mid_error = (traced_points[i].x - (center_distance - (188 - y) * 1.34) - 320) * 0.7 * exp(-0.064 * (i - 30.0));
         }
         total_error += mid_error;
     }
@@ -719,7 +721,7 @@ double error_calculater(vector<Point>& traced_points, Mat& visualizeImg) {
     // 绘制轨迹
     for (int i = 0; i < traced_points.size(); i++) {
         int y = traced_points[i].y;
-        Point pt(traced_points[i].x - (240 - (188 - y) * 1.34), traced_points[i].y);
+        Point pt(traced_points[i].x - (center_distance - (188 - y) * 1.34), traced_points[i].y);
         circle(visualizeImg, pt, 3, Scalar(0, 255, 0), -1);
     }
 
@@ -742,6 +744,7 @@ private:
 
     double p_,i_,d_,integration_,pre_error_,leftpoint_p_,leftpoint_i_,leftpoint_D_,x_max_,other_enter_pointy_,other_enter_pointx_,integration_limit_,out_turn_,out_forward_;
     double point_2_speeda,point_2_speedk,out_turn_angel_;
+
 
 public:
     LineFollowerNode() : nh(""){
@@ -770,7 +773,9 @@ public:
         nh.getParam("/right2/integration_limit", integration_limit_);
         nh.getParam("/right2/point_2_speeda", point_2_speeda);
         nh.getParam("/right2/point_2_speedk", point_2_speedk);
+        nh.getParam("/right2/center_distance", center_distance);
         ROS_INFO("参数加载P: %f", x_max_);
+        ROS_INFO("参数加载完成: center_distance=%d",center_distance);
     }
 
         
@@ -990,7 +995,7 @@ public:
                         ROS_INFO("避障结束");
                         avoid_done = true;
                         // nh.getParam("/line_right/x_max_", x_max_);
-                        x_max_ = 0.6;
+                        x_max_ = 0.5;
                         double_line = true;
                         nh.getParam("/line_right/double_P", p_);
                         nh.getParam("/line_right/double_I", i_);
@@ -1270,7 +1275,7 @@ public:
                                     left_point_start_ = false;
                                     double_line = true;
                                     out_range = false;
-                                    x_max_ = 0.5;
+                                    x_max_ = 0.3;
                                     nh.getParam("/line_right/double_P", p_);
                                     nh.getParam("/line_right/double_I", i_);
                                     nh.getParam("/line_right/double_D", d_);

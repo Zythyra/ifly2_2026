@@ -1,5 +1,5 @@
 <launch>
-  <arg name="map" default="mapname.yaml" />
+  <arg name="map" default="map2026.yaml" />
   <node name="map_server" pkg="map_server" type="map_server" args="$(find ztestnav2025)/map/$(arg map)"/>
 </launch>
 

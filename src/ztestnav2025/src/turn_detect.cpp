@@ -663,6 +663,10 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
 
     int target_board = -1,center_x,box_height;//记录板子位置和类别
 
+    double speed;
+    nh_.getParam("/myplanernav/speed",speed);
+    ROS_INFO("速度是%f",speed);
+
     while(ros::ok()){
         bool find = false;
         detect(result, score);// 持续检测目标
@@ -766,19 +770,19 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
                         set_speed_.request.target_twist.angular.z = 0;
                     } 
                     else if(board_slope.response.lidar_results[0]>0){
-                        set_speed_.request.target_twist.angular.z = std::min(std::max(board_slope.response.lidar_results[0],0.1f),1.0f);
+                        set_speed_.request.target_twist.angular.z = std::min(std::max(board_slope.response.lidar_results[0]/2,0.1f),1.0f);
                         set_speed_.request.target_twist.linear.y += set_speed_.request.target_twist.angular.z*-0.6;
                     }
                     else{
-                        set_speed_.request.target_twist.angular.z = std::max(std::min(board_slope.response.lidar_results[0],-0.1f),-1.0f);
+                        set_speed_.request.target_twist.angular.z = std::max(std::min(board_slope.response.lidar_results[0]/2,-0.1f),-1.0f);
                         set_speed_.request.target_twist.linear.y += set_speed_.request.target_twist.angular.z*-0.6;
                     }
                     ROS_INFO("板子斜率为%f,速度%f",board_slope.response.lidar_results[0],set_speed_.request.target_twist.angular.z);
                     if(std::abs(board_slope.response.lidar_results[1]-0.3)<0.05 || std::abs(board_slope.response.lidar_results[0])>0.6){
                         set_speed_.request.target_twist.linear.x = 0;
                     }
-                    else if(board_slope.response.lidar_results[1]-0.3>0){
-                        set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-0.22,0.05);
+                    else if(board_slope.response.lidar_results[1]-0.25>0){
+                        set_speed_.request.target_twist.linear.x = std::max(board_slope.response.lidar_results[1]-speed,0.05);
                     }
                     else {
                         set_speed_.request.target_twist.linear.x = -0.08;

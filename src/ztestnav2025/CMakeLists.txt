@@ -167,6 +167,7 @@ add_executable(lidar_process src/lidar_process.cpp)
 add_executable(myplanernav src/myplanernav.cpp)
 add_executable(myplanernav2 src/myplanernav2.cpp)
 add_executable(simple_move_control src/simple_move_control.cpp)
+add_executable(nav_test src/nav_test.cpp)
 
 
 # add_executable(turn_detect src/turn_detect.cpp)
@@ -221,6 +222,10 @@ target_link_libraries(simple_move_control
 target_link_libraries(traffic_light
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
+)
+
+target_link_libraries(nav_test
+  ${catkin_LIBRARIES}
 )
 
 # target_link_libraries(lidar_test

@@ -32,7 +32,7 @@ namespace my_planner
         ROS_WARN("本地规划器，启动！");
         if (!tf || !costmap_ros) {
             ROS_FATAL("致命错误: TF Buffer 或 CostmapROS 的指针为空!");
-            // 抛出异常是更健壮的做法，能让 move_base 知道插件初始化失败
+           
             throw std::runtime_error("TF Buffer 或 CostmapROS 的指针为空!");
         }
         
@@ -646,9 +646,9 @@ namespace my_planner
         }
         
         cmd_vel.linear.x = target_pose.pose.position.x * dynamic_x_gain;//小车运动速度比例系数
-        // ROS_INFO("前进速度是%f",cmd_vel.linear.x);
-        // cmd_vel.linear.y = target_pose.pose.position.y * path_linear_y_gain_;
-        // cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_;
+        ROS_INFO("前进速度是%f",cmd_vel.linear.x);
+        cmd_vel.linear.y = target_pose.pose.position.y * path_linear_y_gain_;
+        cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_;
         cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_ + (min_y_deviation - y_pre_error) * y_diff_gain_;//y速度也使用pd调节,防止在过弯后刹不住车蹭墙
         
         

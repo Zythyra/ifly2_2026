@@ -388,7 +388,7 @@ int main(int argc, char *argv[])
     }
 
     // go_destination(goal,0.50,2.25,3.14,q,ac);
-    go_destination(goal,1.25,3.75,0,q,ac);
+    go_destination(goal,0.5,2.25,0,q,ac);
     ROS_INFO("走廊环境导航完成");
 
 
@@ -398,162 +398,149 @@ int main(int argc, char *argv[])
     bool flag=false;//判断到达与否
     //第一点视觉识别
     //视觉识别开始，先传个-1把摄像头打开
-    publishInitialPose(1.25,3.75,0,q,initial_pose_pub_ );
+    publishInitialPose(0.5,2.25,0,q,initial_pose_pub_ );
     std::vector<std::vector<int>> a = {{-1},{-1},{-1},{-1},{-1},{-1}};
     mecanumController.detect(a,-1);
     
     //然后去中间，识别目标，或者定位遮挡视野的板子
     double targetx, targety, targetz, targetx2, targety2, targetz2;
     bool target2flag = false,targetflag = false,use_forward = false;
-    if(mecanumController.turn_and_find_plus(17,board_class,0.52,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
+    if(mecanumController.turn_and_find_plus(8,board_class,0.52,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
         if (!use_forward)
         {
             if (std::min(abs(targetx2-0),abs(targetx2 - 2.5))>0.4 && std::min(abs(targety2 - 2),abs(targety2 - 5))>0.4)//终点太靠墙直接视觉过去也能避开
             {
                 ROS_INFO ("有障碍物，先绕行");
                 go_destination(goal, targetx2, targety2, targetz2, q, ac);
+                mecanumController.turn_and_find_plus(14, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1);
             }
             else{
                 ROS_INFO ("障碍物较远,直接前进");
 
             }
         }
-        board_name = mecanumController.forward_and_adjust(board_class,0.35);
-        if(board_name<0){//出现这种情况，比较糟糕，要么是路被封死了，要么是走一半目标丢了
-            if(mecanumController.turn_and_find_plus(17,board_class,0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1)){
-                where_board.request.lidar_process_start = 4;
-                client_find_board.call(where_board);
-                std::vector<float> position = mecanumController.getCurrentPose();
-                ROS_INFO("出现了比较糟糕的情况，旋转找到了，前进失败，板子%f",where_board.response.lidar_results[0]);
-                ROS_INFO("定位%f,%f,%f",position[0],position[1],position[2]);
-                if(where_board.response.lidar_results[1]<0){
-                    ROS_INFO("不能直线前进，用movebase");//需要再次请求雷达服务，准确计算目的地
-                    where_board.request.lidar_process_start = 5;
-                    client_find_board.call(where_board);
-                    geometry_msgs::PointStamped scan_point;
-                    scan_point.header.frame_id = "base_link";
-                    scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
-                    scan_point.point.x = where_board.response.lidar_results[1];
-                    scan_point.point.y = where_board.response.lidar_results[2];
-                    scan_point.point.z = 0.0;
-                    geometry_msgs::PointStamped output_point;
-                    try {
-                        mecanumController.tf_buffer_.transform(scan_point, output_point, "map");
-                        ROS_INFO("map下目的地坐标: (%.2f, %.2f)",output_point.point.x, output_point.point.y);
-                    }
-                    catch (tf2::TransformException &ex) {
-                        ROS_ERROR("坐标系变换失败: %s", ex.what());
-                    }
-                    go_destination(goal,output_point.point.x,output_point.point.y,where_board.response.lidar_results[3]+position[2],q,ac);
-                    mecanumController.cap_buffer_clear();
-                    board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                    if(board_name<0){
-                        ROS_ERROR("拣货失败");
-                    }
-                    else{
-                        flag=true;
-                    }
-                }
-            }
-            else{//板子被挡了，中间看不到
-                if(targetflag){
-                    double passx, passy, passz, passx2, passy2, passz2;
-                    bool find1,find2;
-                    ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
-                    go_destination(goal,targetx,targety,targetz,q,ac);
-                    mecanumController.cap_buffer_clear();
-                    if(mecanumController.turn_and_find_plus(4.25,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                        board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                        flag=true;
-                    }
-                    else if(mecanumController.turn_and_find_plus(8.5,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                        board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                        flag=true;
-                    }
-                }
-                if(target2flag && !flag){
-                    double passx, passy, passz, passx2, passy2, passz2;
-                    bool find1,find2;
-                    ROS_INFO("前往%f,%f,%f",targetx2, targety2, targetz2);
-                    go_destination(goal,targetx2, targety2, targetz2,q,ac);
-                    mecanumController.cap_buffer_clear();
-                    if(mecanumController.turn_and_find_plus(4.25,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                        board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                        flag=true;
-                    }
-                    else if(mecanumController.turn_and_find_plus(8.5,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                        board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                        flag=true;
-                    }
-                }
-            }
-        }
-        else{
-            flag=true;
-        }
+        // board_name = mecanumController.forward_and_adjust(board_class,0.35);
+        // if(board_name>=0){
+            flag = true;
+        // }
     }
-    else{//板子被挡了，中间看不到
-        if(targetflag){
-            double passx, passy, passz, passx2, passy2, passz2;
-            bool find1,find2;
-            ROS_INFO("前往%f,%f,%f",targetx,targety,targetz);
-            go_destination(goal,targetx,targety,targetz,q,ac);
-            mecanumController.cap_buffer_clear();
-            if(mecanumController.turn_and_find_plus(5.0,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                flag=true;
-            }
-            else if(mecanumController.turn_and_find_plus(11.0,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                flag=true;
-            }
+
+    if (!flag){
+        ROS_INFO("前往入口处找板");
+        go_destination(goal, 1.25, 2.75, 0, q, ac);
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(14, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            // board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            // if(board_name >= 0)
+            // {
+                flag = true; 
+            // }
         }
-        if(target2flag && !flag){
-            double passx, passy, passz, passx2, passy2, passz2;
-            bool find1,find2;
-            ROS_INFO("前往%f,%f,%f",targetx2, targety2, targetz2);
-            go_destination(goal,targetx2, targety2, targetz2,q,ac);
-            mecanumController.cap_buffer_clear();
-            if(mecanumController.turn_and_find_plus(5.0,board_class,0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                flag=true;
-            }
-            else if(mecanumController.turn_and_find_plus(11.0,board_class,-0.4,passx, passy, passz, find1,passx2, passy2, passz2,find2,use_forward)){
-                board_name = mecanumController.forward_and_adjust(board_class,0.5);
-                flag=true;
-            }
-        }
+
     }
+    
     //如果上面的逻辑都没能找到板，就前往出口和入口旋转找板
     if (!flag)
     {
         ROS_INFO("前往出口处找板");
-        go_destination(goal, 2.25, 4.25, 1.1, q, ac);
+        go_destination(goal, 1.25, 3.75, 0, q, ac);
         mecanumController.cap_buffer_clear();
         targetflag = false; target2flag = false; // 重置标志位
-        if(mecanumController.turn_and_find_plus(7, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        if(mecanumController.turn_and_find_plus(14, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
         {
-            board_name = mecanumController.forward_and_adjust(board_class,0.35);
-            if(board_name >= 0)
-            {
+            // board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            // if(board_name >= 0)
+            // {
                 flag = true;
-            }
+            // }
         }
 
     }
     if (!flag)
     {
         ROS_INFO("前往入口处找板");
-        go_destination(goal, 0.3, 2.25, 0, q, ac);
+        go_destination(goal, 0.75, 3.75, 0, q, ac);
+        publishInitialPose(0.75,3.75,0,q,initial_pose_pub_ );
         mecanumController.cap_buffer_clear();
         targetflag = false; target2flag = false; // 重置标志位
-        if(mecanumController.turn_and_find_plus(7, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        if(mecanumController.turn_and_find_plus(14, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
         {
-            board_name = mecanumController.forward_and_adjust(board_class,0.35);
-            if(board_name >= 0)
-            {
+            // board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            // if(board_name >= 0)
+            // {
                 flag = true; 
-            }
+            // }
+        }
+
+    }
+
+    if (!flag)
+    {
+        ROS_INFO("前往入口处找板");
+        go_destination(goal, 1.75, 3.75, 0, q, ac);
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(14, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            // board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            // if(board_name >= 0)
+            // {
+                flag = true; 
+            // }
+        }
+
+    }
+
+    if (!flag)
+    {
+        ROS_INFO("前往入口处找板");
+        go_destination(goal, 1.25, 4.25, 0, q, ac);
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(14, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            // board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            // if(board_name >= 0)
+            // {
+                flag = true; 
+            // }
+        }
+
+    }
+
+    if (!flag)
+    {
+        ROS_INFO("前往入口处找板");
+        go_destination(goal, 1.25, 3.25, 0, q, ac);
+        publishInitialPose(1.25,3.25,0,q,initial_pose_pub_ );
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(14, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            // board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            // if(board_name >= 0)
+            // {
+                flag = true; 
+            // }
+        }
+
+    }
+
+    if (!flag)
+    {
+        ROS_INFO("前往入口处找板");
+        go_destination(goal, 2.25, 4.25, 0, q, ac);
+        mecanumController.cap_buffer_clear();
+        targetflag = false; target2flag = false; // 重置标志位
+        if(mecanumController.turn_and_find_plus(14, board_class, 0.4,targetx, targety, targetz, targetflag,targetx2, targety2, targetz2,target2flag,use_forward,1))
+        {
+            // board_name = mecanumController.forward_and_adjust(board_class,0.35);
+            // if(board_name >= 0)
+            // {
+                flag = true; 
+            // }
         }
 
     }
