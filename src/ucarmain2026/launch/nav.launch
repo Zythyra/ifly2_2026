@@ -1,0 +1,16 @@
+<launch>
+    <!-- 设置地图的配置文件 -->
+    <!-- 运行地图服务器，并且加载设置的地图-->
+    <!-- <include file="$(find ucarmain2026)/launch/base_start.launch" /> -->
+    <param name="/use_sim_time" value="false"/>
+    <node pkg="ucarmain2026" type="lidar_process" name="lidar_process" output="screen"/>
+    <node pkg="ucarmain2026" type="tf_pose_get" name="tf_pose_get" output="screen"/>
+    <!-- <node pkg="qr_01" type="aruco" name="aruco" output="screen"/> -->
+    <node pkg="qr_01" type="qr_server_node" name="qr_server_node" output="screen" />
+     <arg name="map" default="map2026.yaml" />
+    <!-- <arg name="map" default="map100.yaml" /> -->
+    <!-- 运行地图服务器，并且加载设置的地图-->
+    <node name="map_server" pkg="map_server" type="map_server" args="$(find ucarmain2026)/map/$(arg map)"/>
+    <!-- <include file="$(find ucarmain2026)/launch/map_server.launch" /> -->
+    <include file="$(find ucarmain2026)/launch/amcl.launch" />
+</launch>

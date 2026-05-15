@@ -25,6 +25,7 @@ find_package(OpenCV REQUIRED COMPONENTS
 add_service_files(
   FILES
   qr_srv.srv
+  qr_code.srv  #2026年的新的二维码服务
 )
 
 generate_messages(
@@ -50,6 +51,7 @@ include_directories(
 # 生成可执行文件
 add_executable(aruco src/aruco.cpp)
 # add_executable(aruco_sub src/aruco_sub.cpp)
+add_executable(qr_server_node src/qr_server.cpp)
 
 # 链接库（规范写法）
 target_link_libraries(aruco
@@ -58,7 +60,14 @@ target_link_libraries(aruco
   ${OpenCV_LIBS}  # 使用 OpenCV 的变量名 OpenCV_LIBS
 )
 
+# 链接 ROS库、OpenCV库 和 ZBar解码库
+target_link_libraries(qr_server_node ${catkin_LIBRARIES} ${OpenCV_LIBRARIES} zbar)
+
 # target_link_libraries(aruco_sub
 #   ${catkin_LIBRARIES}
 #   ${OpenCV_LIBS}
 # )
+
+
+# 加排队锁：等 srv 头文件生成完毕后再编译 C++
+add_dependencies(qr_server_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})

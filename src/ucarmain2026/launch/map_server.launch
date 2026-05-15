@@ -1,0 +1,5 @@
+<launch>
+  <arg name="map" default="map2026.yaml" />
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find ucarmain2026)/map/$(arg map)"/>
+</launch>
+
