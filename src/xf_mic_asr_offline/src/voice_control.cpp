@@ -188,6 +188,16 @@ int business_proc_callback(business_msg_t businessMsg)
 				len = businessMsg.length;
 				cout << "businessMsg size is noenough" << endl;
 			}
+			// ==========================================================
+			// 【极客截肢：暴力砸开音频阀门】
+			{ // <--- 注意这个大括号！它将保护我们的变量不泄漏到其他的 case 中
+				xf_mic_asr_offline::Pcm_Msg pcm_msg_out;
+				pcm_msg_out.length = len;
+				pcm_msg_out.pcm_buf.resize(len);
+				memcpy(&pcm_msg_out.pcm_buf[0], pcm_buffer, len);
+				pub_pcm.publish(pcm_msg_out);
+			}
+			// ==========================================================
 			if (save_pcm_local)
 			{
 				char *denoise_sound_path = join(source_path, DENOISE_SOUND_PATH);
