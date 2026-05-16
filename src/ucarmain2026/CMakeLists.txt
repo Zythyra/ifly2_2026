@@ -180,6 +180,7 @@ add_dependencies(simple_move_control ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catki
 add_dependencies(turn_detect ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_gencfg)
 add_executable(nav_test src/nav_test.cpp)
 add_executable(qr_client_test_node src/qr_client_test.cpp)
+add_executable(wakeup_test_node src/wakeup_test.cpp)
 
 
 # add_executable(turn_detect src/turn_detect.cpp)
@@ -241,6 +242,8 @@ target_link_libraries(nav_test
 )
 
 target_link_libraries(qr_client_test_node ${catkin_LIBRARIES} curl)
+
+target_link_libraries(wakeup_test_node ${catkin_LIBRARIES})
 
 # target_link_libraries(lidar_test
 #   ${catkin_LIBRARIES}
