@@ -934,16 +934,16 @@ int main(int argc, char *argv[])
 	get_system_status();//获取麦克风状态，是否正常工作
 
 
-
-	std::string begin = "fo|";
-	//std::string quit_begin = source_path;
-	char *jet_path = join((begin + source_path), ASR_RES_PATH);
-	char *grammer_path = join(source_path, GRM_BUILD_PATH);
-	char *bnf_path = join(source_path, GRM_FILE);
-	//IN_PCM = join(source_path, IN_PCM);
-	//[1-1] 通用登录及语法构建
+	//注释此处代码防止11212报错强行关闭麦克风
+	// std::string begin = "fo|";
+	// //std::string quit_begin = source_path;
+	// char *jet_path = join((begin + source_path), ASR_RES_PATH);
+	// char *grammer_path = join(source_path, GRM_BUILD_PATH);
+	// char *bnf_path = join(source_path, GRM_FILE);
+	// //IN_PCM = join(source_path, IN_PCM);
+	// //[1-1] 通用登录及语法构建
 	
-	Recognise_Result inital = initial_asr_paramers(jet_path, grammer_path, bnf_path, LEX_NAME);
+	// Recognise_Result inital = initial_asr_paramers(jet_path, grammer_path, bnf_path, LEX_NAME);
 	
 
 
