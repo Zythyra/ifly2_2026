@@ -2,7 +2,7 @@
     <!-- <node pkg="ucarmain2026" type="simple_move_control" name="simple_move_control" output="screen"/> -->
     
     <include file="$(find xf_mic_asr_offline)/launch/mic_init.launch"/>
-
+    <node pkg="ucarmain2026" type="spark_semantic_server.py" name="spark_semantic_server_node" output="screen" />
     <!-- <node pkg="ucarmain2026" type="myplanernav2" name="myplanernav2" output="screen"/> -->
     <!-- <node pkg="ucarmain2026" type="nav_test" name="test" output="screen"/> -->
 </launch> 

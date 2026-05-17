@@ -29,7 +29,7 @@ ydlidar激光雷达驱动包改动：ydlidar.launch将samp_rate改为4，即以4
 第一次编译成功之后有小改动可以直接`catkin_make`编译所有包，不会报错
 
 <!-- <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen" clear_params="true" launch-prefix="gdb --args"> -->调试movebese
-catkin_make -DCATKIN_WHITELIST_PACKAGES="ztestnav2025"
+catkin_make -DCATKIN_WHITELIST_PACKAGES="ucarmain2026"
 catkin_make -DCATKIN_WHITELIST_PACKAGES="line_follow"
 catkin_make -DCATKIN_WHITELIST_PACKAGES="my_planner"
 catkin_make -DCATKIN_WHITELIST_PACKAGES="my_recovery_plugins"
