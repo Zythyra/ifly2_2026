@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
         switch (currentState) {
             case ROTATING:
                 // 为了容错，赛题 270 度，我们设为 275 度，确保能扫完侧边
-                if (rotated_deg >= 275.0) {
+                if (rotated_deg >= 360.0) {
                     currentState = FINISHED;
                     break;
                 }

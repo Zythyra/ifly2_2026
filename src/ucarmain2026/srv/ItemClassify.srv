@@ -1,0 +1,9 @@
+string item1
+string item2
+string item3
+string target_real
+string target_sim
+---
+bool success
+string real_item
+string sim_item

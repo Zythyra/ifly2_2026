@@ -71,7 +71,7 @@ int main(int argc, char *argv[]) {
     go_destination(goal, 3.75, 2.75, -1.57, q, ac);
     ros::Duration(1.0).sleep();
 
-    // 目标点 4 (回到起点附近)
+    // 目标点 4 
     go_destination(goal, 0.25, 0.25, -1.57, q, ac);
     ros::Duration(1.0).sleep();
 

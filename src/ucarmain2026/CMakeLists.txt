@@ -87,6 +87,7 @@ add_service_files(
   lidar_process.srv
   set_speed.srv
   GetTaskSemantics.srv
+  ItemClassify.srv
 )
 
 ## Generate actions in the 'action' folder
@@ -182,7 +183,7 @@ add_dependencies(turn_detect ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORT
 add_executable(nav_test src/nav_test.cpp)
 add_executable(qr_client_test_node src/qr_client_test.cpp)
 add_executable(wakeup_test_node src/wakeup_test.cpp)
-
+add_executable(race src/race.cpp)
 
 # add_executable(turn_detect src/turn_detect.cpp)
 ## Rename C++ executable without prefix
@@ -244,7 +245,9 @@ target_link_libraries(nav_test
 
 target_link_libraries(qr_client_test_node ${catkin_LIBRARIES} curl)
 
-target_link_libraries(wakeup_test_node ${catkin_LIBRARIES})
+target_link_libraries(wakeup_test_node ${catkin_LIBRARIES} )
+
+target_link_libraries(race ${catkin_LIBRARIES} curl)
 
 # target_link_libraries(lidar_test
 #   ${catkin_LIBRARIES}

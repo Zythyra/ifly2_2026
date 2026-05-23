@@ -3,6 +3,8 @@
     
     <include file="$(find xf_mic_asr_offline)/launch/mic_init.launch"/>
     <node pkg="ucarmain2026" type="spark_semantic_server.py" name="spark_semantic_server_node" output="screen" />
+    <node pkg="ucarmain2026" type="online_tts_node.py" name="online_tts_node" output="screen" />
+    <node pkg="ucarmain2026" type="spark_classifier_server.py" name="spark_classifier_server" output="screen" />
     <!-- <node pkg="ucarmain2026" type="myplanernav2" name="myplanernav2" output="screen"/> -->
     <!-- <node pkg="ucarmain2026" type="nav_test" name="test" output="screen"/> -->
 </launch> 
