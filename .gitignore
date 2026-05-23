@@ -20,3 +20,16 @@
 /unknow/*
 /src_backup/*
 /可运行代码，这一版之后找板逻辑改变/*
+# 忽略多媒体和数据集文件
+*.avi
+*.wav
+*.jpg
+*.mp4
+/dataset_video/
+/qr_debug/
+/src/ucarmain2026/images_for_yolo/
+/src/ucarmain2026/videos_for_yolo/
+
+echo "*.txt" >> .gitignore
+echo "*.bp" >> .gitignore
+echo "*.pcm" >> .gitignore
