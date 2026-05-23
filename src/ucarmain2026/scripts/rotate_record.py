@@ -33,24 +33,24 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     if not cap.isOpened():
-        rospy.logerr("❌ 无法打开摄像头！请检查占用情况。")
+        rospy.logerr("无法打开摄像头！请检查占用情况。")
         return
 
-    # ---------------- 核心补丁 1：清空初始硬件缓存与暖机 ----------------
-    rospy.loginfo("⏳ 正在清空底层图像缓存并等待自动曝光收敛...")
+    # 清空初始硬件缓存与暖机
+    rospy.loginfo("正在清空底层图像缓存并等待自动曝光收敛...")
     for _ in range(15):  
         cap.grab()
     time.sleep(0.1)
-    rospy.loginfo("✅ 缓存已排空，画面就绪！")
-    # ------------------------------------------------------------------
+    rospy.loginfo("缓存已排空，画面就绪！")
+
 
     # 设置视频录制器 (使用 XVID 编码，兼容性极好)
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     out = cv2.VideoWriter(VIDEO_PATH, fourcc, 20.0, (640, 480))
 
     rospy.loginfo("========================================")
-    rospy.loginfo("🟢 360度全景录像程序启动！")
-    rospy.loginfo(f"💾 视频将覆盖保存至: {VIDEO_PATH}")
+    rospy.loginfo("360度全景录像程序启动！")
+    rospy.loginfo(f"视频将覆盖保存至: {VIDEO_PATH}")
     rospy.loginfo("========================================")
 
     # 计算大概需要旋转的时间： t = 距离 / 速度 + 0.5秒余量
@@ -69,9 +69,9 @@ def main():
         # 抓取画面并写入视频文件
         ret, frame = cap.read()
         if ret:
-            # ---------------- 核心补丁 2：翻转画面，回归物理现实方向 ----------------
+            #翻转画面，回归物理现实方向
             frame = cv2.flip(frame, 1)
-            # ------------------------------------------------------------------------
+
             out.write(frame)
 
         if elapsed >= duration:
