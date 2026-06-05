@@ -1,21 +1,6 @@
 /**
-
-1. 去年的 Aruco 只能返回 int32 的数字ID，无法处理今年赛题动态下发的网址字符串。重构为 Zbar 算法，并将 ROS Service 返回值改为 string 类型。
-2. 为什么里程计不用 current_yaw - start_yaw，不用 move_base
-初始底盘轻微抖动会导致 current_yaw 越过 -pi，瞬间计算出转了359度导致任务秒退。
-且AMCL的粒子滤波重采样会在原地旋转时发生“数值跳变”。
-使用底层 /odom 进行微小变化量绝对累加计算，无视跳变，绝对精准。
-3. 不用PID 对准，改为“发现即刹车”
-ROS Topic 通信有延迟，刹车后获取的 X 坐标是历史残影，导致小车“幽灵转身”。
-且 Zbar 算法对镜头畸变敏感，能识别出二维码时，往往已经处于画面中间偏优区域。
-4. 加 scanned_urls 黑名单查重机制？
-抓取完毕后，强行休眠旋转甩开二维码会触发底盘“看门狗”，导致底层强制断联。
-不休眠的话，又会把同一个二维码连刷3遍。
-引入黑名单。扫过就当没看见，依靠 20Hz 的控制循环匀速转走。
-
-5月23日
-神了，之前做的pid摄像头对准没有用是因为小车的画面与现实相比是镜像的，这导致对准的方向是反的。现在先用这个简略版的，后面再改回去
-
+ * @file qr_client_test.cpp
+ * @brief 盲盒抓取二维码客户端 - 包含视觉伺服对准与 HTTP 死磕机制
  */
 
 #include <ros/ros.h>
@@ -29,8 +14,9 @@ ROS Topic 通信有延迟，刹车后获取的 X 坐标是历史残影，导致�
 #include <cmath>
 #include <algorithm>
 
-// 全局状态机
-enum State { ROTATING, FETCHING, FINISHED };
+// ================= 全局状态机 =================
+// ROTATING: 寻目标旋转 | ALIGNING: PID居中对准 | FETCHING: 网络请求 | FINISHED: 任务完成
+enum State { ROTATING, ALIGNING, FETCHING, FINISHED };
 State currentState = ROTATING;
 
 // 绝对里程计累加变量
@@ -38,47 +24,37 @@ double last_yaw = 0.0;
 double total_rotated = 0.0; 
 bool odom_initialized = false; 
 
-//二维码内容存储变量
+// 二维码内容存储变量
 std::string target_result_1 = "";
 std::string target_result_2 = "";
 std::string target_result_3 = "";
 int valid_count = 0; // 仅记录有效 (code=200) 的数量
 
-// 查重黑名单，防止同一个二维码反复刷
+// 查重黑名单，扫过且处理完毕的 URL 才会进黑名单
 std::vector<std::string> scanned_urls; 
 ros::ServiceClient qr_client;
 std::string captured_url = ""; 
+int lost_count = 0; // 对准时防丢计数器
 
-//JSON 解析
+// ================= JSON 与 HTTP 解析 =================
 int extractCode(const std::string& json_str) {
     size_t key_pos = json_str.find("\"code\"");
     if (key_pos == std::string::npos) return -1;
-    
     size_t colon_pos = json_str.find(":", key_pos);
     if (colon_pos == std::string::npos) return -1;
-    
-    try {
-        return std::stoi(json_str.substr(colon_pos + 1));
-    } catch (...) {
-        return -1;
-    }
+    try { return std::stoi(json_str.substr(colon_pos + 1)); } catch (...) { return -1; }
 }
 
 std::string extractResult(const std::string& json_str) {
     size_t key_pos = json_str.find("\"result\"");
     if (key_pos == std::string::npos) return "";
-
     size_t start_quote = json_str.find("\"", key_pos + 8); 
     if (start_quote == std::string::npos) return "";
-
     size_t end_quote = json_str.find("\"", start_quote + 1);
     if (end_quote == std::string::npos) return "";
-
     return json_str.substr(start_quote + 1, end_quote - start_quote - 1);
 }
 
-
-// 里程计回调：计算累加角度，防止 -pi 到 pi 跳变秒退
 void odomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
     tf::Quaternion q(msg->pose.pose.orientation.x, msg->pose.pose.orientation.y,
                      msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
@@ -86,14 +62,8 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
     double roll, pitch, yaw;
     m.getRPY(roll, pitch, yaw);
     
-    // 强制等待第一帧数据，防止拿 0.0 去算初始偏差
-    if (!odom_initialized) {
-        last_yaw = yaw;
-        odom_initialized = true;
-        return;
-    }
+    if (!odom_initialized) { last_yaw = yaw; odom_initialized = true; return; }
     
-    //处理旋转跨越 180度时的数值突变
     double delta = yaw - last_yaw;
     while (delta > M_PI) delta -= 2 * M_PI;
     while (delta < -M_PI) delta += 2 * M_PI;
@@ -102,13 +72,11 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
     last_yaw = yaw;
 }
 
-// CURL 回调函数：将网页返回的数据流写入 std::string
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
-// HTTP GET 请求封装
 std::string httpGet(std::string url) {
     CURL* curl; CURLcode res; std::string readBuffer;
     curl = curl_easy_init();
@@ -116,7 +84,6 @@ std::string httpGet(std::string url) {
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-        //超时设置2秒。防止场馆局域网卡顿导致小车死等
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L); 
         res = curl_easy_perform(curl);
         curl_easy_cleanup(curl);
@@ -125,7 +92,7 @@ std::string httpGet(std::string url) {
 }
 
 int main(int argc, char** argv) {
-    setlocale(LC_ALL, ""); // 解决终端中文乱码
+    setlocale(LC_ALL, ""); 
     ros::init(argc, argv, "competition_final_node");
     ros::NodeHandle nh;
 
@@ -136,7 +103,6 @@ int main(int argc, char** argv) {
     ROS_INFO("等待二维码视觉服务端启动...");
     qr_client.waitForExistence();
 
-    // 必须堵塞等待底盘硬件上线
     while (ros::ok() && !odom_initialized) {
         ros::spinOnce();
         ros::Duration(0.1).sleep();
@@ -144,114 +110,139 @@ int main(int argc, char** argv) {
     ROS_INFO("底盘就绪，开始执行盲盒抓取任务！");
 
     qr_01::qr_code srv;
-    srv.request.command = -1; // -1: 打开相机预热
+    srv.request.command = -1; // 开机预热
     qr_client.call(srv);
     ros::Duration(2.0).sleep(); 
-
-    srv.request.command = -3; // -3: 清理缓存陈旧画面
+    srv.request.command = -3; // 清理缓存
     qr_client.call(srv); 
 
-    // 以20Hz 频率循环
     ros::Rate rate(20); 
 
     while (ros::ok() && currentState != FINISHED) {
-        ros::spinOnce(); // 每次循环必刷新回调
+        ros::spinOnce(); 
         geometry_msgs::Twist vel;
-        
-        // 取绝对值，防止旋转方向(左转正，右转负)干扰判断
         double rotated_deg = std::abs(total_rotated) * 180.0 / M_PI;
 
         switch (currentState) {
+            // ================= 阶段 1：巡航寻找 =================
             case ROTATING:
-                // 为了容错，赛题 270 度，我们设为 275 度，确保能扫完侧边
-                if (rotated_deg >= 360.0) {
-                    currentState = FINISHED;
-                    break;
-                }
-                vel.angular.z = 0.4; // 0.4 rad/s，配合刹车滑行刚好居中
+                if (rotated_deg >= 360.0) { currentState = FINISHED; break; }
+                vel.angular.z = 0.4; 
                 
                 srv.request.command = 1;
                 if (qr_client.call(srv) && !srv.response.result.empty()) {
-                    
-                    // 剥离可能遗留的 X 坐标前缀 (兼容 "320|http://..." 格式)
                     std::string raw_res = srv.response.result;
                     size_t split_pos = raw_res.find("|");
                     std::string temp_url = (split_pos != std::string::npos) ? raw_res.substr(split_pos + 1) : raw_res;
                     
-                    // 黑名单查重
-                    bool is_duplicate = false;
-                    for (size_t i = 0; i < scanned_urls.size(); i++) {
-                        if (scanned_urls[i] == temp_url) {
-                            is_duplicate = true;
-                            break;
-                        }
+                    if (std::find(scanned_urls.begin(), scanned_urls.end(), temp_url) != scanned_urls.end()) {
+                        break; // 已经在黑名单，直接无视
                     }
 
-                    if (is_duplicate) {
-                        // 使用 break
-                        // 若使用 continue 会跳过下面的 publish 和 sleep，导致底层收不到指令停转并占满 CPU，然后导致小车卡死
-                        break; 
-                    } else {
-                        // 这是一个全新的目标
-                        ROS_INFO("发现新目标，立即刹车锁定");
+                    ROS_INFO("👀 发现新目标，进入视觉伺服对准模式...");
+                    captured_url = temp_url;
+                    lost_count = 0; 
+                    currentState = ALIGNING; // 切换到对准模式
+                }
+                break;
+
+            // ================= 阶段 2：PID 视觉居中对准 =================
+            case ALIGNING:
+                srv.request.command = 1;
+                if (qr_client.call(srv) && !srv.response.result.empty()) {
+                    lost_count = 0; 
+                    std::string raw_res = srv.response.result;
+                    size_t split_pos = raw_res.find("|");
+                    
+                    int x_coord = 320; // 默认画面中央
+                    if (split_pos != std::string::npos) {
+                        try { x_coord = std::stoi(raw_res.substr(0, split_pos)); } 
+                        catch (...) { x_coord = 320; }
+                        // 更新一下 URL，防止对准过程中扫到了旁边的码
+                        captured_url = raw_res.substr(split_pos + 1); 
+                    }
+
+                    // 计算像素误差 (中心坐标是320)
+                    int error = 320 - x_coord;
+                    
+                    // 误差小于 15 像素，视为对准完毕
+                    if (std::abs(error) < 15) {
+                        ROS_INFO("🎯 二维码已完美居中！刹车准备获取数据。");
                         vel.angular.z = 0.0;
-                        cmd_pub.publish(vel); // 立刻停车
-                        ros::Duration(0.5).sleep(); // 等待物理减震器平稳
-                        
-                        captured_url = temp_url;
-                        scanned_urls.push_back(captured_url); // 马上存入黑名单
+                        cmd_pub.publish(vel);
+                        ros::Duration(0.5).sleep(); // 停稳
                         currentState = FETCHING;
+                    } else {
+                        // P 控制器动态调节旋转速度
+                        double Kp = 0.0025; 
+                        vel.angular.z = Kp * error;
+                        
+                        // 速度限幅，防止转太快画面糊了，也防止过冲
+                        if (vel.angular.z > 0) vel.angular.z = std::max(std::min(vel.angular.z, 0.4), 0.05);
+                        else vel.angular.z = std::min(std::max(vel.angular.z, -0.4), -0.05);
                     }
+                } else {
+                    lost_count++;
+                    if (lost_count > 10) { // 连续0.5秒丢失目标
+                        ROS_WARN("⚠️ 目标在对准时丢失！恢复巡航搜索...");
+                        currentState = ROTATING;
+                    }
+                    vel.angular.z = 0.0; // 丢失期间先原地别动
                 }
                 break;
 
+            // ================= 阶段 3：HTTP 数据抓取 (死磕模式) =================
             case FETCHING:
-                ROS_INFO_STREAM("向系统请求: " << captured_url);
+            {
+                ROS_INFO("🌐 向系统请求数据: %s", captured_url.c_str());
                 std::string json = httpGet(captured_url);
-                
-                // 解析 JSON 并校验 code确定有效
                 int code = extractCode(json);
-                if (code == 200) {
-                    std::string res_text = extractResult(json);
-                    
-                    // 依次存入独立变量
-                    if (valid_count == 0) target_result_1 = res_text;
-                    else if (valid_count == 1) target_result_2 = res_text;
-                    else if (valid_count == 2) target_result_3 = res_text;
-                    
-                    valid_count++;
-                    ROS_INFO("有效数据(200)，存入目标 %d: %s", valid_count, res_text.c_str());
-                } else {
-                    // code == 400 或者请求失败
-                    ROS_WARN("无效数据(code=%d)，已跳过该内容，继续寻找。", code);
-                }
                 
-                // 满 3 个收工
-                if (valid_count >= 3) {
-                    currentState = FINISHED;
+                // 【核心逻辑】：只有拿到明确的 200 或 400，才视为处理完毕，否则一直死磕
+                if (code == 200 || code == 400) {
+                    scanned_urls.push_back(captured_url); // 封锁这个 URL，不再理它
+                    
+                    if (code == 200) {
+                        std::string res_text = extractResult(json);
+                        if (valid_count == 0) target_result_1 = res_text;
+                        else if (valid_count == 1) target_result_2 = res_text;
+                        else if (valid_count == 2) target_result_3 = res_text;
+                        valid_count++;
+                        ROS_INFO("✅ 获得有效物品(200): %s", res_text.c_str());
+                    } else {
+                        ROS_WARN("🗑️ 获得无效物品(400)，抛弃继续寻找。");
+                    }
+                    
+                    if (valid_count >= 3) {
+                        currentState = FINISHED;
+                    } else {
+                        ROS_INFO("🔄 寻找下一个目标...");
+                        currentState = ROTATING;
+                    }
                 } else {
-                    currentState = ROTATING;
-                    ROS_INFO("继续逆时针平滑搜索...");
-
+                    // 没有拿到 200/400 (网络超时、报错等)，状态不切换！
+                    // 会在下一个 rate.sleep() 后，继续执行 FETCHING 发起新的请求
+                    ROS_WARN("📶 网络卡顿或返回异常 (code=%d)，正在原位重试请求...", code);
                 }
                 break;
+            }
         }
 
-        // 只要在旋转状态，每秒下发 20 次指令
-        if (currentState == ROTATING) {
+        // 仅在寻找和对准时，发布速度指令；FETCHING 时小车必须保持静止
+        if (currentState == ROTATING || currentState == ALIGNING) {
             cmd_pub.publish(vel);
         }
         rate.sleep();
     }
 
-    srv.request.command = -2; // 安全关闭相机，释放算力
+    srv.request.command = -2; 
     qr_client.call(srv);
     
-    ROS_INFO("========== 🎉 比赛流程彻底结束！==========");
+    ROS_INFO("========== 🎉 盲盒扫描阶段闭环完成！==========");
     ROS_INFO("提取到的三个有效目标变量如下：");
-    ROS_INFO("变量 target_result_1 = %s", target_result_1.c_str());
-    ROS_INFO("变量 target_result_2 = %s", target_result_2.c_str());
-    ROS_INFO("变量 target_result_3 = %s", target_result_3.c_str());
+    ROS_INFO("目标一: %s", target_result_1.c_str());
+    ROS_INFO("目标二: %s", target_result_2.c_str());
+    ROS_INFO("目标三: %s", target_result_3.c_str());
 
     return 0;
 }

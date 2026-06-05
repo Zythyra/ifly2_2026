@@ -15,8 +15,10 @@ find_package(catkin REQUIRED COMPONENTS
   tf2
   tf2_ros
   tf2_geometry_msgs
-)
 
+)
+find_package(Eigen3 REQUIRED)
+find_package(OsqpEigen REQUIRED)
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenCV REQUIRED)
@@ -123,6 +125,7 @@ include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  /usr/local/include/osqp   # 告诉编译器去这里找 osqp.h
 )
 
 ## Declare a C++ library
@@ -135,6 +138,7 @@ add_dependencies(my_planner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTE
 target_link_libraries(my_planner
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
+  OsqpEigen::OsqpEigen    #链接库osqpeigen
 )
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries

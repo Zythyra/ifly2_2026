@@ -110,9 +110,9 @@ generate_messages(
 ##     and list every .cfg file to be processed
 
 ## Generate dynamic reconfigure parameters in the 'cfg' folder
-# generate_dynamic_reconfigure_options(
-#   cfg/dr.cfg
-# )
+ generate_dynamic_reconfigure_options(
+   cfg/dr.cfg
+ )
 
 ###################################
 ## catkin specific configuration ##
@@ -227,6 +227,12 @@ target_link_libraries(traffic_light
 target_link_libraries(nav_test
   ${catkin_LIBRARIES}
 )
+
+add_dependencies(simple_move_control ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
+add_dependencies(tf_pose_get ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
+add_dependencies(turn_detect ${PROJECT_NAME}_gencfg ${catkin_EXPORTED_TARGETS})
+
+
 
 # target_link_libraries(lidar_test
 #   ${catkin_LIBRARIES}

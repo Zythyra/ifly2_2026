@@ -34,7 +34,7 @@ find_package(OpenCV REQUIRED COMPONENTS
   
 
 )
-
+find_package(CURL REQUIRED)
 
 generate_dynamic_reconfigure_options(
   cfg/dr.cfg
@@ -184,6 +184,7 @@ add_executable(nav_test src/nav_test.cpp)
 add_executable(qr_client_test_node src/qr_client_test.cpp)
 add_executable(wakeup_test_node src/wakeup_test.cpp)
 add_executable(race src/race.cpp)
+add_executable(test_detect_node src/test_detect.cpp src/turn_detect.cpp)
 
 # add_executable(turn_detect src/turn_detect.cpp)
 ## Rename C++ executable without prefix
@@ -202,6 +203,9 @@ add_dependencies(myplanernav2 ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPOR
 add_dependencies(zhltest ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(traffic_light ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(qr_client_test_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+#强制要求等本包的 message/service 生成完毕后再编译它
+add_dependencies(wakeup_test_node ${PROJECT_NAME}_generate_messages_cpp)
+add_dependencies(race ${PROJECT_NAME}_generate_messages_cpp)
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(zhltest
@@ -243,11 +247,25 @@ target_link_libraries(nav_test
   ${catkin_LIBRARIES}
 )
 
-target_link_libraries(qr_client_test_node ${catkin_LIBRARIES} curl)
+target_link_libraries(qr_client_test_node
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}  
+  ${CURL_LIBRARIES}
+)
 
-target_link_libraries(wakeup_test_node ${catkin_LIBRARIES} )
+target_link_libraries(wakeup_test_node
+  ${catkin_LIBRARIES}
+)
 
 target_link_libraries(race ${catkin_LIBRARIES} curl)
+
+
+target_link_libraries(test_detect_node
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+add_dependencies(test_detect_node ${PROJECT_NAME}_generate_messages_cpp)
+
 
 # target_link_libraries(lidar_test
 #   ${catkin_LIBRARIES}

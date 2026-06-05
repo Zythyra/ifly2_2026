@@ -36,7 +36,7 @@ print("warm up done")
 camera_active = False
 cap = None
 
-output_filename = "/home/ucar/ucar_car/src/ztestnav2025/nanodet_debug/nanodet.avi"#录制视频防止可视化卡顿
+output_filename = "/home/ucar/ucar_car/src/ucarmain2026/nanodet_debug/nanodet.avi"#录制视频防止可视化卡顿
 fourcc = cv2.VideoWriter_fourcc(*'XVID')  # MP4格式，其他选项：'XVID'->AVI, 'MJPG'->MJPEG
 fps = 3.0
 frame_size = (640, 480)  # 必须和实际帧尺寸一致

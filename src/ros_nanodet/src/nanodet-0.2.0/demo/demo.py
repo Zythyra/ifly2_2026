@@ -100,8 +100,8 @@ def init():
     path = '/dev/video0'
     # model = '/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/workspace/nanodet_m_416/model_best/model_best.pth'
 
-    model = '/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/workspace/旧模型备份/model_best.pth'
-    config = '/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/config/nanodet-m-416-copy.yml'
+    model = '/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/workspace/model2026/model_best.pth'
+    config = '/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/workspace/model2026/my_workshop_xml.yml'
     # config = '/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/config/nanodet_custom_xml_dataset.yml'
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True

@@ -209,6 +209,12 @@ target_link_libraries(wb
   ${OpenCV_LIBS}
 )
 
+
+add_dependencies(line_right ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
+add_dependencies(line_left ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
+add_dependencies(right2 ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
+add_dependencies(left2 ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
+
 #############
 ## Install ##
 #############
