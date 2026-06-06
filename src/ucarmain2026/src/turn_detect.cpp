@@ -403,247 +403,165 @@ bool MecanumController::test_point(double yaw,double distance){
 //     return false;
 // }
 
-bool MecanumController::turn_and_find_plus(double find_time,int z,double angular_speed,double& targetx,double& targety,double& targetz,bool& targetflag,double& targetx2,double& targety2,double& targetz2,bool& target2flag,bool& use_forward,bool middle){//板子相互遮挡时，直接识别错误板，开到板子后面去
+bool MecanumController::turn_and_find_plus(double find_time,int z,double angular_speed,double& targetx,double& targety,double& targetz,bool& targetflag,double& targetx2,double& targety2,double& targetz2,bool& target2flag,bool& use_forward,bool middle){
+    
     double integral = 0, prev_error = 0;
     set_speed_.request.work = true;
     start_time_ = ros::Time::now();
+    
+    // PID 参数获取 (如果你依然使用分段速度，这三行其实也可以不用，但保留无妨)
     double Kp,Ki,Kd;
     nh_.getParam("/myplanernav/turn_find_p",Kp);
     nh_.getParam("/myplanernav/turn_find_i",Ki);
     nh_.getParam("/myplanernav/turn_find_d",Kd);
 
-    bool find = false,center_time = true,exit_flag = false;//标志位判断找到目标没有,非目标板最多就两个
-    bool center_done = false;//如果在中心，不能只看时间，因为检测到板会减速
-    int the_first = -1,the_second = -1,find_count = 0;//要记录两个板子的类别，避免重复
+    // 【极简标志位】：删除了所有关于 other_board 的变量
+    bool find = false, center_time = true, exit_flag = false;
+    int find_count = 0; 
+    
+    // 启动旋转
     set_speed_.request.target_twist.angular.z = angular_speed;
     set_speed_client_.call(set_speed_);
 
-    int last_rightest = 650;//有可能刚刚到目的地的时候，右手边出现障碍板，此时不能准确定位，先忽略，转一圈回来再说
-    while(ros::ok()&&!exit_flag  && center_time){
-        // ros::Time test_time = ros::Time::now();
+    while(ros::ok() && !exit_flag && center_time){
+        
         std::vector<std::vector<int>> result = {{-1},{-1},{-1},{-1},{-1},{-1}};
         detect(result, z);     // 持续检测目标
-        std::vector<float> position = getCurrentPose();//获取定位
-        bool other_board = false;//有没有其他板子
-        //遍历视野内所有目标，如果有二维码匹配项，则直接进入对准逻辑，如果没有二维码匹配项，记录第一个超过画面中心的板子
-        if(!find){//还没找到板子，先定速旋转
-            if ((ros::Time::now() - start_time_).toSec()>find_time){
-                if(middle){
-                    if(position[2]>0){
-                        center_time = false;
-                        start_time_ = ros::Time::now();
-                        ROS_INFO("中心找板超时"); 
-                    }
-                }
-                else{
-                    center_time = false;
-                    start_time_ = ros::Time::now();
-                    ROS_INFO("中心找板超时"); 
-                }
+        std::vector<float> position = getCurrentPose(); // 获取定位
+
+        // ==========================================
+        // 阶段 1：纯净版【寻找目标】逻辑
+        // ==========================================
+        if(!find){
+            // 超时判断
+            if ((ros::Time::now() - start_time_).toSec() > find_time){
+                center_time = false;
+                start_time_ = ros::Time::now();
+                ROS_INFO("原地旋转找板超时，准备退出或前往下一个点..."); 
             }
-            int rightestx = 0,rightestname = -1;//因为逆时针旋转，需要最右的一个
-            for(size_t i=0;i<result[0].size();i++){
-                ROS_INFO("画面中出现目标板%s,编号%d,二维码识别结果是%d",class_names[result[4][i]].c_str(),result[4][i],z);
-                if(result[4][i] >= (z-1)*3 && result[4][i] < z*3){//如果直接把二维码匹配项找到了，直接进入对准逻辑
+
+            bool target_seen_this_frame = false; // 专职记录当前帧是否看到目标
+
+            for(size_t i=0; i<result[0].size(); i++){
+                int current_id = result[4][i];
+                if(current_id < 0) continue; 
+
+                // 核心任务：只关心我们要找的板子 z，无视其他一切干扰！
+                if(current_id == z){ 
+                    target_seen_this_frame = true; 
                     find_count++;
-                    ROS_INFO("检测到%d帧目标",find_count);
-                    if(find_count>1){
+                    // 使用 THROTTLE 防止终端刷屏太快
+                    printf("\r🎯 发现目标板: %s (ID: %d), 正在积累稳定帧数: %d / 6", class_names[current_id].c_str(), current_id, find_count);
+                    
+                    if(find_count > 3){
+                        printf("\n"); // 换行收尾
                         find = true;
-                        ROS_INFO("找到目标");
+                        ROS_INFO("✔️ 确认锁定目标，跳出搜索，准备对准！");
                         start_time_ = ros::Time::now();
-                        break;
-                    }
-                }
-                int center = (result[0][i]+result[2][i])/2;
-                if(result[4][i] != the_first && result[4][i] != the_second && center>rightestx){
-                    rightestx = center;
-                    rightestname = result[4][i];
-                    other_board = true;
-                }
-            }
-            if(other_board){
-                // ROS_INFO("中心位置%d",rightestx);
-                // ROS_INFO("目标检测结果%s",class_names[rightestname].c_str());
-                ROS_INFO("目标板在视野位置%d,上次在%d",rightestx,last_rightest);
-                // ROS_INFO("速度%f",set_speed_.request.target_twist.angular.z);
-                if(rightestx>290 && last_rightest<=290  && last_rightest!=0){//如果非目标超过了画面中心，记录当前位置和前方雷达距离，一会要过来
-                    if(the_first==-1){
-                        ros::Time test = ros::Time::now();
-                        the_first = rightestname;
-                        board_slope.request.lidar_process_start = 3;
-                        adjust_client_.call(board_slope);
-                        ROS_INFO("满足避障条件%d",test_point(position[2],board_slope.response.lidar_results[0]));
-                        if(test_point(position[2],board_slope.response.lidar_results[0])){
-                            // set_speed_.request.target_twist.angular.z = 0;
-                            // set_speed_client_.call(set_speed_);
-                            geometry_msgs::PointStamped scan_point;
-                            scan_point.header.frame_id = "base_link";
-                            scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
-                            scan_point.point.x = board_slope.response.lidar_results[1];
-                            scan_point.point.y = board_slope.response.lidar_results[2];
-                            scan_point.point.z = 0.0;
-                            geometry_msgs::PointStamped output_point;
-                            tf_buffer_.transform(scan_point, output_point, "map");
-                            ROS_INFO("map下目的地坐标: (%.2f, %.2f)",output_point.point.x, output_point.point.y);
-                            targetx = output_point.point.x;
-                            targety = output_point.point.y;
-                            targetz = board_slope.response.lidar_results[3]+position[2];
-                            ROS_INFO("处理耗时%f",(ros::Time::now()-test).toSec());
-                            targetflag = true;
-                            // waitForContinue();
-                            // set_speed_.request.target_twist.angular.z = 0.4;
-                            // set_speed_client_.call(set_speed_);
-                            ROS_INFO("目标板子1%s位置z,%f",class_names[the_first].c_str(),targetz);
-                        }
-                    }
-                    else{
-                        ros::Time test = ros::Time::now();
-                        the_second = rightestname;
-                        board_slope.request.lidar_process_start = 3;
-                        adjust_client_.call(board_slope);
-                        ROS_INFO("满足避障条件%d",test_point(position[2],board_slope.response.lidar_results[0]));
-                        if(test_point(position[2],board_slope.response.lidar_results[0])){
-                            geometry_msgs::PointStamped scan_point;
-                            scan_point.header.frame_id = "base_link";
-                            scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
-                            scan_point.point.x = board_slope.response.lidar_results[1];
-                            scan_point.point.y = board_slope.response.lidar_results[2];
-                            scan_point.point.z = 0.0;
-                            geometry_msgs::PointStamped output_point;
-                            tf_buffer_.transform(scan_point, output_point, "map");
-                            ROS_INFO("map下目的地坐标: (%.2f, %.2f)",output_point.point.x, output_point.point.y);
-                            targetx2 = output_point.point.x;
-                            targety2 = output_point.point.y;
-                            targetz2 = board_slope.response.lidar_results[3]+position[2];
-                            ROS_INFO("处理耗时%f",(ros::Time::now()-test).toSec());
-                            target2flag = true;
-                            ROS_INFO("目标板子2%s位置z,%f",class_names[the_second].c_str(),targetz2);
-                            // waitForContinue();
-                        }
+                        break; 
                     }
                 }
             }
-            else{
-                find_count = 0;
-                // ROS_INFO("什么都没有");
+
+            // 如果这帧没看到目标，立刻清零计数器
+            if(!target_seen_this_frame){
+                find_count = 0; 
             }
-            last_rightest = rightestx;//目标必须从左穿到右才算过中心
         }
 
+        // ==========================================
+        // 阶段 2：纯净版【画面对准】逻辑
+        // ==========================================
         if(find){
             bool find_flag = false;
-            int center_x,board_name = -1;
-            for(size_t i=0;i<result[0].size();i++){
-                if(result[4][i] >= (z-1)*3 && result[4][i] < z*3){
+            int center_x = 0;
+            
+            for(size_t i=0; i<result[0].size(); i++){
+                // 必须严格等于 z
+                if(result[4][i] == z){
                     find_flag = true;
-                    center_x = (result[0][i]+result[2][i])/2;
-                    board_name = result[4][i];
-                    break;
+                    center_x = (result[0][i] + result[2][i]) / 2;
+                    break; 
                 }
             }
-            // ROS_INFO("目标检测结果%d",result[4]);
+            
             if(find_flag){
-                if(center_x>270 || center_x<370){
-                    start_time_ = ros::Time::now();//找到目标就刷新开始时间免得一帧没检测到板子又退出去了
+                // 找到目标就刷新开始时间，免得偶尔丢一帧导致超时退出
+                if(center_x > 270 || center_x < 370){
+                    start_time_ = ros::Time::now();
                 }
-                // 退出条件：误差<7像素
+                
+                // 退出条件：误差 < 7 像素
                 if(std::abs(center_x - img_width/2) < 7){
-                    ROS_INFO("已经对准");
-                    integral = 0;
+                    ROS_INFO("✔️ 目标已完美居中！停止旋转。");
+                    
+                    // 刹车停止旋转
                     set_speed_.request.target_twist.angular.z = 0;
                     set_speed_.request.work = false;
                     set_speed_client_.call(set_speed_);
                     exit_flag = false;
-                    // waitForContinue();
+                    
+                    // ==========================================
+                    // 雷达辅助判断 (由于你已经改用外层的 test_find_approach 来计算几何坐标，
+                    // 这段雷达判断其实主要用于返回状态给外层，保持原样即可)
+                    // ==========================================
                     board_slope.request.lidar_process_start = 4;
                     adjust_client_.call(board_slope);
-                    ROS_INFO("板子%f",board_slope.response.lidar_results[0]);
-                    ROS_INFO("定位%f,%f,%f",position[0],position[1],position[2]);
-                    if(board_slope.response.lidar_results[1]<0){
-                        ROS_INFO("不能直线前进，用movebase");//需要再次请求雷达服务，准确计算目的地
-                        board_slope.request.lidar_process_start = 5;
-                        adjust_client_.call(board_slope);
-                        geometry_msgs::PointStamped scan_point;
-                        scan_point.header.frame_id = "base_link";
-                        scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
-                        scan_point.point.x = board_slope.response.lidar_results[1];
-                        scan_point.point.y = board_slope.response.lidar_results[2];
-                        scan_point.point.z = 0.0;
-                        geometry_msgs::PointStamped output_point;
-                        try {
-                            tf_buffer_.transform(scan_point, output_point, "map");
-                            ROS_INFO("map下目的地坐标: (%.2f, %.2f)",output_point.point.x, output_point.point.y);
-                        }
-                        catch (tf2::TransformException &ex) {
-                            ROS_ERROR("坐标系变换失败: %s", ex.what());
-                        }
-                        targetx2 = output_point.point.x;
-                        targety2 = output_point.point.y;
-                        targetz2 = board_slope.response.lidar_results[3]+position[2];
-                        use_forward = false;//false表示不能前进，需要movebase
+                    
+                    if(board_slope.response.lidar_results[1] < 0){
+                        // 雷达判断无法直行
+                        use_forward = false; 
                         return true;
                     }
                     else{
-                        ROS_INFO("直线前进");
+                        // 雷达判断前方空旷可直行
                         use_forward = true;
-                        return true;//前进加微调
+                        return true; 
                     }
                 }
-                // double error = (img_width/2.0 - center_x)/100; 
-                if(center_x <120){
+                
+                // 未居中时：执行分段 P 控制旋转对准
+                if(center_x < 120){
                     set_speed_.request.target_twist.angular.z = 0.3;
                 }
-                else if(center_x >=120 &&center_x <220){
-                    set_speed_.request.target_twist.angular.z = (center_x-20.0)/1000.0;
+                else if(center_x >= 120 && center_x < 220){
+                    set_speed_.request.target_twist.angular.z = (center_x - 20.0) / 1000.0;
                 }
-                else if(center_x >=220 &&center_x <313){
+                else if(center_x >= 220 && center_x < 313){
                     set_speed_.request.target_twist.angular.z = 0.1;
                 }
-                else if(center_x >=327 &&center_x <420){
+                else if(center_x >= 327 && center_x < 420){
                     set_speed_.request.target_twist.angular.z = -0.1;
                 }
-                else if(center_x >=420 &&center_x <520){
-                    set_speed_.request.target_twist.angular.z = (center_x-320.0)/-1000.0;
+                else if(center_x >= 420 && center_x < 520){
+                    set_speed_.request.target_twist.angular.z = (center_x - 320.0) / -1000.0;
                 }
-                else if(center_x >=520){
+                else if(center_x >= 520){
                     set_speed_.request.target_twist.angular.z = -0.3;
                 }
                 else{
                     set_speed_.request.target_twist.angular.z = 0.0;
                 }
-                ROS_INFO("中心点偏差%d,速度%f",center_x,set_speed_.request.target_twist.angular.z);
-                // // 离散PID计算
-                // integral += error * 0.2;       // dt=1/20≈0.05
-                // integral = clamp(integral, -1.0, 1.0);
-                // double derivative = (error - prev_error)/0.2;
-                // double output = Kp*error + Ki*integral + Kd*derivative;
-                // output = clamp(output, -0.4, 0.4);
-                // // ROS_INFO("error:%f",error);
-                // // ROS_INFO("P:%f",Kp*error);
-                // // ROS_INFO("I:%f",Ki*integral);
-                // // ROS_INFO("D:%f",Kd*derivative);
-                // // ROS_INFO("速度发布:%f",output);
                 
-                // // 执行旋转（限制输出范围）
-                // if(output>0)set_speed_.request.target_twist.angular.z = std::max(output,0.1);
-                // else set_speed_.request.target_twist.angular.z = std::min(output,-0.1);
+                // 发送对准速度指令
                 set_speed_client_.call(set_speed_);
-                
-                // prev_error = error;
             }
             else{
-                if((ros::Time::now()-start_time_).toSec()>10.0){
+                // 如果在对准过程中目标突然彻底丢失超过 10 秒
+                if((ros::Time::now() - start_time_).toSec() > 10.0){
+                    ROS_WARN("⚠️ 对准过程中目标彻底丢失超时！退出对准。");
                     exit_flag = true;
                 }
-                // set_speed_.request.target_twist.angular.z = 0.4;
-                // set_speed_client_.call(set_speed_);
             }
-            // ROS_INFO("耗时%f",(ros::Time::now()-test_time).toSec());
         }
     }
+    
+    // 安全兜底：超时或异常退出时，确保底盘停稳
     set_speed_.request.target_twist.linear.z = 0;
+    set_speed_.request.target_twist.angular.z = 0;
     set_speed_.request.work = false;
     set_speed_client_.call(set_speed_);
+    
     return false;
 }
 
@@ -651,6 +569,7 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
     std::vector<std::vector<int>> result = {{-1},{-1},{-1},{-1},{-1},{-1}};
     double integral = 0, prev_error = 0;
     double lidar_integral = 0, lidar_prev_error = 0;
+    bool is_near = false;//
     set_speed_.request.target_twist.linear.x = forward_speed;
     set_speed_.request.target_twist.angular.z = 0;
     set_speed_.request.work = true;
@@ -690,7 +609,7 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
         }
 
 //---------------------------判断标准为视觉，比较远时----------------//
-        if(box_height<box_height_40cm[target_board]){
+        if(!is_near && box_height<box_height_40cm[target_board]){
             adjust_client_.call(avoid_block);
             if(avoid_block.response.lidar_results[0]<0){
                 return -1;//道路被封死或者目标丢失
@@ -737,6 +656,7 @@ int MecanumController::forward_and_adjust(int z,double forward_speed){
 
 //-------------------------------------------------------比较近时------------------------------------//
         else{
+            is_near = true;
             if(center_x <120){
                 set_speed_.request.target_twist.linear.y = 0.15;
             }

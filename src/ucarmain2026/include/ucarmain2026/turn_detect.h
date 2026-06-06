@@ -6,7 +6,7 @@
 #include "ucarmain2026/getpose_server.h"
 #include "ucarmain2026/set_speed.h"
 #include "ucarmain2026/lidar_process.h"
-#include "ucarmain2026/traffic_light.h"
+// #include "ucarmain2026/traffic_light.h"
 
 #include <boost/algorithm/string/join.hpp>
 
@@ -35,7 +35,7 @@ public:
     int forward_and_adjust(int z,double forward_speed);
     void cap_buffer_clear();
     // bool pid_change_flag=0;
-    std::vector<std::string> class_names = {"chili", "tomato", "potato", "banana", "apple","watermelon","cola","cake","milk"};
+    std::vector<std::string> class_names = {"daily_workshop", "food_workshop", "electronics_workshop"};
 
 
     ros::Publisher cmd_pub_;

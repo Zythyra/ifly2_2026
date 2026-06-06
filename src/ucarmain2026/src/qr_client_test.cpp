@@ -1,236 +1,202 @@
 /**
  * @file qr_client_test.cpp
- * @brief 盲盒抓取二维码客户端 - 包含视觉伺服对准与 HTTP 死磕机制
+ * @brief 盲盒抓取二维码测试节点 - 定点四向扫码版 (2秒极速+提前结束机制)
  */
 
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
-#include <nav_msgs/Odometry.h>
+#include <actionlib/client/simple_action_client.h>
+#include <move_base_msgs/MoveBaseAction.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <qr_01/qr_code.h>
 #include <curl/curl.h>
-#include <tf/transform_datatypes.h>
 #include <vector>
 #include <string>
 #include <cmath>
 #include <algorithm>
 
-// ================= 全局状态机 =================
-// ROTATING: 寻目标旋转 | ALIGNING: PID居中对准 | FETCHING: 网络请求 | FINISHED: 任务完成
-enum State { ROTATING, ALIGNING, FETCHING, FINISHED };
-State currentState = ROTATING;
+using namespace std;
 
-// 绝对里程计累加变量
-double last_yaw = 0.0;
-double total_rotated = 0.0; 
-bool odom_initialized = false; 
+// ================= 全局状态机 =================
+enum State { NAVIGATING, SCANNING, FINISHED };
+State currentState = NAVIGATING;
 
 // 二维码内容存储变量
-std::string target_result_1 = "";
-std::string target_result_2 = "";
-std::string target_result_3 = "";
-int valid_count = 0; // 仅记录有效 (code=200) 的数量
+string target_result_1 = "未扫到1";
+string target_result_2 = "未扫到2";
+string target_result_3 = "未扫到3";
+int valid_count = 0; 
 
-// 查重黑名单，扫过且处理完毕的 URL 才会进黑名单
-std::vector<std::string> scanned_urls; 
+// 查重黑名单与扫码控制
+vector<string> scanned_urls; 
 ros::ServiceClient qr_client;
-std::string captured_url = ""; 
-int lost_count = 0; // 对准时防丢计数器
+int qr_waypoint_idx = 0;
+ros::Time scan_start_time;
 
-// ================= JSON 与 HTTP 解析 =================
-int extractCode(const std::string& json_str) {
-    size_t key_pos = json_str.find("\"code\"");
-    if (key_pos == std::string::npos) return -1;
-    size_t colon_pos = json_str.find(":", key_pos);
-    if (colon_pos == std::string::npos) return -1;
-    try { return std::stoi(json_str.substr(colon_pos + 1)); } catch (...) { return -1; }
+// ================= 导航 Action 辅助函数 =================
+typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
+bool go_destination(double x, double y, double yaw, MoveBaseClient &ac) {
+    move_base_msgs::MoveBaseGoal goal;
+    tf2::Quaternion q;
+    q.setRPY(0, 0, yaw);
+    goal.target_pose.header.frame_id = "map";
+    goal.target_pose.header.stamp = ros::Time::now();
+    goal.target_pose.pose.position.x = x;
+    goal.target_pose.pose.position.y = y;
+    goal.target_pose.pose.position.z = 0.0;
+    goal.target_pose.pose.orientation.x = q.x();
+    goal.target_pose.pose.orientation.y = q.y();
+    goal.target_pose.pose.orientation.z = q.z();
+    goal.target_pose.pose.orientation.w = q.w();
+    
+    ac.sendGoal(goal);
+    ac.waitForResult();
+    return ac.getState() == actionlib::SimpleClientGoalState::SUCCEEDED;
 }
 
-std::string extractResult(const std::string& json_str) {
-    size_t key_pos = json_str.find("\"result\"");
-    if (key_pos == std::string::npos) return "";
-    size_t start_quote = json_str.find("\"", key_pos + 8); 
-    if (start_quote == std::string::npos) return "";
-    size_t end_quote = json_str.find("\"", start_quote + 1);
-    if (end_quote == std::string::npos) return "";
-    return json_str.substr(start_quote + 1, end_quote - start_quote - 1);
-}
-
-void odomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
-    tf::Quaternion q(msg->pose.pose.orientation.x, msg->pose.pose.orientation.y,
-                     msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
-    tf::Matrix3x3 m(q);
-    double roll, pitch, yaw;
-    m.getRPY(roll, pitch, yaw);
-    
-    if (!odom_initialized) { last_yaw = yaw; odom_initialized = true; return; }
-    
-    double delta = yaw - last_yaw;
-    while (delta > M_PI) delta -= 2 * M_PI;
-    while (delta < -M_PI) delta += 2 * M_PI;
-    
-    total_rotated += delta; 
-    last_yaw = yaw;
-}
-
-size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
+// ================= JSON 与 HTTP 解析辅助 =================
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
-std::string httpGet(std::string url) {
-    CURL* curl; CURLcode res; std::string readBuffer;
+string httpGet(string url) {
+    CURL* curl;
+    CURLcode res;
+    string readBuffer;
     curl = curl_easy_init();
     if(curl) {
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L); 
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L); // 2秒网络超时
         res = curl_easy_perform(curl);
         curl_easy_cleanup(curl);
     }
     return readBuffer;
 }
 
+int extractCode(const string& json_str) {
+    size_t key_pos = json_str.find("\"code\"");
+    if (key_pos == string::npos) return -1;
+    size_t colon_pos = json_str.find(":", key_pos);
+    try { return stoi(json_str.substr(colon_pos + 1)); } catch (...) { return -1; }
+}
+
+string extractResult(const string& json_str) {
+    size_t key_pos = json_str.find("\"result\"");
+    if (key_pos == string::npos) return "";
+    size_t start_quote = json_str.find("\"", key_pos + 8); 
+    if (start_quote == string::npos) return "";
+    size_t end_quote = json_str.find("\"", start_quote + 1);
+    return json_str.substr(start_quote + 1, end_quote - start_quote - 1);
+}
+
+// ================= 主函数 =================
 int main(int argc, char** argv) {
-    setlocale(LC_ALL, ""); 
-    ros::init(argc, argv, "competition_final_node");
+    setlocale(LC_ALL, "");
+    ros::init(argc, argv, "qr_client_test_node");
     ros::NodeHandle nh;
 
-    ros::Subscriber odom_sub = nh.subscribe("odom", 10, odomCallback);
-    ros::Publisher cmd_pub = nh.advertise<geometry_msgs::Twist>("cmd_vel", 10);
     qr_client = nh.serviceClient<qr_01::qr_code>("qr_detect");
-
-    ROS_INFO("等待二维码视觉服务端启动...");
-    qr_client.waitForExistence();
-
-    while (ros::ok() && !odom_initialized) {
-        ros::spinOnce();
-        ros::Duration(0.1).sleep();
-    }
-    ROS_INFO("底盘就绪，开始执行盲盒抓取任务！");
-
     qr_01::qr_code srv;
-    srv.request.command = -1; // 开机预热
-    qr_client.call(srv);
-    ros::Duration(2.0).sleep(); 
-    srv.request.command = -3; // 清理缓存
-    qr_client.call(srv); 
 
-    ros::Rate rate(20); 
+    MoveBaseClient ac("move_base", true);
+    ROS_INFO("⏳ 等待 move_base 服务启动...");
+    ac.waitForServer();
+    ROS_INFO("✅ move_base 服务已连接！开始定点扫码测试...");
+
+    ros::Rate rate(10); 
+    
+    // 定点扫码的四个预设位置
+    double qr_wp_x[4]   = {0.5,  0.75, 1.0,  0.75};
+    double qr_wp_y[4]   = {5.25, 5.0,  5.25, 5.5};
+    double qr_wp_yaw[4] = {0.0,  1.57, 3.14, -1.57};
 
     while (ros::ok() && currentState != FINISHED) {
-        ros::spinOnce(); 
-        geometry_msgs::Twist vel;
-        double rotated_deg = std::abs(total_rotated) * 180.0 / M_PI;
+        ros::spinOnce();
 
         switch (currentState) {
-            // ================= 阶段 1：巡航寻找 =================
-            case ROTATING:
-                if (rotated_deg >= 360.0) { currentState = FINISHED; break; }
-                vel.angular.z = 0.4; 
-                
-                srv.request.command = 1;
-                if (qr_client.call(srv) && !srv.response.result.empty()) {
-                    std::string raw_res = srv.response.result;
-                    size_t split_pos = raw_res.find("|");
-                    std::string temp_url = (split_pos != std::string::npos) ? raw_res.substr(split_pos + 1) : raw_res;
-                    
-                    if (std::find(scanned_urls.begin(), scanned_urls.end(), temp_url) != scanned_urls.end()) {
-                        break; // 已经在黑名单，直接无视
-                    }
-
-                    ROS_INFO("👀 发现新目标，进入视觉伺服对准模式...");
-                    captured_url = temp_url;
-                    lost_count = 0; 
-                    currentState = ALIGNING; // 切换到对准模式
-                }
-                break;
-
-            // ================= 阶段 2：PID 视觉居中对准 =================
-            case ALIGNING:
-                srv.request.command = 1;
-                if (qr_client.call(srv) && !srv.response.result.empty()) {
-                    lost_count = 0; 
-                    std::string raw_res = srv.response.result;
-                    size_t split_pos = raw_res.find("|");
-                    
-                    int x_coord = 320; // 默认画面中央
-                    if (split_pos != std::string::npos) {
-                        try { x_coord = std::stoi(raw_res.substr(0, split_pos)); } 
-                        catch (...) { x_coord = 320; }
-                        // 更新一下 URL，防止对准过程中扫到了旁边的码
-                        captured_url = raw_res.substr(split_pos + 1); 
-                    }
-
-                    // 计算像素误差 (中心坐标是320)
-                    int error = 320 - x_coord;
-                    
-                    // 误差小于 15 像素，视为对准完毕
-                    if (std::abs(error) < 15) {
-                        ROS_INFO("🎯 二维码已完美居中！刹车准备获取数据。");
-                        vel.angular.z = 0.0;
-                        cmd_pub.publish(vel);
-                        ros::Duration(0.5).sleep(); // 停稳
-                        currentState = FETCHING;
-                    } else {
-                        // P 控制器动态调节旋转速度
-                        double Kp = 0.0025; 
-                        vel.angular.z = Kp * error;
-                        
-                        // 速度限幅，防止转太快画面糊了，也防止过冲
-                        if (vel.angular.z > 0) vel.angular.z = std::max(std::min(vel.angular.z, 0.4), 0.05);
-                        else vel.angular.z = std::min(std::max(vel.angular.z, -0.4), -0.05);
-                    }
-                } else {
-                    lost_count++;
-                    if (lost_count > 10) { // 连续0.5秒丢失目标
-                        ROS_WARN("⚠️ 目标在对准时丢失！恢复巡航搜索...");
-                        currentState = ROTATING;
-                    }
-                    vel.angular.z = 0.0; // 丢失期间先原地别动
-                }
-                break;
-
-            // ================= 阶段 3：HTTP 数据抓取 (死磕模式) =================
-            case FETCHING:
+            case NAVIGATING:
             {
-                ROS_INFO("🌐 向系统请求数据: %s", captured_url.c_str());
-                std::string json = httpGet(captured_url);
-                int code = extractCode(json);
-                
-                // 【核心逻辑】：只有拿到明确的 200 或 400，才视为处理完毕，否则一直死磕
-                if (code == 200 || code == 400) {
-                    scanned_urls.push_back(captured_url); // 封锁这个 URL，不再理它
+                if (qr_waypoint_idx >= 4) {
+                    ROS_WARN("🏁 4个预设扫码点已全部遍历完毕！结束扫码阶段。");
+                    currentState = FINISHED;
+                    break;
+                }
+
+                ROS_INFO("==================================================");
+                ROS_INFO("🚗 正在前往第 %d 个定点扫码位置: [X:%.2f, Y:%.2f, Yaw:%.2f]...", 
+                         qr_waypoint_idx + 1, qr_wp_x[qr_waypoint_idx], qr_wp_y[qr_waypoint_idx], qr_wp_yaw[qr_waypoint_idx]);
+                         
+                if (go_destination(qr_wp_x[qr_waypoint_idx], qr_wp_y[qr_waypoint_idx], qr_wp_yaw[qr_waypoint_idx], ac)) {
+                    ROS_INFO("✔️ 已到达第 %d 个位置，开启相机准备识别...", qr_waypoint_idx + 1);
                     
-                    if (code == 200) {
-                        std::string res_text = extractResult(json);
-                        if (valid_count == 0) target_result_1 = res_text;
-                        else if (valid_count == 1) target_result_2 = res_text;
-                        else if (valid_count == 2) target_result_3 = res_text;
-                        valid_count++;
-                        ROS_INFO("✅ 获得有效物品(200): %s", res_text.c_str());
-                    } else {
-                        ROS_WARN("🗑️ 获得无效物品(400)，抛弃继续寻找。");
-                    }
+                    srv.request.command = -1; qr_client.call(srv); 
+                    ros::Duration(1.0).sleep(); 
+                    srv.request.command = -3; qr_client.call(srv); 
                     
-                    if (valid_count >= 3) {
-                        currentState = FINISHED;
-                    } else {
-                        ROS_INFO("🔄 寻找下一个目标...");
-                        currentState = ROTATING;
-                    }
+                    scan_start_time = ros::Time::now();
+                    currentState = SCANNING;
                 } else {
-                    // 没有拿到 200/400 (网络超时、报错等)，状态不切换！
-                    // 会在下一个 rate.sleep() 后，继续执行 FETCHING 发起新的请求
-                    ROS_WARN("📶 网络卡顿或返回异常 (code=%d)，正在原位重试请求...", code);
+                    ROS_WARN("⚠️ 无法到达第 %d 个位置，直接尝试下一个点...", qr_waypoint_idx + 1);
+                    qr_waypoint_idx++;
                 }
                 break;
             }
-        }
 
-        // 仅在寻找和对准时，发布速度指令；FETCHING 时小车必须保持静止
-        if (currentState == ROTATING || currentState == ALIGNING) {
-            cmd_pub.publish(vel);
+            case SCANNING:
+            {
+                // 【修改 1】：驻留时间改为 2.0 秒
+                if ((ros::Time::now() - scan_start_time).toSec() > 2.0) {
+                    ROS_INFO("⏱️ 当前位置驻留 2 秒结束，未发现新二维码，前往下一个观察点...");
+                    srv.request.command = -2; qr_client.call(srv); // 关机省资源
+                    qr_waypoint_idx++;
+                    currentState = NAVIGATING;
+                    break;
+                }
+
+                srv.request.command = 1;
+                if (qr_client.call(srv) && !srv.response.result.empty()) {
+                    string raw_res = srv.response.result;
+                    size_t split_pos = raw_res.find("|");
+                    string captured_url = (split_pos != string::npos) ? raw_res.substr(split_pos + 1) : raw_res;
+                    
+                    if (find(scanned_urls.begin(), scanned_urls.end(), captured_url) == scanned_urls.end()) {
+                        scanned_urls.push_back(captured_url); 
+                        
+                        ROS_INFO("🌐 静止捕获新二维码，发起系统请求: %s", captured_url.c_str());
+                        string json = httpGet(captured_url);
+                        int code = extractCode(json);
+                        
+                        if (code == 200) {
+                            string res_text = extractResult(json);
+                            if (valid_count == 0) target_result_1 = res_text;
+                            else if (valid_count == 1) target_result_2 = res_text;
+                            else if (valid_count == 2) target_result_3 = res_text;
+                            valid_count++;
+                            ROS_INFO("✅ 录入第 %d 个有效内容(200): %s", valid_count, res_text.c_str());
+                            
+                            // 【修改 2】：如果成功拿到 200 数据，立刻去下一个点！
+                            if (valid_count >= 3) {
+                                ROS_INFO("🎉 成功收集满 3 个有效二维码内容！");
+                                currentState = FINISHED;
+                            } else {
+                                ROS_INFO("⏩ 当前点已成功获取目标，无需再等！提前前往下一个定点...");
+                                srv.request.command = -2; qr_client.call(srv); // 关机省资源
+                                qr_waypoint_idx++; // 累加索引前往下一个点
+                                currentState = NAVIGATING;
+                            }
+                        } else if (code == 400) {
+                            ROS_WARN("🗑️ 该物品为无效干扰项(400)，忽略...");
+                        } else {
+                            ROS_WARN("📶 网络异常或返回为空 (code=%d)，移出黑名单继续原位重试...", code);
+                            scanned_urls.pop_back(); 
+                        }
+                    }
+                }
+                break;
+            }
         }
         rate.sleep();
     }
@@ -238,11 +204,11 @@ int main(int argc, char** argv) {
     srv.request.command = -2; 
     qr_client.call(srv);
     
-    ROS_INFO("========== 🎉 盲盒扫描阶段闭环完成！==========");
-    ROS_INFO("提取到的三个有效目标变量如下：");
-    ROS_INFO("目标一: %s", target_result_1.c_str());
-    ROS_INFO("目标二: %s", target_result_2.c_str());
-    ROS_INFO("目标三: %s", target_result_3.c_str());
+    ROS_INFO("========== 🎉 盲盒扫描阶段测试结束！==========");
+    ROS_INFO("提取到的三个有效物品：");
+    ROS_INFO("1: %s", target_result_1.c_str());
+    ROS_INFO("2: %s", target_result_2.c_str());
+    ROS_INFO("3: %s", target_result_3.c_str());
 
     return 0;
 }

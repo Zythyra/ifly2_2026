@@ -57,10 +57,18 @@ private:
                 effective_point++;
                 disdance.push_back(ranges_[i]);
             }
-            // ROS_INFO("有效点数%d",effective_point);
+            
+            // 【修复 1】：防止空数组越界
+            if (disdance.empty()) {
+                ROS_WARN("start=1: 雷达正前方无有效点！");
+                resp.lidar_results.push_back(-1.0); 
+                return true;
+            }
+
             std::sort(disdance.begin(), disdance.end());
-            ROS_INFO("距离%f",disdance[effective_point/2]);//中位数
-            resp.lidar_results.push_back(disdance[effective_point/2]);
+            // 【修复 2】：使用数组自身大小来取中位数，绝对安全
+            ROS_INFO("距离%f", disdance[disdance.size() / 2]);
+            resp.lidar_results.push_back(disdance[disdance.size() / 2]);
             return true;
         }
 
@@ -68,14 +76,14 @@ private:
             int effective_point = 0;
             float shortest = 100;
             for (int i=168;i<=182;i++) {// 将雷达数据转化为xy坐标系
-                if (std::isinf(ranges_[i]) || ranges_[i] == 0.0f) {//
+                if (std::isinf(ranges_[i]) || ranges_[i] == 0.0f) {
                     continue;
                 }
                 theta = i * angle_step;
                 effective_point++;
                 geometry_msgs::PointStamped scan_point;
                 scan_point.header.frame_id = "laser_frame";
-                scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
+                scan_point.header.stamp = ros::Time(0); 
                 scan_point.point.x = ranges_[i] * cos(theta) * -1;
                 scan_point.point.y = ranges_[i] * sin(theta) * -1;
                 scan_point.point.z = 0.0;
@@ -86,13 +94,28 @@ private:
                     shortest = std::sqrt(output_point.point.x*output_point.point.x+output_point.point.y*output_point.point.y);
                 }
             }
+            
             std::vector<double> slope;
             for (int i=0;i<effective_point-1;i++){
-                slope.push_back((result[i+1][0]-result[i][0])/(result[i+1][1]-result[i][1])*-1);//这里是x/y，免得斜率变成无穷大了
+                // 【修复 3】：防止除以0导致无穷大(inf)
+                double dy = result[i+1][1] - result[i][1];
+                if (std::abs(dy) < 1e-5) dy = 1e-5; 
+                slope.push_back((result[i+1][0] - result[i][0]) / dy * -1);
             }
+            
+            // 【修复 4】：防止近距离点太少导致越界崩溃
+            if (slope.empty()) {
+                ROS_WARN("start=2: 雷达前方有效点不足(%d)，无法计算斜率！", effective_point);
+                resp.lidar_results.push_back(0.0); // 默认给个 0 斜率
+                // 没点说明极近（进入死区），给个极近距离迫使小车刹车
+                resp.lidar_results.push_back(shortest == 100 ? 0.2 : shortest); 
+                return true;
+            }
+
             std::sort(slope.begin(), slope.end());
-            ROS_INFO("板子斜率%f",slope[effective_point/2]);
-            resp.lidar_results.push_back(slope[effective_point/2]);
+            // 【修复 5】：严格按照 slope 的实际大小来取中位数！
+            ROS_INFO("板子斜率%f", slope[slope.size() / 2]);
+            resp.lidar_results.push_back(slope[slope.size() / 2]);
             resp.lidar_results.push_back(shortest);//最短距离
             return true;
         }

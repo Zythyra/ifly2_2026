@@ -175,16 +175,16 @@ add_executable(zhltest src/zhltest.cpp)
 add_executable(tf_pose_get src/tf_pose_get.cpp)
 add_dependencies(tf_pose_get ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_executable(lidar_process src/lidar_process.cpp)
-add_executable(myplanernav src/myplanernav.cpp)
-add_executable(myplanernav2 src/myplanernav2.cpp)
+
 add_executable(simple_move_control src/simple_move_control.cpp)
 add_dependencies(simple_move_control ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(turn_detect ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_gencfg)
 add_executable(nav_test src/nav_test.cpp)
 add_executable(qr_client_test_node src/qr_client_test.cpp)
 add_executable(wakeup_test_node src/wakeup_test.cpp)
-add_executable(race src/race.cpp)
+add_executable(race src/race.cpp src/turn_detect.cpp)
 add_executable(test_detect_node src/test_detect.cpp src/turn_detect.cpp)
+add_executable(test_find_approach_node src/test_find_approach.cpp src/turn_detect.cpp)
 
 # add_executable(turn_detect src/turn_detect.cpp)
 ## Rename C++ executable without prefix
@@ -198,8 +198,7 @@ add_executable(test_detect_node src/test_detect.cpp src/turn_detect.cpp)
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_dependencies(turn_detect ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-add_dependencies(myplanernav ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-add_dependencies(myplanernav2 ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
 add_dependencies(zhltest ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(traffic_light ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(qr_client_test_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
@@ -225,16 +224,7 @@ target_link_libraries(turn_detect
   ${catkin_LIBRARIES}
   traffic_light
 )
-target_link_libraries(myplanernav
-  turn_detect
-  traffic_light
-  ${catkin_LIBRARIES}
-)
-target_link_libraries(myplanernav2
-  turn_detect
-  traffic_light
-  ${catkin_LIBRARIES}
-)
+
 target_link_libraries(simple_move_control
   ${catkin_LIBRARIES}
 )
@@ -264,8 +254,15 @@ target_link_libraries(test_detect_node
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )
-add_dependencies(test_detect_node ${PROJECT_NAME}_generate_messages_cpp)
+target_link_libraries(test_find_approach_node
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
 
+
+
+add_dependencies(test_detect_node ${PROJECT_NAME}_generate_messages_cpp)
+add_dependencies(test_find_approach_node ${PROJECT_NAME}_generate_messages_cpp)
 
 # target_link_libraries(lidar_test
 #   ${catkin_LIBRARIES}

@@ -2,9 +2,9 @@
 
 # 路径跟随阶段的参数
 path_linear_x_gain: 4.5      # [比例系数] 路径跟随时的x方向线速度比例增益4.6
-path_linear_y_gain: 1.2      # [比例系数] 路径跟随时的y方向线速度比例增益 2.0
-path_angular_gain: 2.5       # [比例系数] 路径跟随时的角速度比例增益 11
-lookahead_dist: 0.15         # [米] 选取前方临时目标点的距离阈值
+path_linear_y_gain: 1.0      # [比例系数] 路径跟随时的y方向线速度比例增益 2.0
+path_angular_gain: 2.2       # [比例系数] 路径跟随时的角速度比例增益 11
+lookahead_dist: 0.22         # [米] 选取前方临时目标点的距离阈值
 
 # 目标点姿态调整阶段的参数
 goal_dist_threshold: 0.2     # [米] 判断已到达目标点附近并开始调整姿态的距离阈值
@@ -20,12 +20,12 @@ visualization_scale_factor: 5        # [整数] 代价地图可视化时的放�
 visualize_costmap: false  # 是否显示绘制的代价地图，设为 true 开启显示, 设为 false 关闭显示
 
 #曲率控制速度的参数
-a: 2.3
-k: -55.0
+a: 2.1
+k: -45.0
 angular_limit: 0.08
 angular_enhance: 0.015
 
-diff_gain: 0.8
+diff_gain: 1.2
 #低通滤波平滑系数,越小越平滑，但响应越慢
-alpha: 0.7
-y_diff_gain: 1.2
+alpha: 0.82
+y_diff_gain: 1.5

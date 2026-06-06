@@ -511,7 +511,7 @@ namespace my_planner
         cmd_vel.linear.x = target_pose.pose.position.x * dynamic_x_gain;
         // ROS_INFO("前进速度是%f",cmd_vel.linear.x);
         cmd_vel.linear.y = min_y_deviation * path_linear_y_gain_ + (min_y_deviation - y_pre_error) * y_diff_gain_;
-        
+        y_pre_error = min_y_deviation; //真正激活横向 D 项阻尼！
         last_cmdvel_x_ = cmd_vel.linear.x;
         
         double raw_angular_vel = angle_rad * path_angular_gain_ + (angle_rad-z_pre_error)*diff_gain_;
