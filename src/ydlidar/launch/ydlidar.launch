@@ -11,7 +11,7 @@
     <param name="range_max"    type="double" value="5.0" />
     <param name="ignore_array" type="string" value="" />
     <param name="samp_rate"    type="int"    value="4"/>
-    <param name="frequency"    type="double" value="12"/>
+    <param name="frequency"    type="double" value="10"/><!-- 雷达轴承老化，刚开机没法维持12hz的最高转速导致雷达点漂移，降低到10hz就能恢复正常 -->
     <remap from="scan" to="scan" />
   </node>
   <node pkg="tf" type="static_transform_publisher" name="base_link_to_laser"

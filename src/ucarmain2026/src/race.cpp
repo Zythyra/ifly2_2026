@@ -253,9 +253,9 @@ int main(int argc, char** argv) {
             case NAVIGATING:
             {
                 ac.waitForServer();
-                double qr_wp_x[4]   = {0.5, 0.75, 1.0, 0.75};
+                double qr_wp_x[4]   = {1.0, 0.75, 0.5, 0.75};
                 double qr_wp_y[4]   = {5.25, 5.0, 5.25, 5.5};
-                double qr_wp_yaw[4] = {0.0, 1.57, 3.14, -1.57};
+                double qr_wp_yaw[4] = {3.14, 1.57, 0.0, -1.57};
 
                 if (qr_waypoint_idx >= 4) {
                     ROS_INFO("4个扫码点遍历完毕！进行分类...");

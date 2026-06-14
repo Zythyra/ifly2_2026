@@ -4,7 +4,7 @@
 import cv2
 import csv
 from pathlib import Path
-
+from datetime import datetime # 【新增】：引入 datetime 模块
 
 # ===================== 路径配置 =====================
 
@@ -13,7 +13,6 @@ VIDEO_DIR = Path("/home/ucar/ucar_car/src/ucarmain2026/videos_for_yolo")
 
 # 抽帧图片保存文件夹
 OUTPUT_DIR = Path("/home/ucar/ucar_car/src/ucarmain2026/video_capture_yolo_photo")
-
 
 # ===================== 抽帧参数配置 =====================
 
@@ -28,22 +27,6 @@ IMAGE_FORMAT = "jpg"
 
 # 支持的视频格式
 VIDEO_SUFFIXES = [".avi", ".mp4", ".mov", ".mkv"]
-
-
-def video_already_processed(video_path, output_dir):
-    """
-    判断某个视频是否已经抽过帧。
-
-    判断依据：
-    如果输出目录中已经存在 视频名_000000.jpg，
-    说明这个视频之前已经处理过。
-    """
-
-    video_name = video_path.stem
-    first_image_name = f"{video_name}_000000.{IMAGE_FORMAT}"
-    first_image_path = output_dir / first_image_name
-
-    return first_image_path.exists()
 
 
 def extract_video_frames(video_path, output_dir, target_fps=3):
@@ -92,8 +75,11 @@ def extract_video_frames(video_path, output_dir, target_fps=3):
             # 统一缩放到 640×480
             frame = cv2.resize(frame, RESIZE)
 
-            # 图片命名：视频名_编号.jpg
-            image_name = f"{video_name}_{saved_count:06d}.{IMAGE_FORMAT}"
+            # 【核心修改】：获取当前精确到毫秒的时间戳
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            
+            # 【核心修改】：图片命名：视频名_时间戳.jpg
+            image_name = f"{video_name}_{timestamp}.{IMAGE_FORMAT}"
             image_path = output_dir / image_name
 
             # 保存图片
@@ -128,11 +114,7 @@ def extract_video_frames(video_path, output_dir, target_fps=3):
 def append_records_to_csv(csv_path, records):
     """
     把新抽帧的视频记录追加写入 frame_index.csv。
-
-    如果 csv 不存在，则先写表头。
-    如果 csv 已存在，则直接追加，不覆盖旧记录。
     """
-
     csv_exists = csv_path.exists()
 
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
@@ -154,7 +136,7 @@ def append_records_to_csv(csv_path, records):
 def main():
     """
     批量处理 videos_for_yolo 文件夹下的所有视频。
-    已经处理过的视频会自动跳过。
+    由于采用了时间戳命名，直接无视历史记录进行抽帧提取。
     """
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -176,21 +158,16 @@ def main():
     print(f"找到 {len(video_files)} 个视频文件")
     print(f"视频目录：{VIDEO_DIR}")
     print(f"图片输出目录：{OUTPUT_DIR}")
-    print("模式：自动跳过已经抽帧的视频")
+    print("模式：时间戳安全命名 (直接处理所有现有视频)")
 
     csv_path = OUTPUT_DIR / "frame_index.csv"
 
     total_new_images = 0
     processed_video_count = 0
-    skipped_video_count = 0
 
     for video_path in video_files:
-        if video_already_processed(video_path, OUTPUT_DIR):
-            print("=" * 60)
-            print(f"跳过已处理视频：{video_path.name}")
-            skipped_video_count += 1
-            continue
-
+        
+        # 【核心修改】：移除了跳过判断，因为视频被同名覆盖后，必须重新处理
         records = extract_video_frames(
             video_path=video_path,
             output_dir=OUTPUT_DIR,
@@ -204,8 +181,7 @@ def main():
 
     print("=" * 60)
     print("本次抽帧任务完成")
-    print(f"本次新处理视频数量：{processed_video_count}")
-    print(f"本次跳过已处理视频数量：{skipped_video_count}")
+    print(f"本次处理视频数量：{processed_video_count}")
     print(f"本次新增图片数量：{total_new_images}")
     print(f"图片保存路径：{OUTPUT_DIR}")
     print(f"索引文件路径：{csv_path}")
