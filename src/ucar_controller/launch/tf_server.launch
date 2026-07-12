@@ -13,7 +13,9 @@
     <param name="~lidar_pose_z"   value="0.165"/>
     <param name="~lidar_euler_r"  value="0.0"/>
     <param name="~lidar_euler_p"  value="0.0"/>
-    <param name="~lidar_euler_y"  value="-0.07"/>
+    <param name="~lidar_euler_y"  value="-0.07"/>    
+    <!-- 5/23 被改成如下 -->
+    <!-- <param name="~lidar_euler_y"  value="0.0"/> -->
 
     <param name="~imu_pose_x"   value=" 0.05"/>
     <param name="~imu_pose_y"   value="-0.05"/>
@@ -28,6 +30,6 @@
     
     <param name="~base_frame"    value="base_footprint"/>
     <!-- tf_rate 是指tf的发布频率 -->
-    <param name="~tf_rate"       value="100"/>
+    <param name="~tf_rate"       value="30"/>
   </node>
 </launch> 

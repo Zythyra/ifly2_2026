@@ -1,0 +1,16 @@
+<launch>
+    <!-- 启动 rosbridge 并绑定到小车IP -->
+    <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+        <arg name="address" value="192.168.1.108" />
+        <arg name="port" value="9090" />
+    </include>
+
+    <!-- 启动Python脚本（修正引号问题） -->
+    <node 
+        pkg="rosbridge_test_copy" 
+        type="rosbridge_ucar.py" 
+        name="bridge" 
+        output="screen"
+        launch-prefix="bash -c &quot;source /home/ucar/miniforge3/etc/profile.d/conda.sh &amp;&amp; conda activate opencv_env &amp;&amp; python $(find rosbridge_test_copy)/scripts/rosbridge_ucar.py&quot;"
+    />
+</launch>

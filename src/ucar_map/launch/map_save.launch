@@ -1,0 +1,4 @@
+<!-- 用于保存地图，每次使用前注意修改路径 -->
+<launch>
+    <node name="map_saver" pkg="map_server" type="map_saver" args="-f $(find ucar_map)/maps/4_27" />
+</launch>

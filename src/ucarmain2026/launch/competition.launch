@@ -1,0 +1,24 @@
+<launch>
+    <!-- 比赛参数：必须先于 lidar_process 和 race 加载 -->
+    <rosparam command="load" file="$(find ucarmain2026)/cfg/detect.yaml" ns="myplanernav" />
+
+
+    <!-- 比赛基础服务 -->
+    <node pkg="ucarmain2026" type="tf_pose_get" name="tf_pose_get" output="screen" />
+    <node pkg="ucarmain2026" type="lidar_process" name="lidar_process" output="screen" />
+    <node pkg="ucarmain2026" type="simple_move_control" name="simple_move_control" output="screen" />
+
+    <!-- 二维码与目标检测服务；两个服务由 race 按需开关摄像头 -->
+    <node pkg="qr_01" type="qr_server_node" name="qr_server_node" output="screen" />
+    <!-- <node pkg="ros_nanodet" type="detect2025.py" name="detect2025" output="screen" /> -->
+
+    <!-- 语音、语义理解和物品分类 -->
+    <include file="$(find xf_mic_asr_offline)/launch/mic_init.launch" />
+    <node pkg="ucarmain2026" type="spark_semantic_server.py"
+          name="spark_semantic_server_node" output="screen" />
+    <node pkg="ucarmain2026" type="spark_classifier_server.py"
+          name="spark_classifier_server_node" output="screen" />
+
+    <!-- 比赛总控 -->
+    <!-- <node pkg="ucarmain2026" type="race" name="main_competition_node" output="screen" /> -->
+</launch>

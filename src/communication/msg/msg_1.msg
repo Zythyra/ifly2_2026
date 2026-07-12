@@ -1,1 +1,0 @@
-uint16 target_class

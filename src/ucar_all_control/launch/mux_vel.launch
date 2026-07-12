@@ -1,0 +1,5 @@
+<launch>
+  <node pkg="topic_tools" type="mux" name="cmd_vel_mux" args="/cmd_vel /cmd_vel /cmd_vel_xun">
+    <param name="timeout" value="0.5" />
+    </node>
+</launch>

@@ -20,7 +20,7 @@ APISecret = "YTE2MDNjNjdlZjU5NzE4ZDUzZTJmOTVi"
 APIKey = "a96d7ffe156859dc325d186a3bb20e17"
 
 # 确保文件夹存在
-OUTPUT_DIR = "/home/ucar/ucar_car/src/ucarmain2026/audios"
+OUTPUT_DIR = "/home/ucar/ucar_ws_copy/src/ucarmain2026/audios"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "1.wav")
 

@@ -13,7 +13,7 @@ import sys
 import os
 
 # 硬编码添加 build 目录到 Python 路径
-build_dir = "/home/ucar/ucar_car/src/wb_cpp/build"
+build_dir = "/home/ucar/ucar_ws_copy/src/wb_cpp/build"
 sys.path.insert(0, build_dir)
 print(f"添加构建路径: {build_dir}")
 
@@ -26,7 +26,7 @@ except ImportError as e:
 predictor = init()
 rospy.init_node("nanodet_detect", anonymous=True)
 
-frame = cv2.imread('/home/ucar/ucar_car/src/ros_nanodet/images/capture_0.jpg')
+frame = cv2.imread('/home/ucar/ucar_ws_copy/src/ros_nanodet/images/capture_0.jpg')
 _ = detect(frame,predictor)# 识别
 _ = detect(frame,predictor)# 识别2次
 _ = detect(frame,predictor)
@@ -36,7 +36,7 @@ print("warm up done")
 camera_active = False
 cap = None
 
-output_filename = "/home/ucar/ucar_car/src/ucarmain2026/nanodet_debug/nanodet.avi"#录制视频防止可视化卡顿
+output_filename = "/home/ucar/ucar_ws_copy/src/ucarmain2026/nanodet_debug/nanodet.avi"#录制视频防止可视化卡顿
 fourcc = cv2.VideoWriter_fourcc(*'XVID')  # MP4格式，其他选项：'XVID'->AVI, 'MJPG'->MJPEG
 fps = 3.0
 frame_size = (640, 480)  # 必须和实际帧尺寸一致

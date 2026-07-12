@@ -12,27 +12,49 @@
     <!-- //当设置为true时，AMCL将仅仅使用订阅的第一个地图，而不是每次接收到新的时更新为一个新的地图，在navigation 1.4.2中新加入的参数。 -->
 
 
-  <param name="min_particles" value="1000"/>
-  <param name="max_particles" value="10000"/>
+  <!-- 初始位姿的设定，后续将通过在rviz读取的值进行固定 -->
+  <param name="initial_pose_x" value="0.242"/>
+  <param name="initial_pose_y" value="0.255"/>
+  <param name="initial_pose_a" value="0.006"/>
+  <param name="initial_cov_xx" value="0.0"/>
+  <param name="initial_cov_yy" value="0.0"/>
+  <param name="initial_cov_aa" value="0.05"/>
+
+
+  <!-- 1000 -> 20000 -->
+  <param name="min_particles" value="2000"/>  
+  <!-- 10000 -> 5000 -->
+  <param name="max_particles" value="5000"/>
   <param name="kld_err" value="0.05"/>
   <param name="kld_z" value="0.99"/>
+  <!-- 0.2 -> 0.3 -->
   <param name="odom_alpha1" value="0.2"/>
+  <!-- 0.2 -> 0.3 -->
   <param name="odom_alpha2" value="0.2"/>
   <!-- translation std dev, m -->
-  <param name="odom_alpha3" value="0.8"/>
+  <!-- 0.8 -> 0.3 -->
+  <param name="odom_alpha3" value="0.2"/>
   <param name="odom_alpha4" value="0.2"/>
-  <param name="laser_z_hit" value="0.5"/>
+  <param name="laser_z_hit" value="0.75"/>
   <param name="laser_z_short" value="0.05"/>
   <param name="laser_z_max" value="0.05"/>
-  <param name="laser_z_rand" value="0.5"/>
+  <param name="laser_z_rand" value="0.05"/>
+  <!-- <param name="laser_z_hit" value="0.5"/>
+  <param name="laser_z_short" value="0.05"/>
+  <param name="laser_z_max" value="0.05"/>
+  <param name="laser_z_rand" value="0.5"/> -->
   <param name="laser_sigma_hit" value="0.2"/>
   <param name="laser_lambda_short" value="0.1"/>
   <param name="laser_lambda_short" value="0.1"/>
-  <!-- <param name="laser_model_type" value="likelihood_field"/> -->
-  <param name="laser_model_type" value="beam"/>
+  <param name="laser_model_type" value="likelihood_field"/>
+  <!-- <param name="laser_model_type" value="beam"/> -->
   <param name="laser_likelihood_max_dist" value="2.0"/>
-  <param name="update_min_d" value="0.2"/>
-  <param name="update_min_a" value="0.5"/>
+  <!-- 0.2 -> 0.1 -->
+  <!-- 0.1 -> 0.05 by Xu -->
+  <param name="update_min_d" value="0.1"/>
+  <!-- 0.5 -> 0.1 -->
+  <!-- 0.1 -> 0.05 by Xu -->
+  <param name="update_min_a" value="0.1"/>   
   <param name="odom_frame_id" value="odom"/>
   <param name="resample_interval" value="1"/>
   <param name="transform_tolerance" value="0.1"/>
@@ -48,3 +70,6 @@
   <!-- //设置为false阻止amcl发布全局坐标系和里程计坐标系之间的tf变换 -->
 </node>
 </launch>
+
+
+

@@ -1,0 +1,4 @@
+<!-- this launch is lauching Waypoints default values to the param service -->
+<launch>
+    <rosparam command="load" file="$(find smach_pkg)/param/waypoint.yaml" />
+</launch>

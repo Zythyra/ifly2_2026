@@ -7,6 +7,8 @@ find_package(catkin REQUIRED COMPONENTS
   rosconsole
   roscpp
   sensor_msgs
+  geometry_msgs
+  tf
 )
 
 #add_subdirectory(sdk)
@@ -30,6 +32,11 @@ include_directories(
 
 add_executable(ydlidar_node src/ydlidar_node.cpp  ${SDK_SRC})
 add_executable(ydlidar_client src/ydlidar_client.cpp)
+add_executable(locate_picture src/locate_picture.cpp)
+add_executable(locate_pic src/locate_pic.cpp)
+add_executable(locate_pic_ransac src/locate_pic_ransac.cpp)
+
+
 
 target_link_libraries(ydlidar_node
    ${catkin_LIBRARIES} 
@@ -37,6 +44,17 @@ target_link_libraries(ydlidar_node
 target_link_libraries(ydlidar_client
    ${catkin_LIBRARIES} 
  )
+ target_link_libraries(locate_picture
+ ${catkin_LIBRARIES} 
+)
+target_link_libraries(locate_pic
+${catkin_LIBRARIES} 
+)
+
+target_link_libraries(locate_pic_ransac
+${catkin_LIBRARIES} 
+)
+
 
 install(TARGETS ydlidar_node ydlidar_client
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

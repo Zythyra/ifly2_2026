@@ -1,0 +1,11 @@
+<!-- 省赛 -->
+<launch>
+    <node pkg="nanodet" type="rknn_detect2.py" name="rknn_detect2" output="screen" />
+    <!-- <node pkg="ucar_camera" type="hdl03" name="hdl03" output="screen" /> -->
+    <!-- <node pkg="ucar_camera" type="hdr03" name="hdr03" output="screen" /> -->
+     <node pkg="ucar_camera" type="sxunleft" name="sxunleft" output="screen" />
+    <node pkg="ucar_camera" type="sxunright" name="sxunright" output="screen" />
+    <node pkg="ucar_camera" type="xunxian" name="xunxian" output="screen" />
+    <node pkg="ucar_camera" type="zhong.py" name="zhong" output="screen" />
+    <node pkg="ucar_all_control" type="zhongwav.py" name="zhongwav" output="screen"/>
+</launch>

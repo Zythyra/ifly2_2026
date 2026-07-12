@@ -7,7 +7,7 @@ import time
 import os
 
 # 存放截图的目录（如果不存在会自动创建）
-SAVE_DIR = "/home/ucar/ucar_car/src/ucarmain2026/images_for_yolo"
+SAVE_DIR = "/home/ucar/ucar_ws_copy/src/ucarmain2026/images_for_yolo"
 if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
 

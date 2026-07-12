@@ -1,10 +1,5 @@
 #include <ucar_controller/base_driver.h>
 #include <Eigen/Eigen>
-
-int imu_flag=0;
-sensor_msgs::Imu imu_data1;
-sensor_msgs::Imu imu_data;
-
 namespace ucarController
 {
 baseBringup::baseBringup() :x_(0), y_(0), th_(0)
@@ -33,8 +28,8 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   pravite_nh.param("base_shape_a", base_shape_a_, 0.2169);  //   m
   pravite_nh.param("base_shape_b", base_shape_b_, 0.0);  //   m
 
-  pravite_nh.param("linear_speed_max",   linear_speed_max_, 3.0);  //   3m/s
-  pravite_nh.param("angular_speed_max", angular_speed_max_, 6.28);//3.14 rad/s
+  pravite_nh.param("linear_speed_max",   linear_speed_max_, 3.0);  //   m/s
+  pravite_nh.param("angular_speed_max", angular_speed_max_, 3.14);// rad/s
   pravite_nh.setParam("linear_speed_max" ,linear_speed_max_);
   pravite_nh.setParam("angular_speed_max",angular_speed_max_);
 
@@ -177,7 +172,6 @@ void baseBringup::openSerial()
       }
     }
     first_open = false;
-    // sleep(1);
     ros::Duration(cmd_dt_threshold_).sleep();
   }
 }//openSerial
@@ -661,11 +655,11 @@ void baseBringup::processIMU(uint8_t head_type)
     if (CRC8 != ahrs_frame_.frame.header.header_crc8)
     {
       ROS_WARN("header_crc8 error");
+      return;
     }
     if(!imu_frist_sn_){
       read_sn_  = ahrs_frame_.frame.header.serial_num - 1;
       imu_frist_sn_ = true;
-      return;
     }
     //check sn 
     baseBringup::checkSN(TYPE_AHRS);
@@ -769,7 +763,7 @@ void baseBringup::processIMU(uint8_t head_type)
   if (head_type == TYPE_AHRS)
   {
     // publish imu topic
-    //sensor_msgs::Imu imu_data;
+    sensor_msgs::Imu imu_data;
     imu_data.header.stamp = ros::Time::now();
     imu_data.header.frame_id = imu_frame_id_.c_str();
     Eigen::Quaterniond q_ahrs(ahrs_frame_.frame.data.data_pack.Qw,
@@ -790,13 +784,6 @@ void baseBringup::processIMU(uint8_t head_type)
         Eigen::AngleAxisd( 3.14159, Eigen::Vector3d::UnitX());
       
     Eigen::Quaterniond q_out =  q_r * q_ahrs * q_rr;
-
-
-    //四元数归一化，防止base_start启动时报错
-    q_out.normalize();
-    // ROS_INFO("w=%f,x=%f,y=%f,z=%f",q_out.w(),q_out.x(),q_out.y(),q_out.z());
-    
-
     imu_data.orientation.w = q_out.w();
     imu_data.orientation.x = q_out.x();
     imu_data.orientation.y = q_out.y();
@@ -807,14 +794,9 @@ void baseBringup::processIMU(uint8_t head_type)
     imu_data.linear_acceleration.x = -imu_frame_.frame.data.data_pack.accelerometer_x;
     imu_data.linear_acceleration.y = imu_frame_.frame.data.data_pack.accelerometer_y;
     imu_data.linear_acceleration.z = imu_frame_.frame.data.data_pack.accelerometer_z;
-    imu_data.orientation_covariance = {0.0017,0,0,
-                                                                                  0,0.0017,0,
-                                                                                  0,0,0.0017};
+
     imu_pub_.publish(imu_data);
-    if(imu_flag==0){
-        imu_data1=imu_data;
-        imu_flag=1;
-    }
+
     Eigen::Quaterniond rpy_q(imu_data.orientation.w,
                               imu_data.orientation.x,
                               imu_data.orientation.y,
@@ -1042,13 +1024,14 @@ void baseBringup::processOdometry(){
   last_time_ = current_time_;
   lock.unlock();
   double vw1,vw2,vw3,vw4;
-  vw1 = -pack_read_.pack.data.pluse_w1 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_/1000.0);
-  vw2 =  pack_read_.pack.data.pluse_w2 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_/1000.0);
-  vw4 = -pack_read_.pack.data.pluse_w3 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_/1000.0);
-  vw3 =  pack_read_.pack.data.pluse_w4 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_/1000.0);
+  vw1 =-pack_read_.pack.data.pluse_w1 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_/1000.0);
+  vw2 = pack_read_.pack.data.pluse_w2 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_/1000.0);
+  vw4 =-pack_read_.pack.data.pluse_w3 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_/1000.0);
+  vw3 = pack_read_.pack.data.pluse_w4 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_/1000.0);
 
   double Vx,Vy,Vth;
   Vx  = ( vw1+vw2+vw3+vw4)/4;
+  //cout << "VX="<< Vx <<endl;
   Vy  = 0.975*(-vw1+vw2-vw3+vw4)/4;
   Vth = (-vw1+vw2+vw3-vw4)/(4*(base_shape_a_+base_shape_b_));
 
@@ -1058,23 +1041,7 @@ void baseBringup::processOdometry(){
   lock.lock();
   x_  += delta_x;
   y_  += delta_y;
-  //th_ += delta_th;
-  double yaw1=tf::getYaw(imu_data1.orientation);
-  double yaw2=tf::getYaw(imu_data.orientation);
-
-  //这里角度处理有误，把弧度当角度处理了
-  double yaw=yaw2 - yaw1;
-  // if(yaw > 180){
-  //   yaw = yaw - 360;
-  // }else if(yaw < -180){
-  //   yaw = yaw + 360;
-  // }
-  if(yaw > 3.1416){
-    yaw = yaw - 6.28318;
-  }else if(yaw < -3.1416){
-    yaw = yaw + 6.28318;
-  }
-  th_ = yaw;
+  th_ += delta_th;
   lock.unlock();
   nav_msgs::Odometry odom_tmp;
   odom_tmp.header.stamp = ros::Time::now();
@@ -1085,7 +1052,6 @@ void baseBringup::processOdometry(){
   odom_tmp.pose.pose.position.z = 0.0;
   geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th_);
   odom_tmp.pose.pose.orientation = odom_quat;
-
   if (!Vx||!Vy||!Vth){
     odom_tmp.pose.covariance = ODOM_POSE_COVARIANCE;
   }else{

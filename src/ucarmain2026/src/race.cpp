@@ -221,7 +221,7 @@ int main(int argc, char** argv) {
                 if ((ros::Time::now() - record_start_time).toSec() >= 9.0) {
                     xf_mic_asr_offline::Start_Record_srv srv_rec; srv_rec.request.whether_start = 0; 
                     record_client.call(srv_rec);
-                    saveAsWav("/home/ucar/ucar_car/wakeup_record/test_record.wav", audio_buffer);
+                    saveAsWav("/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav", audio_buffer);
                     current_state = SEMANTIC_PARSING;
                 }
                 break;
@@ -236,7 +236,7 @@ int main(int argc, char** argv) {
                     current_state = NAVIGATING;
                 } else {
                     ROS_WARN("⚠️ 解析失败！正在播放提示音并重新录制...");
-                    system("aplay -q /home/ucar/ucar_car/src/ucarmain2026/audios/1.wav");
+                    system("aplay -q /home/ucar/ucar_ws_copy/src/ucarmain2026/audios/1.wav");
                     
                     xf_mic_asr_offline::Start_Record_srv srv_rec;
                     srv_rec.request.whether_start = 1;
@@ -365,11 +365,11 @@ int main(int argc, char** argv) {
                 string text5 = "任务完成。"; // 新增第五个音频文本
                 
                 ROS_INFO("正在调用本地脚本批量合成音频 (2~4.wav)...");
-                string cmd = "python3 /home/ucar/ucar_car/src/ucarmain2026/scripts/generate_task_audios.py \"" + text2 + "\" \"" + text3 + "\" \"" + text4 + "\" \"" + text5 + "\"";
+                string cmd = "python3 /home/ucar/ucar_ws_copy/src/ucarmain2026/scripts/generate_task_audios.py \"" + text2 + "\" \"" + text3 + "\" \"" + text4 + "\" \"" + text5 + "\"";
                 system(cmd.c_str());
                 
                 ROS_INFO("播放：获取分类汇总 (2.wav)...");
-                system("aplay -q /home/ucar/ucar_car/src/ucarmain2026/audios/2.wav");
+                system("aplay -q /home/ucar/ucar_ws_copy/src/ucarmain2026/audios/2.wav");
                 
                 // 唤醒摄像头，准备找板
                 std::vector<std::vector<int>> dummy_result = {{-1},{-1},{-1},{-1},{-1},{-1}};
@@ -480,10 +480,10 @@ int main(int argc, char** argv) {
             case PLAY_3_4_WAV:
             {
                 ROS_INFO("播放：实体区放置完毕 (3.wav)...");
-                system("aplay -q /home/ucar/ucar_car/src/ucarmain2026/audios/3.wav");
+                system("aplay -q /home/ucar/ucar_ws_copy/src/ucarmain2026/audios/3.wav");
                 
                 ROS_INFO("播放：仿真区放置完毕 (4.wav)...");
-                system("aplay -q /home/ucar/ucar_car/src/ucarmain2026/audios/4.wav");
+                system("aplay -q /home/ucar/ucar_ws_copy/src/ucarmain2026/audios/4.wav");
                 
                 current_state = GO_FINAL_POINT;
                 break;
@@ -502,7 +502,7 @@ int main(int argc, char** argv) {
             case PLAY_5_WAV:
             {
                 ROS_INFO("播放：任务完成 (5.wav)...");
-                system("aplay -q /home/ucar/ucar_car/src/ucarmain2026/audios/5.wav");
+                system("aplay -q /home/ucar/ucar_ws_copy/src/ucarmain2026/audios/5.wav");
                 current_state = ALL_FINISHED;
                 break;
             }

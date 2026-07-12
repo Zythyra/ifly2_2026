@@ -1,0 +1,14 @@
+<launch>
+  <!-- ① 先正常启动 move_base（自行替换） -->
+  <!-- <include file="$(find your_nav_pkg)/launch/move_base.launch" /> -->
+
+  <!-- ② 启动参数监听节点 -->
+  <node pkg="mb_cfg" type="update_teb.py" name="update_teb" output="screen">
+    <!-- 必填：你的 TEB 参数文件 -->
+    <!-- <param name="config_file" value="$(find my_nav_pkg)/params/teb_dynamic.yaml"/> -->
+    <param name="change_teb" value="$(find ucar_nav)/launch/config/xys/teb_local_planner_params.yaml"/>
+    <!-- 可选：自定义触发参数名、轮询频率 -->
+    <!-- <param name="flag_name"  value="/teb/update_flag"/> -->
+    <!-- <param name="check_rate" value="5.0"/> -->
+  </node>
+</launch>

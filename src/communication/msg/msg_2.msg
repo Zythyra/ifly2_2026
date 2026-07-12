@@ -1,2 +1,0 @@
-uint16 room
-uint16 detected_class

@@ -1,0 +1,12 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/ucar/ucar_ws_copy/devel/lib/python3/dist-packages",
+        "/home/ucar/ucar_ws/devel/lib/python3/dist-packages",
+        "/opt/ros/noetic/lib/python3/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/ucar/ucar_ws_copy/devel/lib/python3/dist-packages",
+        "/home/ucar/ucar_ws/devel/lib/python3/dist-packages",
+        "/opt/ros/noetic/lib/python3/dist-packages"
+    ]
+}

@@ -1,0 +1,38 @@
+# param1 to paramX represent the point's [x, y, yaw]
+# this params are used for Actionlib to get to the target point
+
+# ewm前
+point0:  
+    x_y_yaw: [1.181, 0.758, 3.122]
+
+# 检测测试点0 中心
+point1:
+    x_y_yaw: [1.213, 3.725, 0.028]
+
+# 白矿
+point2:
+    x_y_yaw: [1.213, 3.725, 0.028]
+
+# 左灯
+point3:
+    x_y_yaw: [3.147, 4.325, 1.742]
+
+# 右🚨
+point4:
+    x_y_yaw: [4.225, 4.325, 1.742]
+
+# 左入口
+point5:
+    x_y_yaw: [2.768, 3.452, -1.203]
+
+# 右入口
+point6:
+    x_y_yaw: [4.669, 3.475, -1.933]
+
+# 检测测试点1 左下 0.388 2.226 1.026
+point7:
+    x_y_yaw: [1.213, 3.725, 0.028]
+
+# 检测测试点2 右上 2.116 4.051 -2.417
+point8:
+    x_y_yaw: [1.213, 3.725, 0.028]

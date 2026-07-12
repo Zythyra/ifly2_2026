@@ -12,7 +12,7 @@ negate: 0
 occupied_thresh: 0.65
 free_thresh: 0.196
 
-# image: /home/ucar/ucar_car/src/ucarmain2026/map/amcl.pgm
+# image: /home/ucar/ucar_ws_copy/src/ucarmain2026/map/amcl.pgm
 # resolution: 0.010000
 # origin: [-0.000000, -0.000000, 0.000000]
 # negate: 0

@@ -31,7 +31,8 @@ find_package(OpenCV REQUIRED COMPONENTS
   highgui
   imgproc
   calib3d
-  
+  imgcodecs
+  videoio
 
 )
 find_package(CURL REQUIRED)
@@ -157,10 +158,7 @@ add_library(turn_detect
   include/${PROJECT_NAME}/turn_detect.h
   src/turn_detect.cpp
 )
-add_library(traffic_light
-  include/${PROJECT_NAME}/traffic_light.h
-  src/traffic_light.cpp
-)
+
 
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
@@ -171,7 +169,7 @@ add_library(traffic_light
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 
-add_executable(zhltest src/zhltest.cpp)
+
 add_executable(tf_pose_get src/tf_pose_get.cpp)
 add_dependencies(tf_pose_get ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_executable(lidar_process src/lidar_process.cpp)
@@ -199,39 +197,30 @@ add_executable(test_find_approach_node src/test_find_approach.cpp src/turn_detec
 
 add_dependencies(turn_detect ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-add_dependencies(zhltest ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-add_dependencies(traffic_light ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+
 add_dependencies(qr_client_test_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 #强制要求等本包的 message/service 生成完毕后再编译它
 add_dependencies(wakeup_test_node ${PROJECT_NAME}_generate_messages_cpp)
 add_dependencies(race ${PROJECT_NAME}_generate_messages_cpp)
 
 ## Specify libraries to link a library or executable target against
-target_link_libraries(zhltest
-  turn_detect
-  traffic_light
-  ${catkin_LIBRARIES}
-)
+
 target_link_libraries(tf_pose_get
   ${catkin_LIBRARIES}
 )
 target_link_libraries(lidar_process
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
-  traffic_light
 )
 target_link_libraries(turn_detect
   ${catkin_LIBRARIES}
-  traffic_light
 )
 
 target_link_libraries(simple_move_control
   ${catkin_LIBRARIES}
 )
-target_link_libraries(traffic_light
-  ${catkin_LIBRARIES}
-  ${OpenCV_LIBS}
-)
+
 
 target_link_libraries(nav_test
   ${catkin_LIBRARIES}

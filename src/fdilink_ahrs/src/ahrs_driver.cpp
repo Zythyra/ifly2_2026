@@ -12,8 +12,8 @@ ahrsBringup::ahrsBringup() :frist_sn_(false), serial_timeout_(20)
   pravite_nh.param("imu_frame", imu_frame_id_, std::string("imu")); 
   pravite_nh.param("mag_pose_2d_topic", mag_pose_2d_topic_, std::string("/mag_pose_2d"));
   //serial                                                 
-  pravite_nh.param("port", serial_port_, std::string("/dev/ttyTHS1")); 
-  pravite_nh.param("baud", serial_baud_, 921600);
+  pravite_nh.param("port", serial_port_, std::string("/dev/ttyS0")); 
+  pravite_nh.param("baud", serial_baud_, 115200);//921600
   //publisher
   imu_pub_ = nh_.advertise<sensor_msgs::Imu>(imu_topic_.c_str(), 10);
   mag_pose_pub_ = nh_.advertise<geometry_msgs::Pose2D>(mag_pose_2d_topic_.c_str(), 10);
@@ -349,6 +349,7 @@ void ahrsBringup::processLoop()
         imu_data.orientation.x = q_out.x();
         imu_data.orientation.y = q_out.y();
         imu_data.orientation.z = q_out.z();
+        cout <<"imu_data.orientation.z"<<imu_data.orientation.z<<endl;
         imu_data.angular_velocity.x = ahrs_frame_.frame.data.data_pack.RollSpeed;
         imu_data.angular_velocity.y = -ahrs_frame_.frame.data.data_pack.PitchSpeed;
         imu_data.angular_velocity.z = -ahrs_frame_.frame.data.data_pack.HeadingSpeed;

@@ -10,7 +10,7 @@ import time
 import os
 
 # 固定覆盖的视频保存路径
-VIDEO_PATH = "/home/ucar/ucar_car/src/ucarmain2026/videos_for_yolo/scan_record.avi"
+VIDEO_PATH = "/home/ucar/ucar_ws_copy/src/ucarmain2026/videos_for_yolo/scan_record.avi"
 
 # 旋转控制参数
 ANGULAR_SPEED = 0.5    # 旋转角速度 (rad/s)

@@ -6,10 +6,11 @@
 
 bool qr_detect(qr_01::qr_srv::Request& req,qr_01::qr_srv::Response& resp){
     // 初始化OpenCV摄像头 - 修改为使用v4l2后端
-    cv::VideoCapture cap(0, cv::CAP_V4L2);
+    cv::VideoCapture cap;
+    cap.open(0, cv::CAP_V4L2);
     if (!cap.isOpened()) {
         ROS_ERROR("无法打开摄像头！");
-        return -1;
+        return false;
     }
     
     // 配置摄像头参数

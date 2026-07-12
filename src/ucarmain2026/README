@@ -12,3 +12,5 @@
 ``` roslaunch ucarmain2026 move_base.launch ```
 
 ## 三四步可以合并放在nav.launch文件夹下面
+
+catkin_make -DCATKIN_WHITELIST_PACKAGES="ucarmain2026"

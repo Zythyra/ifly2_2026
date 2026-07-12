@@ -29,10 +29,44 @@ private:
 
     // 新增的服务客户端，用于获取机器人位姿
     ros::ServiceClient getpose_client_;
-
+ 
     std::vector<float> ranges_;
-    int num_points_ = 337;
-    float angle_step = M_PI * 2.0 / (num_points_ - 1);
+
+    // 一代车约 337 点，代码以 175 作为正前方。以下函数把旧索引
+    // 按实际角度映射到当前 LaserScan，因此兼容二代车 909 点雷达。
+    static constexpr int OLD_FRONT_INDEX = 175;
+
+    double oldAngleIncrement() const {
+        return 2.0 * M_PI / 336.0;
+    }
+
+    int angleToIndex(double angle) const {
+        if (ranges_.empty() || std::abs(lasar_scan_.angle_increment) < 1e-9) return -1;
+        int index = static_cast<int>(std::lround(
+            (angle - lasar_scan_.angle_min) / lasar_scan_.angle_increment));
+        return std::max(0, std::min(index, static_cast<int>(ranges_.size()) - 1));
+    }
+
+    int oldIndexToCurrent(int old_index) const {
+        const double angle = (old_index - OLD_FRONT_INDEX) * oldAngleIncrement();
+        return angleToIndex(angle);
+    }
+
+    int oldBeamCountToCurrent(int old_count) const {
+        if (std::abs(lasar_scan_.angle_increment) < 1e-9) return old_count;
+        return std::max(1, static_cast<int>(std::lround(
+            old_count * oldAngleIncrement() / std::abs(lasar_scan_.angle_increment))));
+    }
+
+    double scanAngle(int index) const {
+        return lasar_scan_.angle_min + index * lasar_scan_.angle_increment;
+    }
+
+    bool validRange(int index) const {
+        if (index < 0 || index >= static_cast<int>(ranges_.size())) return false;
+        const float range = ranges_[index];
+        return std::isfinite(range) && range > 0.0f;
+    }
 
     double lidar_board_backdisdance;
 
@@ -44,16 +78,23 @@ private:
     tf2_ros::TransformListener tf_listener_;//雷达数据要转换到baselink坐标系之后才能用
 
     bool lidar_process(ucarmain2026::lidar_process::Request& req,ucarmain2026::lidar_process::Response& resp){//处理雷达数据，获取板子坐标
-    //雷达第一个点是-180度，然后逆时针旋转,第175个点才是0度
         ranges_ = lasar_scan_.ranges;
-        num_points_ = ranges_.size();
+        if (ranges_.empty() || std::abs(lasar_scan_.angle_increment) < 1e-9) {
+            ROS_WARN("尚未收到有效的 /scan 数据");
+            resp.lidar_results.push_back(-1.0);
+            return true;
+        }
+
+        const int front_index = angleToIndex(0.0);
+        const int failed_limit_30 = oldBeamCountToCurrent(30);
+        const int failed_limit_6 = oldBeamCountToCurrent(6);
         std::vector<std::vector<float>> result;
         float theta = 0;
         if(req.lidar_process_start==1){//视觉发现板子，雷达查看正前方数据
             int effective_point = 0;
             std::vector<float> disdance;
-            for(int i=158;i<=178;i++){//只看正前方的点
-                if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
+            for(int i=oldIndexToCurrent(158);i<=oldIndexToCurrent(178);i++){
+                if(!validRange(i)) continue;
                 effective_point++;
                 disdance.push_back(ranges_[i]);
             }
@@ -75,17 +116,17 @@ private:
         if(req.lidar_process_start==2){//到达板前，雷达对准
             int effective_point = 0;
             float shortest = 100;
-            for (int i=168;i<=182;i++) {// 将雷达数据转化为xy坐标系
-                if (std::isinf(ranges_[i]) || ranges_[i] == 0.0f) {
+            for (int i=oldIndexToCurrent(168);i<=oldIndexToCurrent(182);i++) {
+                if (!validRange(i)) {
                     continue;
                 }
-                theta = i * angle_step;
+                theta = scanAngle(i);
                 effective_point++;
                 geometry_msgs::PointStamped scan_point;
                 scan_point.header.frame_id = "laser_frame";
                 scan_point.header.stamp = ros::Time(0); 
-                scan_point.point.x = ranges_[i] * cos(theta) * -1;
-                scan_point.point.y = ranges_[i] * sin(theta) * -1;
+                scan_point.point.x = ranges_[i] * cos(theta);
+                scan_point.point.y = ranges_[i] * sin(theta);
                 scan_point.point.z = 0.0;
                 geometry_msgs::PointStamped output_point;
                 tf_buffer_.transform(scan_point, output_point, "base_link");
@@ -139,22 +180,23 @@ private:
             std::vector<cv::Point2f> points; // 准备拟合直线
             std::vector<float> distance;
             bool flag = 1,rightest_flag = false,leftestx_flag = false;
-            int count = 175;
+            int count = front_index;
             int failed_count = 0;
 
             double leftestx,leftesty,rightestx,rightesty;
             // 从中心向右搜索
             while(flag){
                 count++;
-                if (count > 332 || failed_count > 30) break;
-                if(std::isinf(ranges_[count]) || ranges_[count] == 0.0f) {
+                if (count >= static_cast<int>(ranges_.size()) - 1 ||
+                    failed_count > failed_limit_30) break;
+                if(!validRange(count)) {
                     failed_count++;
                     continue;
                 }
 
                 float current_distance = ranges_[count];
                 // 计算每个雷达点在世界坐标系下的绝对角度
-                float relative_angle = lasar_scan_.angle_min + count * lasar_scan_.angle_increment;
+                float relative_angle = scanAngle(count);
                 double world_angle = robot_yaw + relative_angle;
                 world_angle = atan2(sin(world_angle), cos(world_angle)); // 归一化到[-pi, pi]
                 // 使用test_point的逻辑进行筛选
@@ -180,12 +222,12 @@ private:
                     continue;
                 }
                 failed_count = 0;
-                theta = count * angle_step;
+                theta = scanAngle(count);
                 geometry_msgs::PointStamped scan_point;
                 scan_point.header.frame_id = "laser_frame";
                 scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
-                scan_point.point.x = ranges_[count] * cos(theta) * -1;
-                scan_point.point.y = ranges_[count] * sin(theta) * -1;
+                scan_point.point.x = ranges_[count] * cos(theta);
+                scan_point.point.y = ranges_[count] * sin(theta);
                 scan_point.point.z = 0.0;
                 geometry_msgs::PointStamped output_point;
                 tf_buffer_.transform(scan_point, output_point, "base_link");
@@ -206,20 +248,20 @@ private:
             
 
             failed_count = 0;
-            count = 175;
+            count = front_index;
             flag = true;
 
             // 从中心向左搜索
             while(flag){
                 count--;
-                if (count == 3 || failed_count > 30) break;
-                if(std::isinf(ranges_[count]) || ranges_[count] == 0.0f) {
+                if (count <= 0 || failed_count > failed_limit_30) break;
+                if(!validRange(count)) {
                     failed_count++;
                     continue;
                 }
 
                 float current_distance = ranges_[count];
-                float relative_angle = lasar_scan_.angle_min + count * lasar_scan_.angle_increment;
+                float relative_angle = scanAngle(count);
                 double world_angle = robot_yaw + relative_angle;
                 world_angle = atan2(sin(world_angle), cos(world_angle));
 
@@ -246,12 +288,12 @@ private:
                     continue;
                 }
                 failed_count = 0;
-                theta = count * angle_step;
+                theta = scanAngle(count);
                 geometry_msgs::PointStamped scan_point;
                 scan_point.header.frame_id = "laser_frame";
                 scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
-                scan_point.point.x = ranges_[count] * cos(theta) * -1;
-                scan_point.point.y = ranges_[count] * sin(theta) * -1;
+                scan_point.point.x = ranges_[count] * cos(theta);
+                scan_point.point.y = ranges_[count] * sin(theta);
                 scan_point.point.z = 0.0;
                 geometry_msgs::PointStamped output_point;
                 tf_buffer_.transform(scan_point, output_point, "base_link");
@@ -329,12 +371,12 @@ private:
                 return true;
             }
         }
-        if(req.lidar_process_start == 4){//不仅仅要知道前方障碍板在哪里，还要看路上有没有其他障碍物175点才是0度
-            int center_index = 175,dangerous_point = 0;
+        if(req.lidar_process_start == 4){//不仅仅要知道前方障碍板在哪里，还要看路上有没有其他障碍物
+            int center_index = front_index,dangerous_point = 0;
             std::vector<float> disdance;
             float center_disdance = -1,last_disdance = -10.0;
-            for(int i=170;i<=180;i++){//认为最中心的点属于板子,并且不允许发生跳变
-                if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
+            for(int i=oldIndexToCurrent(170);i<=oldIndexToCurrent(180);i++){
+                if(!validRange(i)) continue;
                 if ((abs(ranges_[i]-last_disdance)>0.2)) {
                     dangerous_point++;
                     if(dangerous_point>1){//因为初始last_disdance是0，所以会出问题一次
@@ -346,24 +388,28 @@ private:
                 }
                 last_disdance = ranges_[i];
             }
-            for(int i=0;i<5;i++){//认为最中心的点属于板子,能运行到这里已经说明中心没有发生跳变
-                if(!(std::isinf(ranges_[175+i]) || ranges_[175+i] == 0.0f)){
-                    center_disdance = ranges_[175+i];
-                    center_index = 175+i;
+            const int center_search_radius = oldBeamCountToCurrent(5);
+            for(int i=0;i<=center_search_radius;i++){
+                if(validRange(front_index+i)){
+                    center_disdance = ranges_[front_index+i];
+                    center_index = front_index+i;
                     break;
                 }
-                if(!(std::isinf(ranges_[175-i]) || ranges_[175-i] == 0.0f)){
-                    center_disdance = ranges_[175-i];
-                    center_index = 175-i;
+                if(validRange(front_index-i)){
+                    center_disdance = ranges_[front_index-i];
+                    center_index = front_index-i;
                     break;
                 }
             }
             ROS_INFO("目标板中心没有跳变，应该能比较准确的找到中心，在数组第%d个位置，距离是%f",center_index,center_disdance);
             if(center_disdance!=-1){//找到中央点就好处理，没找到的话直接前进到最近一个障碍物前方一般不会看不见
                 last_disdance = 10.0;dangerous_point = 0;
-                for(int i=center_index;i<=center_index+30;i++){//只看正前方的点
-                    if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
-                    theta = (i-168) * angle_step;
+                const int side_search_width = oldBeamCountToCurrent(30);
+                for(int i=center_index;
+                    i<=std::min(center_index+side_search_width, static_cast<int>(ranges_.size())-1);
+                    i++){
+                    if(!validRange(i)) continue;
+                    theta = scanAngle(i);
                     geometry_msgs::PointStamped scan_point;
                     scan_point.header.frame_id = "laser_frame";
                     scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
@@ -388,9 +434,9 @@ private:
                     last_disdance = ranges_[i];
                 }
                 last_disdance = 10.0;dangerous_point = 0;
-                for(int i=center_index;i>=center_index-30;i--){//只看正前方的点
-                    if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
-                    theta = (i-168) * angle_step;
+                for(int i=center_index;i>=std::max(center_index-side_search_width, 0);i--){
+                    if(!validRange(i)) continue;
+                    theta = scanAngle(i);
                     geometry_msgs::PointStamped scan_point;
                     scan_point.header.frame_id = "laser_frame";
                     scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
@@ -419,38 +465,41 @@ private:
                 ROS_INFO("前方没有障碍物，直线前进");
                 return true;
             }
-            ROS_INFO("正前方没点，另外处理");//
+            ROS_WARN("模式4：正前方没有有效雷达点");
+            resp.lidar_results.push_back(-1);
+            resp.lidar_results.push_back(-1);
             return true;
         }
         if(req.lidar_process_start == 5){//已经确认板子中途被障碍物遮挡，不能直线前进，需要利用导航
             float last_disdance = 0;//跳变标志位
             std::vector<cv::Point2f> board_point;
-            int diff_to_center175 = 100,center_point_index = -1;//与中心点的差距，拿离中间最近的一个当做中心点
+            int diff_to_center = static_cast<int>(ranges_.size());
+            int center_point_index = -1;//与中心点的差距，拿离中间最近的一个当做中心点
             //从最左点开始向右找，如果发生向后跳变，说明板子被挡，清除所有元素，向前跳变说明从板子转向障碍物，舍弃
-            for(int i=167;i<=183;i++){//左右观察临近点，准备拟合直线
-                if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
+            for(int i=oldIndexToCurrent(167);i<=oldIndexToCurrent(183);i++){
+                if(!validRange(i)) continue;
                 ROS_INFO("距离%f",ranges_[i]);
                 if(ranges_[i]-last_disdance>0.2){
-                    if(i>177){//从目标板跳变成障碍伴
+                    if(i>oldIndexToCurrent(177)){//从目标板跳变成障碍伴
                         continue;
                     }
                     else{
                         board_point.clear();//障碍板跳变成目标板
                         center_point_index = -1;
-                        diff_to_center175 = 100;
+                        diff_to_center = static_cast<int>(ranges_.size());
                     }
                 }
                 if(ranges_[i]-last_disdance<-0.2){//向前跳变，被障碍物遮挡
-                    if(i<173){
+                    if(i<oldIndexToCurrent(173)){
                         board_point.clear();//障碍板跳变成目标板
                         center_point_index = -1;
-                        diff_to_center175 = 100;
+                        diff_to_center = static_cast<int>(ranges_.size());
                     }
                     else{
                         continue;//从目标板跳变成障碍伴
                     }
                 }
-                theta = (i-175) * angle_step;
+                theta = scanAngle(i);
                 geometry_msgs::PointStamped scan_point;
                 scan_point.header.frame_id = "laser_frame";
                 scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
@@ -463,14 +512,19 @@ private:
                 board_point.push_back(ptf);
                 ROS_INFO("待选点坐标x%f,y%f",ptf.x,ptf.y);
                 last_disdance = ranges_[i];
-                if(abs(175-i)<diff_to_center175){
-                    diff_to_center175 = abs(175-i);
+                if(abs(front_index-i)<diff_to_center){
+                    diff_to_center = abs(front_index-i);
                     center_point_index = (int)board_point.size()-1;
                 }
             }
             ROS_INFO("共找到%zu个合格点，准备拟合直线，计算板子位置",board_point.size());
             for(size_t j = 0;j<board_point.size();j++){
                 ROS_INFO("第%zu个点的坐标是x%f,y%f",j,board_point[j].x,board_point[j].y);
+            }
+            if(board_point.size() < 2 || center_point_index < 0){
+                ROS_WARN("模式5：用于拟合目标板的有效雷达点不足");
+                resp.lidar_results.push_back(-1);
+                return true;
             }
             cv::Vec4f lineParams;
             cv::fitLine(board_point, lineParams, cv::DIST_L2, 0, 0.01, 0.01);
@@ -506,8 +560,8 @@ private:
         if(req.lidar_process_start == 6){//雷达是居然是歪的，测试一下到底哪个点是正前方
             float shortestpoint = 100;
             int short_index = -1;
-            for(int i=148;i<188;i++){
-                if(!(std::isinf(ranges_[i]) || ranges_[i] == 0.0f)){
+            for(int i=oldIndexToCurrent(148);i<oldIndexToCurrent(188);i++){
+                if(validRange(i)){
                     if(ranges_[i]<shortestpoint){
                         shortestpoint = ranges_[i];
                         short_index = i;
@@ -515,16 +569,20 @@ private:
                 }
             }
             ROS_INFO("正前方是数组第%d个数据，距离是%f",short_index,shortestpoint);
+            resp.lidar_results.push_back(shortestpoint);
+            resp.lidar_results.push_back(static_cast<float>(short_index));
+            return true;
         }
         if(req.lidar_process_start == 7){//在前进的时候，接近目标时，检查中心有没有跳变，如果中心有跳变，需要平移躲开障碍
-            int center_index = 175,right_dangerous_point = 0,continue_point = 0,left_dangerous_point = 0;
+            int center_index = front_index,right_dangerous_point = 0,continue_point = 0,left_dangerous_point = 0;
             float left_last_disdance = 10.0,right_last_disdance = 10.0;
             float average_y = 0;
             bool left_block = false,right_block = false;
 
-            for(int i=145;i<=205;i++){//只看正前方的点
-                if(std::isinf(ranges_[i]) || ranges_[i] == 0.0f) continue;
-                theta = (i-168) * angle_step;
+            const int jump_confirm_points = oldBeamCountToCurrent(3);
+            for(int i=oldIndexToCurrent(145);i<=oldIndexToCurrent(205);i++){
+                if(!validRange(i)) continue;
+                theta = scanAngle(i);
                 geometry_msgs::PointStamped scan_point;
                 scan_point.header.frame_id = "laser_frame";
                 scan_point.header.stamp = ros::Time(0); // 或使用对应的时间，如果使用ros::Time(0)则用最新时间
@@ -539,7 +597,7 @@ private:
                     if(left_last_disdance>5) left_last_disdance = ranges_[i];if(right_last_disdance>5) right_last_disdance = ranges_[i];
                     if (ranges_[i]-right_last_disdance>0.2 && right_last_disdance<0.8) {//向后跳变，并且跳变前的点靠近小车
                         right_dangerous_point++;
-                        if(right_dangerous_point>3){//,连续三个点都跳变了说明真变了
+                        if(right_dangerous_point>jump_confirm_points){
                             right_block = true;
                             // ROS_INFO("右边有障碍物");
                         }
@@ -550,7 +608,7 @@ private:
                     }
                     if(ranges_[i]-left_last_disdance<-0.2 && ranges_[i]<0.8){//向前跳变。障碍物在左边
                         left_dangerous_point++;
-                        if(left_dangerous_point>3){//因为初始last_disdance是0，所以会出问题一次
+                        if(left_dangerous_point>jump_confirm_points){
                             left_block = true;
                             // ROS_INFO("左边有障碍物");
                         }
@@ -588,8 +646,8 @@ private:
             float min_dist = std::numeric_limits<float>::infinity();
             int min_index = -1;
     
-            // 根据要求，检查索引150到186的范围
-            for(int i = 120; i <= 216; i++){
+            // 保留一代车原来 120~216 对应的实际角度范围
+            for(int i = oldIndexToCurrent(120); i <= oldIndexToCurrent(216); i++){
                 // 安全检查，防止索引越界
                 if(i >= lasar_scan_.ranges.size()) break; 
         
@@ -693,13 +751,14 @@ private:
             std::vector<cv::Point2f> points;//准备拟合直线
             std::vector<float> distance;
             bool flag = 1;
-            int count = 175;
+            int count = front_index;
             int failed_count = 0;
 
             while(flag){
                 count++;
-                if (count>332 || failed_count > 6) break;
-                if(std::isinf(ranges_[count]) || ranges_[count] == 0.0f) {
+                if (count >= static_cast<int>(ranges_.size()) - 1 ||
+                    failed_count > failed_limit_6) break;
+                if(!validRange(count)) {
                     failed_count++;
                     continue;
                 }
@@ -708,12 +767,12 @@ private:
                     continue;
                 }
                 failed_count = 0;
-                theta = count * angle_step;
-                cv::Point2f pt(ranges_[count] * cos(theta) * -1, ranges_[count] * sin(theta) * -1);//因为180度才是正前方，差了一个π所以*-1
+                theta = scanAngle(count);
+                cv::Point2f pt(ranges_[count] * cos(theta), ranges_[count] * sin(theta));
                 points.push_back(pt);
                 effective_point++;
-                average_x += ranges_[count] * cos(theta)*-1;
-                average_y += ranges_[count] * sin(theta)*-1;
+                average_x += ranges_[count] * cos(theta);
+                average_y += ranges_[count] * sin(theta);
                 // ROS_INFO("左x:%f,y:%f",ranges_[count] * cos(theta)*-1,ranges_[count] * sin(theta)*-1);
                 // ROS_INFO("距离%f",ranges_[count]);
                 distance.push_back(ranges_[count]);
@@ -724,13 +783,13 @@ private:
                 return true;
             }
             failed_count = 0;
-            count = 175;
+            count = front_index;
             flag = true;
 
             while(flag){
                 count--;
-                if (count==3 || failed_count > 6) break;
-                if(std::isinf(ranges_[count]) || ranges_[count] == 0.0f) {
+                if (count <= 0 || failed_count > failed_limit_6) break;
+                if(!validRange(count)) {
                     failed_count++;
                     continue;
                 }
@@ -739,12 +798,12 @@ private:
                     continue;
                 }
                 failed_count = 0;
-                theta = count * angle_step;
-                cv::Point2f pt(ranges_[count] * cos(theta) * -1, ranges_[count] * sin(theta) * -1);//因为180度才是正前方，差了一个π所以*-1
+                theta = scanAngle(count);
+                cv::Point2f pt(ranges_[count] * cos(theta), ranges_[count] * sin(theta));
                 points.push_back(pt);
                 effective_point++;
-                average_x += ranges_[count] * cos(theta)*-1;
-                average_y += ranges_[count] * sin(theta)*-1;
+                average_x += ranges_[count] * cos(theta);
+                average_y += ranges_[count] * sin(theta);
                 // ROS_INFO("右x:%f,y:%f",ranges_[count] * cos(theta)*-1,ranges_[count] * sin(theta)*-1);
                 // ROS_INFO("距离%f",ranges_[count]);
                 distance.push_back(ranges_[count]);

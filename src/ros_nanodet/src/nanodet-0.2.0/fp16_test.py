@@ -78,8 +78,8 @@
 
 # def main():
 #     # 加载配置
-#     config_path = "/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/config/nanodet-m-416-copy.yml"
-#     model_path = "/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/workspace/nanodet_m_416/model_best/model_best.pth"
+#     config_path = "/home/ucar/ucar_ws_copy/src/ros_nanodet/src/nanodet-0.2.0/config/nanodet-m-416-copy.yml"
+#     model_path = "/home/ucar/ucar_ws_copy/src/ros_nanodet/src/nanodet-0.2.0/workspace/nanodet_m_416/model_best/model_best.pth"
 #     load_config(cfg, config_path)
     
 #     # 构建模型
@@ -94,7 +94,7 @@
 #     model_fp16 = model.half()
     
 #     # 保存 FP16 模型
-#     fp16_model_path = "/home/ucar/ucar_car/src/ros_nanodet/src/nanodet-0.2.0/workspace/nanodet_m_416/model_best/model_best_fp16.pth"
+#     fp16_model_path = "/home/ucar/ucar_ws_copy/src/ros_nanodet/src/nanodet-0.2.0/workspace/nanodet_m_416/model_best/model_best_fp16.pth"
 #     torch.save(model_fp16, fp16_model_path)
 #     print(f"FP16 model saved to: {fp16_model_path}")
     

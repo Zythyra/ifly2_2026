@@ -106,14 +106,14 @@ def debug_calibration(yaml_path):
             fs.release()
 
 # 使用示例
-if debug_calibration("/home/ucar/ucar_car/src/ros_nanodet/srv/head_camera800_600.yaml"):
+if debug_calibration("/home/ucar/ucar_ws_copy/src/ros_nanodet/srv/head_camera800_600.yaml"):
     print("文件可正常读取")
 else:
     print("请根据上述提示修正文件")
 
 # 使用示例
 if __name__ == "__main__":
-    calibration_file = "/home/ucar/ucar_car/src/ros_nanodet/srv/head_camera800_600.yaml"  # YAML文件路径
+    calibration_file = "/home/ucar/ucar_ws_copy/src/ros_nanodet/srv/head_camera800_600.yaml"  # YAML文件路径
     video_source = 0  # 0=默认摄像头，或视频文件路径
     
     process_video_stream(calibration_file, video_source)

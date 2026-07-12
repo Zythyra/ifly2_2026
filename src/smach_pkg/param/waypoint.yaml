@@ -1,0 +1,40 @@
+# param1 to paramX represent the point's [x, y, yaw]
+# this params are used for Actionlib to get to the target point
+
+# 任务接取点
+point1:
+    x_y_yaw: [3.331, 4.1333, 0.931]
+
+# 扫描图片位置点
+point2:
+    x_y_yaw: [3.133, 5.3133, 0.431]
+
+# 图片一的位置
+point3:
+    x_y_yaw: [3.2233, 5.3133, 0.431]
+
+# 图片二的位置
+point4:
+    x_y_yaw: [3.133, 5.3133, 0.431]
+
+# 图片三的位置
+point5:
+    x_y_yaw: [3.133, 5.3133, 0.431]
+
+# 仿真的位置
+point6:
+    x_y_yaw: [3.133, 5.3133, 0.431]
+
+# 一号红绿灯前
+point7:
+    x_y_yaw: [3.133, 5.3133, 0.431]
+
+# 一号入口
+point8:
+    x_y_yaw: [3.133, 5.3133, 0.431]
+
+# 二号入口
+point9:
+    x_y_yaw: [3.133, 5.3133, 0.431]
+
+

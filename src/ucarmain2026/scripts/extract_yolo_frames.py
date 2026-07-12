@@ -9,10 +9,10 @@ from datetime import datetime # 【新增】：引入 datetime 模块
 # ===================== 路径配置 =====================
 
 # 视频所在文件夹
-VIDEO_DIR = Path("/home/ucar/ucar_car/src/ucarmain2026/videos_for_yolo")
+VIDEO_DIR = Path("/home/ucar/ucar_ws_copy/src/ucarmain2026/videos_for_yolo")
 
 # 抽帧图片保存文件夹
-OUTPUT_DIR = Path("/home/ucar/ucar_car/src/ucarmain2026/video_capture_yolo_photo")
+OUTPUT_DIR = Path("/home/ucar/ucar_ws_copy/src/ucarmain2026/video_capture_yolo_photo")
 
 # ===================== 抽帧参数配置 =====================
 

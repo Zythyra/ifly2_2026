@@ -25,7 +25,7 @@ bool qr_detect_cb(qr_01::qr_code::Request& req, qr_01::qr_code::Response& resp) 
             camera_active = true;
             ROS_INFO("[QR Server] 摄像头已开启预热");
             if (!video_out.isOpened()) {
-                video_out.open("/home/ucar/ucar_car/qr_debug/qr_debug.avi", 
+                video_out.open("/home/ucar/ucar_ws_copy/src/qr_01/qr_debug/qr_debug.avi", 
                                cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), 10.0, cv::Size(640, 480));
             }
         }

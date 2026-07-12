@@ -118,7 +118,7 @@ int main(int argc, char** argv) {
                 srv_rec.request.whether_start = 0; 
                 record_client.call(srv_rec);
 
-                std::string save_path = "/home/ucar/ucar_car/wakeup_record/test_record.wav";
+                std::string save_path = "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav";
                 saveAsWav(save_path, audio_buffer);
 
                 ROS_INFO("⏳ 正在呼叫星火大模型服务进行语义解析...");
@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
                     ROS_INFO("📢 正在播放提示音，准备重新录制...");
                     
                     // system 会阻塞线程，必须等小车说完这句话，代码才会往下执行，防止自己录到自己的声音
-                    system("aplay -q /home/ucar/ucar_car/src/ucarmain2026/audios/1.wav");
+                    system("aplay -q /home/ucar/ucar_ws_copy/src/ucarmain2026/audios/1.wav");
                     
                     // 重新开启麦克风硬件录音
                     srv_rec.request.whether_start = 1;

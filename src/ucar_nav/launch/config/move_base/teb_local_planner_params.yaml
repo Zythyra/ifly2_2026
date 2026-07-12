@@ -1,89 +1,127 @@
+# TebLocalPlannerROS:
+#   odom_topic: odom
+#   map_frame: /map
+
+#   # Robot Configuration Parameters
+#   acc_lim_x: 0.2      # x方向最大加速度 (m/s²)
+#   acc_lim_y: 0.0      # y方向加速度 (差速驱动机器人设为0)
+#   acc_lim_theta: 3.2  # 最大旋转加速度 (rad/s²)
+  
+#   max_vel_x: 0.4      # x方向最大线速度 (m/s)
+#   max_vel_x_backwards: 0.3  # 最大后退速度 (m/s)
+#   max_vel_theta: 12  # 最大角速度 (rad/s)
+  
+#   min_turning_radius: 0.0  # 最小转弯半径 (差速驱动机器人设为0)
+#   # footprint_model:  # 机器人轮廓模型
+#   #   type: "point"   # 简单点模型 (根据实际机器人修改)
+#   footprint_model:
+#     type: "polygon"
+#     vertices: [[0.171, -0.128], [0.171, 0.128],[-0.171, 0.128], [-0.171, -0.128]]
+
+#   # Goal Tolerance Parameters
+#   xy_goal_tolerance: 0.05  # 目标点xy容差 (m)
+#   yaw_goal_tolerance: 0.1  # 目标点角度容差 (rad)
+#   free_goal_vel: false     # 是否允许以非零速度通过目标点
+
+#   # Trajectory Optimization Parameters
+#   dt_ref: 0.4             # 轨迹时间分辨率 (s)
+#   dt_hysteresis: 0.1      # 时间分辨率滞后补偿
+#   max_samples: 500        # 最大优化样本数
+#   feasibility_check_no_poses: 5  # 可行性检查的位姿数
+  
+#   # Obstacle Parameters
+#   min_obstacle_dist: 0.04  # 与障碍物的最小距离 (m)
+#   include_costmap_obstacles: true  # 是否考虑代价地图障碍物
+#   costmap_obstacles_behind_robot_dist: 1.0  # 考虑机器人后方障碍物的距离
+  
+#   # Optimization Weights
+#   weight_optimaltime: 10      # 时间最优权重
+#   weight_obstacle: 0.5         # 避障权重
+#   weight_kinematics_nh: 1.0    # 非完整运动学权重
+#   weight_kinematics_forward_drive: 1.0  # 前向驱动偏好
+  
+#   # Recovery Behavior
+#   oscillation_v_eps: 0.1       # 线速度振荡阈值 (m/s)
+#   oscillation_omega_eps: 0.1   # 角速度振荡阈值 (rad/s)
+#   oscillation_recovery: true   # 是否启用振荡恢复
+  
+#   # Visualization
+#   enable_homotopy_class_planning: false  # 禁用复杂拓扑规划 (简化)
+#   visualize_with_time_as_color: false    # 禁用时间可视化
+
+
+
+# 5/23日条参
+
 TebLocalPlannerROS:
+
+  # 里程计话题
   odom_topic: odom
-  map_frame: /map
+  map_frame: map
 
-  acc_lim_x: 0.8
-  acc_lim_y: 1.0
-  acc_lim_theta: 4.0
-  max_vel_x: 16.25
-  max_vel_x_backwards: 16.45
-  max_vel_y: 16.25
-  max_vel_theta: 16.55
+  # 机器人运动限制（差速驱动）
+  acc_lim_x: 0.5
+  acc_lim_theta: 3.2
+  acc_lim_y: 0.0
 
+  max_vel_x: 0.4
+  max_vel_x_backwards: 0.2
+  max_vel_theta: 1.5
+
+  min_vel_x: 0.1
+  min_vel_theta: 0.2
 
   min_turning_radius: 0.0
-  is_footprint_dynamic: false
   footprint_model:
-    # type: "line"
-    # line_start: [-0.18, 0.0]
-    # line_end: [0.18, 0.0]
+    type: "polygon"
+    vertices: [[0.17, -0.13], [0.17, 0.13], [-0.17, 0.13], [-0.17, -0.13]]
 
-    type:"point"
-    vertices:[[0.18, 0.13], [-0.18, 0.13], [-0.18, -0.13], [0.18, -0.13]]
-    # line_start: [-0.10, 0.0]
-    # line_end: [0.10, 0.0]
-
-
-  yaw_goal_tolerance: 0.05
-  xy_goal_tolerance: 0.1
+  # 目标点容差
+  # xy_goal_tolerance: 0.15  原始27
+  xy_goal_tolerance: 0.08
+  yaw_goal_tolerance: 0.1
   free_goal_vel: false
 
+  # 控制优化
   dt_ref: 0.3
-  dt_hysteresis: 0.1
-  min_samples: 3 
+  dt_hysteresis: 0.05
+  max_samples: 500
   global_plan_overwrite_orientation: true
-  global_plan_viapoint_sep: -0.1
-  max_global_plan_lookahead_dist: 0.7 #BCDEF 1.0 #考虑优化的全局计划子集的最大长度（累积欧几里得距离）  #0.6
-  force_reinit_new_goal_dist: 1.0
-  feasibility_check_no_poses: 5
-  publish_feedback: false
   allow_init_with_backwards_motion: false
-  exact_arc_length: false
-  shrink_horizon_backup: true
-  shrink_horizon_min_duration: 10.0
+  prefer_forward_driving: true
 
-  min_obstacle_dist: 0.25 #避障距离(障碍物膨胀半径)
+  # 可行性检查
+  feasibility_check_no_poses: 10
+  publish_feedback: false
+
+  # 障碍物参数
+  min_obstacle_dist: 0.05
   include_costmap_obstacles: true
   costmap_obstacles_behind_robot_dist: 1.0
-  inflation_dist: 0.05
+  obstacle_poses_affected: 15
+
+  inflation_dist: 0.2
+  dynamic_obstacle_inflation_dist: 0.3
   include_dynamic_obstacles: false
-  legacy_obstacle_association: false
-  obstacle_association_force_inclusion_factor: 0.5
-  obstacle_association_cutoff_factor: 5
-  costmap_converter_plugin: ""
-  costmap_converter_spin_thread: true
-  costmap_converter_rate: 5.0
 
-  no_inner_iterations: 3
-  no_outer_iterations: 3
-  penalty_epsilon: 0.1
-  weight_acc_lim_x: 1.0
-  weight_acc_lim_theta: 17.0
-  weight_max_vel_x: 3.0
-  weight_max_vel_theta: 6.0
-  weight_kinematics_nh: 400.0 #调整顺应纵向运动和非顺应横向运动（扫射）之间的权衡。
-  weight_kinematics_forward_drive: 1000.0
-  weight_kinematics_turning_radius: 1000.0
-  weight_optimaltime: 25 #这个参数是最优时间权重，如果大了，那么车会在直道上快速加速，并且路径规划的也会切内道           12: guopo
-  weight_obstacle: 25.0
+  # 优化权重
+  weight_optimaltime: 1.0
+  weight_obstacle: 50.0
   weight_viapoint: 1.0
-  weight_inflation: 0.05
-  weight_adapt_factor: 2.0
+  weight_inflation: 0.2
+  weight_kinematics_nh: 1000
+  weight_kinematics_forward_drive: 1.0
+  weight_kinematics_turning_radius: 0.0
+  weight_velocity_obstacle_ratio: 1.0
 
+  # 恢复行为
+  oscillation_recovery: true
+  oscillation_v_eps: 0.05
+  oscillation_omega_eps: 0.1
+
+  # 可视化
+  visualize_with_time_as_color: false
   enable_homotopy_class_planning: false
-  enable_multithreading: false
-  max_number_classes: 2 #4 改 2 规划出的最多轨迹数,这个参数是可以解决多个障碍堵路规划抖动问题
-  selection_cost_hysteresis: 1.0
-  selection_obst_cost_scale: 100.0
-  selection_viapoint_cost_scale: 1.0
-  selection_alternative_time_cost: false
-  roadmap_graph_no_samples: 15
-  roadmap_graph_area_width: 5
-  h_signature_prescaler: 1.0
-  h_signature_threshold: 0.1
-  obstacle_heading_threshold: 0.45
-  visualize_hc_graph: false
-  viapoints_all_candidates: true
-  switching_blocking_period: 0.0
-  wheelbase: 0.2
+  max_global_plan_lookahead_dist: 3.0
+
 

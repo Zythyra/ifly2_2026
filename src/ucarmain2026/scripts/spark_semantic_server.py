@@ -22,7 +22,7 @@ from ucarmain2026.srv import GetTaskSemantics, GetTaskSemanticsResponse
 APPID = "49973726"
 APISecret = "YTE2MDNjNjdlZjU5NzE4ZDUzZTJmOTVi"
 APIKey = "a96d7ffe156859dc325d186a3bb20e17"
-AUDIO_FILE = "/home/ucar/ucar_car/wakeup_record/test_record.wav"
+AUDIO_FILE = "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav"
 
 TARGET_DICT = {"食品": "food", "日用品": "daily", "电子产品": "electronic"}
 final_result = ""

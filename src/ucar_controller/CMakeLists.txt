@@ -71,9 +71,6 @@ include_directories(include)
 
 add_executable(base_driver  src/base_driver.cpp)
 add_dependencies(base_driver ucar_controller_generate_messages_cpp)
-
-
-
 target_link_libraries(base_driver crc_table_fd ${catkin_LIBRARIES} ${Boost_LIBRARIES})
 
 ## crc_table_fd

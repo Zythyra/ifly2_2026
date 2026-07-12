@@ -17,7 +17,7 @@ void scanCallback(const sensor_msgs::LaserScan::ConstPtr& scan)
     int count = scan->scan_time / scan->time_increment;
     printf("[YDLIDAR INFO]: I heard a laser scan %s[%d]:\n", scan->header.frame_id.c_str(), count);
     printf("[YDLIDAR INFO]: angle_range : [%f, %f]\n", RAD2DEG(scan->angle_min), RAD2DEG(scan->angle_max));
-  
+    printf("[YDLIDAR INFO]: max deepth : %f\n", scan->range_max);
     for(int i = 0; i < count; i++) {
         float degree = RAD2DEG(scan->angle_min + scan->angle_increment * i);
 	if(degree > -5 && degree< 5)

@@ -7,7 +7,7 @@ import os
 import time
 
 # 硬编码添加 build 目录到 Python 路径
-build_dir = "/home/ucar/ucar_car/src/wb_cpp/build"
+build_dir = "/home/ucar/ucar_ws_copy/src/wb_cpp/build"
 sys.path.insert(0, build_dir)
 print(f"添加构建路径: {build_dir}")
 

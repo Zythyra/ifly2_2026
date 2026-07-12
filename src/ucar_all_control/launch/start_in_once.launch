@@ -1,0 +1,77 @@
+<launch>
+
+    <!-- 统一的启动文件之语音 -->
+    <!-- 加载路径点参数 -->
+    <rosparam command="load" file="$(find ucar_all_control)/config/pathPoint.yaml"/>
+    <!-- 巡线任务参数初始化 -->
+    <param name="/xflag" value="0" />
+    <param name="/zhang" value="0" />
+    <param name="/all_done" value="0" />
+    <param name="/detect2" value="0" />
+    <param name="/teb/update_flag" value="False" />
+
+    <!-- 麦克风加载 -->
+    <node pkg="speech_command" type="speech_command_node" name="speech_command_node" output="screen"/>
+
+    <!-- 需要提前启动rosbridge！！！！！！！！！！！！！！！！ -->
+    <!-- 启动 rosbridge 并绑定到小车IP -->
+    <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+        <arg name="address" value="192.168.1.108" />
+        <arg name="port" value="9090" />
+    </include>
+    
+
+    <!-- 加载底盘驱动 -->
+    <include file="$(find ucar_controller)/launch/base_driver.launch" > </include>
+    <!-- 雷达驱动 -->
+    <include file="$(find ydlidar)/launch/ydlidar.launch" > </include>
+    <!-- 板前定位 -->
+    <!-- <node pkg="ydlidar" type="locate_picture" name="locate_picture" output="screen" /> -->
+    <include file="$(find ydlidar)/launch/locate_param.launch" > </include>
+    
+    <!-- camera启动 -->
+    <node pkg="ucar_camera" type="ucar_camera.py" name="ucar_camera" output="screen"/>
+    <!-- 二维码识别 -->
+    <node pkg="ucar_camera" type="ewm.py" name="ewm" output="screen"/>
+    <!-- 地图加载 -->   <!-- 于7月10号使用了新的地图，原来的地图是Standaed -->
+    <node name="map_server" pkg="map_server" type="map_server" args="$(find ucar_map)/maps/map_replace_new.yaml" output="screen">
+        <param name="frame_id" value="map" />
+    </node> 
+    <!-- 定位 -->
+    <include file="$(find ucar_nav)/launch/config/amcl/amcl_omni.launch" > </include>
+    <!-- move_base -->
+    <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <!-- 选择全局路径规划 -->
+      <param name="base_global_planner" value="global_planner/GlobalPlanner"/>
+      <rosparam file="$(find ucar_nav)/launch/config/xys/costmap_common_params.yaml" command="load" ns="global_costmap" />
+
+      <!-- 选择局部路径规划 -->
+      <!-- <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS"/>
+      <rosparam file="$(find ucar_nav)/launch/config/xys_1/dwa_local_planner_params.yaml" command="load" /> -->
+
+      <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS"/>
+      <rosparam file="$(find ucar_nav)/launch/config/xys/teb_local_planner_params_yuan.yaml" command="load" />
+      <!-- <rosparam file="$(find ucar_nav)/launch/config/xys_1/costmap_converter_params.yaml" command="load" /> -->
+      
+    <!-- 地图参数配置 -->
+      <rosparam file="$(find ucar_nav)/launch/config/xys/costmap_common_params.yaml" command="load" ns="local_costmap" />
+      <rosparam file="$(find ucar_nav)/launch/config/xys/base_global_planner_params.yaml" command="load" />
+      <rosparam file="$(find ucar_nav)/launch/config/xys/local_costmap_params.yaml" command="load" />
+      <rosparam file="$(find ucar_nav)/launch/config/xys/global_costmap_params.yaml" command="load" />
+    </node>
+
+    <!-- 用于更换move_base下的teb局部规划器参数 -->
+    <!-- <include file="$(find mb_cfg)/launch/nav_with_teb_dynamic.launch" > </include> -->
+    
+    <!-- <node pkg="ucar_camera" type="sxunleft" name="sxunleft" output="screen" /> -->
+    <!-- <node pkg="ucar_camera" type="sxunright" name="sxunright" output="screen" /> -->
+    <!-- <node pkg="ucar_camera" type="hdr" name="hdr" output="screen" /> -->
+    <!-- <node pkg="ucar_camera" type="bizhang" name="bizhang" output="screen" /> -->
+    <!-- <node pkg="ucar_camera" type="xunxian" name="xunxian" output="screen" /> -->
+    <!-- <node pkg="ucar_camera" type="zhong.py" name="zhong" output="screen" /> -->
+    <node pkg="yolo" type="rknn_detect.py" name="rknn_detect" output="screen" />
+    <!-- <node pkg="nanodet" type="my_detect2.py" name="my_detect2" output="screen" /> -->
+    <!-- 语音唤醒 -->
+    <node pkg="ucar_all_control" type="collectPic" name="collectPic" output="screen"/>
+    <!-- <node pkg="ucar_all_control" type="zhongwav.py" name="zhongwav" output="screen"/> -->
+</launch>

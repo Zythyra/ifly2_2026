@@ -6,7 +6,7 @@
 # import os
 
 # # 硬编码添加 build 目录到 Python 路径
-# build_dir = "/home/ucar/ucar_car/src/wb_cpp/build"
+# build_dir = "/home/ucar/ucar_ws_copy/src/wb_cpp/build"
 # sys.path.insert(0, build_dir)
 # print(f"添加构建路径: {build_dir}")
 
@@ -55,7 +55,7 @@
     
 #     return canvas
 
-# output_filename = "/home/ucar/ucar_car/src/ztestnav2025/nanodet_debug/image_data.avi"#录制视频防止可视化卡顿
+# output_filename = "/home/ucar/ucar_ws_copy/src/ucarmain2026/nanodet_debug/image_data.avi"#录制视频防止可视化卡顿
 # fourcc = cv2.VideoWriter_fourcc(*'XVID')  # MP4格式，其他选项：'XVID'->AVI, 'MJPG'->MJPEG
 # fps = 10.0
 # # frame_size = (416, 416)  # 必须和实际帧尺寸一致
@@ -95,7 +95,7 @@ import sys
 import os
 
 # 硬编码添加 build 目录到 Python 路径
-build_dir = "/home/ucar/ucar_car/src/wb_cpp/build"
+build_dir = "/home/ucar/ucar_ws_copy/src/wb_cpp/build"
 sys.path.insert(0, build_dir)
 print(f"添加构建路径: {build_dir}")
 
@@ -144,7 +144,7 @@ def resize_with_padding(image, target_size):
     
     return canvas
 
-output_filename = "/home/ucar/ucar_car/src/ztestnav2025/nanodet_debug/image_data.avi"#录制视频防止可视化卡顿
+output_filename = "/home/ucar/ucar_ws_copy/src/ucarmain2026/nanodet_debug/image_data.avi"#录制视频防止可视化卡顿
 fourcc = cv2.VideoWriter_fourcc(*'XVID')  # MP4格式，其他选项：'XVID'->AVI, 'MJPG'->MJPEG
 fps = 10.0
 # frame_size = (416, 416)  # 必须和实际帧尺寸一致
