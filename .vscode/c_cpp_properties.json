@@ -2,24 +2,56 @@
     "configurations": [
         {
             "browse": {
-                "databaseFilename": "",
-                "limitSymbolsToIncludedHeaders": true
+                "databaseFilename": "${default}",
+                "limitSymbolsToIncludedHeaders": false
             },
             "includePath": [
-                "/opt/ros/melodic/include/**",
-                "/home/tianbot/jwf_ws/src/my_rviz/include/**",
-                "/usr/include/**",
-                "/home/ucar/ucar_car/devel/include/**",
-                "/usr/include/websocketpp/**",
-                "/usr/include/websocketpp/config/",
-                "${workspaceFolder}/src/my_planner/include",
-                "/home/ucar/ucar_car/src/ztestnav2025/include/ztestnav2025"
+                "/home/ucar/ucar_ws_copy/devel/include/**",
+                "/home/ucar/ucar_ws/devel/include/**",
+                "/opt/ros/noetic/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/amcl/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/base_local_planner/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/carrot_planner/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/clear_costmap_recovery/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/costmap_2d/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/dwa_local_planner/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry/eigen_conversions/include/**",
+                "/home/ucar/ucar_ws_copy/src/fdilink_ahrs/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/global_planner/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry/kdl_conversions/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/map_server/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/move_base/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/move_slow_and_clear/include/**",
+                "/home/ucar/ucar_ws_copy/src/mp3/include/**",
+                "/home/ucar/ucar_ws_copy/src/nanodet/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/nav_core/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/navfn/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/rotate_recovery/include/**",
+                "/home/ucar/ucar_ws_copy/src/smach_pkg/include/**",
+                "/home/ucar/ucar_ws_copy/src/speech_command/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry/tf/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry2/tf2/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry2/tf2_bullet/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry2/tf2_eigen/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry2/tf2_geometry_msgs/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry2/tf2_kdl/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry2/tf2_msgs/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry2/tf2_sensor_msgs/include/**",
+                "/home/ucar/ucar_ws_copy/src/geometry/tf_conversions/include/**",
+                "/home/ucar/ucar_ws_copy/src/ucar_controller/include/**",
+                "/home/ucar/ucar_ws_copy/src/navigation/voxel_grid/include/**",
+                "/home/ucar/ucar_ws_copy/src/yolo/include/**",
+                "/home/ucar/ucar_ws_copy/src/ucar_all_control/include/**",
+                "/usr/include/**"
             ],
             "name": "ROS",
-            "intelliSenseMode": "gcc-x64",
+            "intelliSenseMode": "gcc-arm64",
             "compilerPath": "/usr/bin/gcc",
             "cStandard": "gnu11",
-            "cppStandard": "c++17"
+            "cppStandard": "c++11",
+            "compileCommands": [
+                "${workspaceFolder}/build/compile_commands.json"
+            ]
         }
     ],
     "version": 4

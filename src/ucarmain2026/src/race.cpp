@@ -4,16 +4,14 @@
  */
 
 #include <ros/ros.h>
-#include <std_msgs/Int8.h>
+#include <std_msgs/Int32.h>
 #include <std_msgs/String.h>
 #include <geometry_msgs/Twist.h>
 #include <actionlib/client/simple_action_client.h>
 #include <move_base_msgs/MoveBaseAction.h>
 #include <tf2/LinearMath/Quaternion.h>
 
-// 硬件与自定义服务
-#include <xf_mic_asr_offline/Pcm_Msg.h>
-#include <xf_mic_asr_offline/Start_Record_srv.h>
+// 自定义服务
 #include <ucarmain2026/GetTaskSemantics.h> 
 #include <ucarmain2026/ItemClassify.h> 
 #include <qr_01/qr_code.h>
@@ -29,6 +27,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdlib> // 用于 system()
+#include <cstdio>
 
 using namespace std;
 
@@ -73,44 +72,104 @@ double bound_y_min = 2.5;
 double bound_y_max = 4.5;
 
 // ================= 客户端与发布者 =================
-ros::ServiceClient record_client;
 ros::ServiceClient semantic_client;
 ros::ServiceClient qr_client;
 ros::ServiceClient classifier_client; 
 ros::Publisher cmd_pub;
 
-// ================= 语音与硬件基础 =================
-bool is_recording = false;
-ros::Time record_start_time;
-vector<char> audio_buffer;
+// ================= 二代车语音唤醒与录音 =================
+const char* const WAKEUP_TOPIC = "/angle";
+const char* const SPEECH_NODE = "/speech_command_node";
+const char* const AUDIO_DEVICE = "hw:XFMDPV0018";
+const char* const AUDIO_FILE =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav";
+const char* const ERROR_AUDIO =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/audios/1.wav";
+const int RECORD_SECONDS = 9;
 
-#pragma pack(push, 1)
-struct WavHeader {
-    char riff_id[4] = {'R', 'I', 'F', 'F'};
-    uint32_t riff_size;
-    char wave_id[4] = {'W', 'A', 'V', 'E'};
-    char fmt_id[4] = {'f', 'm', 't', ' '};
-    uint32_t fmt_size = 16;
-    uint16_t audio_format = 1;      
-    uint16_t num_channels = 1;      
-    uint32_t sample_rate = 16000;   
-    uint32_t byte_rate = 32000;     
-    uint16_t block_align = 2;       
-    uint16_t bits_per_sample = 16;  
-    char data_id[4] = {'d', 'a', 't', 'a'};
-    uint32_t data_size;
-};
-#pragma pack(pop)
+bool wakeup_received = false;
 
-void saveAsWav(const string& filename, const vector<char>& pcm_data) {
-    WavHeader header;
-    header.data_size = pcm_data.size();
-    header.riff_size = header.data_size + 36;
-    ofstream out_file(filename, ios::binary);
-    if (out_file.is_open()) {
-        out_file.write(reinterpret_cast<const char*>(&header), sizeof(WavHeader));
-        out_file.write(pcm_data.data(), pcm_data.size());
-        out_file.close();
+void awakeCallback(const std_msgs::Int32::ConstPtr& msg) {
+    if (current_state == WAIT_WAKEUP && !wakeup_received) {
+        wakeup_received = true;
+        ROS_INFO("检测到‘小飞小飞’，唤醒角度：%d", msg->data);
+    }
+}
+
+bool stopSpeechCommandNode() {
+    const string command = string("rosnode kill ") + SPEECH_NODE;
+    const int kill_result = system(command.c_str());
+
+    if (kill_result != 0) {
+        ROS_WARN("关闭 %s 时命令返回非零值：%d", SPEECH_NODE, kill_result);
+    }
+
+    ROS_INFO("等待 speech_command_node 退出并释放麦克风...");
+    ros::Duration(1.0).sleep();
+
+    // grep 找到节点时返回 0；未找到时返回非 0。
+    const int still_running =
+        system("rosnode list 2>/dev/null | grep -qx '/speech_command_node'");
+    if (still_running == 0) {
+        ROS_ERROR("%s 仍在运行，暂不开始录音", SPEECH_NODE);
+        return false;
+    }
+
+    ROS_INFO("%s 已退出，麦克风可供任务录音使用", SPEECH_NODE);
+    return true;
+}
+
+bool audioFileLooksValid() {
+    ifstream input(AUDIO_FILE, ios::binary | ios::ate);
+    if (!input.is_open()) {
+        return false;
+    }
+
+    return input.tellg() > static_cast<streampos>(44);
+}
+
+bool recordNineSeconds() {
+    // 避免录音失败后 Spark 误用上一次的旧文件。
+    std::remove(AUDIO_FILE);
+
+    if (system("mkdir -p /home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record") != 0) {
+        ROS_ERROR("无法创建任务录音目录");
+        return false;
+    }
+
+    const string command =
+        string("arecord -q") +
+        " -D " + AUDIO_DEVICE +
+        " -t wav" +
+        " -f S16_LE" +
+        " -r 16000" +
+        " -c 1" +
+        " -d " + to_string(RECORD_SECONDS) +
+        " \"" + AUDIO_FILE + "\"";
+
+    ROS_INFO("开始录制任务语音，请在 %d 秒内说完任务...", RECORD_SECONDS);
+    const int result = system(command.c_str());
+
+    if (result != 0) {
+        ROS_ERROR("arecord 录音失败，system 返回值：%d", result);
+        ROS_ERROR("请检查 XFMDPV0018 是否存在以及麦克风是否仍被占用");
+        return false;
+    }
+
+    if (!audioFileLooksValid()) {
+        ROS_ERROR("录音文件不存在或没有有效音频数据");
+        return false;
+    }
+
+    ROS_INFO("9 秒录音完成：%s", AUDIO_FILE);
+    return true;
+}
+
+void playRetryPrompt() {
+    const string command = string("aplay -q \"") + ERROR_AUDIO + "\"";
+    const int result = system(command.c_str());
+    if (result != 0) {
+        ROS_WARN("重录提示音播放失败，system 返回值：%d", result);
     }
 }
 
@@ -173,29 +232,11 @@ string extractResult(const string& json_str) {
     return json_str.substr(start_quote + 1, end_quote - start_quote - 1);
 }
 
-// 唤醒回调
-void awakeCallback(const std_msgs::Int8::ConstPtr& msg) {
-    if (current_state == WAIT_WAKEUP && msg->data == 1) {
-        ROS_INFO("检测到唤醒！触发 9 秒录音...");
-        xf_mic_asr_offline::Start_Record_srv srv;
-        srv.request.whether_start = 1; 
-        record_client.call(srv);
-        audio_buffer.clear(); 
-        is_recording = true;
-        record_start_time = ros::Time::now();
-        current_state = RECORDING;
-    }
-}
-void pcmCallback(const xf_mic_asr_offline::Pcm_Msg::ConstPtr& msg) {
-    if (current_state == RECORDING) audio_buffer.insert(audio_buffer.end(), msg->pcm_buf.begin(), msg->pcm_buf.end());
-}
-
 int main(int argc, char** argv) {
     setlocale(LC_ALL, ""); 
     ros::init(argc, argv, "main_competition_node");
     ros::NodeHandle nh;
 
-    record_client = nh.serviceClient<xf_mic_asr_offline::Start_Record_srv>("/xf_asr_offline_node/start_record_srv");
     semantic_client = nh.serviceClient<ucarmain2026::GetTaskSemantics>("/get_task_semantics");
     qr_client = nh.serviceClient<qr_01::qr_code>("qr_detect");
     classifier_client = nh.serviceClient<ucarmain2026::ItemClassify>("/get_item_classification"); 
@@ -205,24 +246,39 @@ int main(int argc, char** argv) {
     // 【新增】：初始化视觉底层控制器
     MecanumController mecanumController(nh);
 
-    ros::Subscriber awake_sub = nh.subscribe("/awake_flag", 10, awakeCallback);
-    ros::Subscriber pcm_sub = nh.subscribe("/mic/pcm/deno", 100, pcmCallback);
+    ros::Subscriber awake_sub =
+        nh.subscribe<std_msgs::Int32>(WAKEUP_TOPIC, 5, awakeCallback);
     
     MoveBaseClient ac("move_base", true); 
 
-    ROS_INFO("智能车总控节点已启动！等待语音唤醒...");
+    ROS_INFO("等待 Spark 语义服务 /get_task_semantics...");
+    semantic_client.waitForExistence();
+    ROS_INFO("智能车总控节点已启动！请说‘小飞小飞’唤醒...");
 
     ros::Rate rate(20); 
     while (ros::ok() && current_state != ALL_FINISHED) {
         ros::spinOnce(); 
 
         switch (current_state) {
+            case WAIT_WAKEUP:
+                if (wakeup_received) {
+                    awake_sub.shutdown();
+
+                    if (stopSpeechCommandNode()) {
+                        current_state = RECORDING;
+                    } else {
+                        ROS_WARN("speech_command_node 尚未完全退出，1 秒后重试...");
+                        ros::Duration(1.0).sleep();
+                    }
+                }
+                break;
+
             case RECORDING:
-                if ((ros::Time::now() - record_start_time).toSec() >= 9.0) {
-                    xf_mic_asr_offline::Start_Record_srv srv_rec; srv_rec.request.whether_start = 0; 
-                    record_client.call(srv_rec);
-                    saveAsWav("/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav", audio_buffer);
+                if (recordNineSeconds()) {
                     current_state = SEMANTIC_PARSING;
+                } else {
+                    ROS_WARN("录音失败，播放提示音后直接重新录制...");
+                    playRetryPrompt();
                 }
                 break;
 
@@ -235,17 +291,9 @@ int main(int argc, char** argv) {
                     ROS_INFO("语义解析成功! 实体区=[%s], 仿真区=[%s]", target_real.c_str(), target_sim.c_str());
                     current_state = NAVIGATING;
                 } else {
-                    ROS_WARN("⚠️ 解析失败！正在播放提示音并重新录制...");
-                    system("aplay -q /home/ucar/ucar_ws_copy/src/ucarmain2026/audios/1.wav");
-                    
-                    xf_mic_asr_offline::Start_Record_srv srv_rec;
-                    srv_rec.request.whether_start = 1;
-                    record_client.call(srv_rec);
-                    
-                    audio_buffer.clear();
-                    is_recording = true; 
-                    record_start_time = ros::Time::now(); 
-                    current_state = RECORDING; 
+                    ROS_WARN("解析失败！播放提示音后直接重新录制...");
+                    playRetryPrompt();
+                    current_state = RECORDING;
                 }
                 break;
             }
