@@ -180,7 +180,7 @@ add_dependencies(turn_detect ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORT
 add_executable(nav_test src/nav_test.cpp)
 add_executable(qr_client_test_node src/qr_client_test.cpp)
 add_executable(wakeup_test_node src/wakeup_test.cpp)
-add_executable(race src/race.cpp src/turn_detect.cpp)
+add_executable(race src/race.cpp )
 add_executable(test_detect_node src/test_detect.cpp src/turn_detect.cpp)
 add_executable(test_find_approach_node src/test_find_approach.cpp src/turn_detect.cpp)
 

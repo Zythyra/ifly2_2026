@@ -20,5 +20,5 @@
           name="spark_classifier_server_node" output="screen" />
 
     <!-- 比赛总控 -->
-    <!-- <node pkg="ucarmain2026" type="race" name="main_competition_node" output="screen" /> -->
+    <node pkg="ucarmain2026" type="race" name="main_competition_node" output="screen" />
 </launch>
