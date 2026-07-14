@@ -21,7 +21,7 @@ TebLocalPlannerROS:
 
  xy_goal_tolerance:      0.05               #目标跟踪差 23  0.1 原
 #  xy_goal_tolerance:      0.3                #目标跟踪差
- yaw_goal_tolerance:     0.07              #目标跟踪差  0.8 原
+ yaw_goal_tolerance:     0.4                #目标跟踪差  0.8 原
 
  inflation_dist: 0.5                    #障碍物膨胀距离0.8
 
@@ -39,7 +39,7 @@ TebLocalPlannerROS:
  # Trajectory
   
  teb_autosize:  True
- max_samples:   5
+ max_samples:   40
  global_plan_overwrite_orientation: False   #覆盖由全局规划器提供的局部子目标的方向
  allow_init_with_backwards_motion:  false
  max_global_plan_lookahead_dist:    0.8    #最大向前看距离 
