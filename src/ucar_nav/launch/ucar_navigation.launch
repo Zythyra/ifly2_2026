@@ -31,10 +31,10 @@
       <!-- <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS"/>
       <rosparam file="$(find ucar_nav)/launch/config/xys_1/dwa_local_planner_params.yaml" command="load" /> -->
 
-      <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS"/>
-      <rosparam file="$(find ucar_nav)/launch/config/xys/teb_local_planner_params_yuan.yaml" command="load" />
-      <!-- <param name="base_local_planner" value="my_planner/MyPlanner" />
-      <rosparam file="$(find my_planner)/config/my_planner_params.yaml" command="load" ns="MyPlanner" /> -->
+      <!-- <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS"/>
+      <rosparam file="$(find ucar_nav)/launch/config/xys/teb_local_planner_params_yuan.yaml" command="load" /> -->
+      <param name="base_local_planner" value="my_planner/MyPlanner" />
+      <rosparam file="$(find my_planner)/config/my_planner_params.yaml" command="load" ns="MyPlanner" />
       <!-- <rosparam file="$(find ucar_nav)/launch/config/xys_1/costmap_converter_params.yaml" command="load" /> -->
 
     <!-- 地图参数配置 -->

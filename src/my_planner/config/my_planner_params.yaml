@@ -1,31 +1,88 @@
-# MyPlanner 局部规划器的参数配置
+# MyPlanner V2.0-SIMBASE-20260715：仿真一代车移植算法的二代车保守实车参数
+# 加载命名空间：/move_base/MyPlanner
 
-# 路径跟随阶段的参数
-path_linear_x_gain: 4.2      # [比例系数] 路径跟随时的x方向线速度比例增益4.6
-path_linear_y_gain: 1.5      # [比例系数] 路径跟随时的y方向线速度比例增益 2.0
-path_angular_gain: 2.2       # [比例系数] 路径跟随时的角速度比例增益 11
-lookahead_dist: 0.23         # [米] 选取前方临时目标点的距离阈值
+# -----------------------------------------------------------------------------
+# 仿真版核心路径跟踪
+# -----------------------------------------------------------------------------
+# 从当前 target_index 向前搜索第一个与车体距离超过该值的路径点。
+lookahead_dist: 0.23
 
-# 目标点姿态调整阶段的参数
-goal_dist_threshold: 0.2     # [米] 判断已到达目标点附近并开始调整姿态的距离阈值
-final_pose_linear_gain: 0.5  # [比例系数] 最终姿态调整时的线速度比例增益
-final_pose_angular_gain: 1.0 # [比例系数] 最终姿态调整时的角速度比例增益
-final_vel_min: 0.2
-goal_yaw_tolerance: 0.1      # [弧度] 到达目标点时允许的最终朝向误差
+# 保留仿真版三条控制律：
+# vx = target.x * path_linear_x_gain
+# vy = lateral_deviation * path_linear_y_gain
+# wz = target.y * path_angular_y_gain
+#
+# 仿真值约为 8 / 6 / 35。实车第一轮降低比例增益，同时由下方最大速度限幅。
+path_linear_x_gain: 2.50
+path_linear_y_gain: 2.00
+path_angular_y_gain: 9.00
 
-# 安全性与可视化参数
-collision_check_lookahead_points: 60 # [个] 向前检测路径点是否存在碰撞的点数
-visualization_scale_factor: 5        # [整数] 代价地图可视化时的放大倍数
+# vy 回看 target_index 之前多少个路径点，取绝对值最小的 y 偏差。
+lateral_search_points: 10
 
-visualize_costmap: false  # 是否显示绘制的代价地图，设为 true 开启显示, 设为 false 关闭显示
+# -----------------------------------------------------------------------------
+# 仿真版非累积路径治愈
+# -----------------------------------------------------------------------------
+# 每个控制周期都从原始全局路径重新计算，不累计修改。
+enable_path_healing: true
+path_healing_points_behind: 5
+path_healing_points_ahead: 60
+path_healing_iterations: 3
 
-#曲率控制速度的参数
-a: 2.1
-k: -45.0
-angular_limit: 0.08
-angular_enhance: 0.015
+# 单次最大推动距离。代码还会取 min(该值, costmap分辨率)。
+path_healing_max_step: 0.01
 
-diff_gain: 1.2
-#低通滤波平滑系数,越小越平滑，但响应越慢
-alpha: 0.9
-y_diff_gain: 1.5
+# 忽略栅格量化造成的小梯度；超过死区后按 gradient_scale 渐进增加推动强度。
+path_healing_gradient_deadband: 4.0
+path_healing_gradient_scale: 20.0
+
+# -----------------------------------------------------------------------------
+# 一代车/仿真版路径障碍检查
+# -----------------------------------------------------------------------------
+# 从当前 target_index 开始检查前方10个路径点；每点只读取所在单个栅格。
+collision_check_lookahead_points: 10
+collision_cost_threshold: 253
+
+# -----------------------------------------------------------------------------
+# 新目标初始姿态调整
+# -----------------------------------------------------------------------------
+enable_initial_rotation: true
+initial_yaw_tolerance: 0.10
+
+# 仿真版为15、最低2、最高5rad/s；实车首轮改为保守值。
+initial_angular_gain: 2.00
+initial_min_angular_speed: 0.10
+initial_max_angular_speed: 0.30
+
+# -----------------------------------------------------------------------------
+# 终点位姿调整
+# -----------------------------------------------------------------------------
+goal_dist_threshold: 0.15
+goal_position_tolerance: 0.025
+goal_yaw_tolerance: 0.05
+
+final_linear_x_gain: 0.80
+final_linear_y_gain: 0.80
+final_angular_gain: 1.50
+
+final_min_linear_speed: 0.03
+final_min_angular_speed: 0.08
+
+final_max_vel_x: 0.2
+final_max_vel_y: 0.1
+final_max_vel_theta: 0.9
+
+# -----------------------------------------------------------------------------
+# 二代车首轮全局速度与加速度保护
+# -----------------------------------------------------------------------------
+# 三个核心跟踪增益保持非零，安全性由输出限幅保证。
+max_vel_x: 0.6
+max_vel_y: 0.3
+max_vel_theta: 8.0
+
+acc_lim_x: 2.0
+acc_lim_y: 2.0
+acc_lim_theta: 14.40
+
+# 每0.5秒打印一次目标点、原始速度和限幅后速度，首轮必须保持true。
+debug_log: true

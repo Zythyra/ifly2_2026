@@ -1,0 +1,862 @@
+#include <opencv2/opencv.hpp>
+#include <iostream>
+#include <vector>
+#include <ros/ros.h>
+#include <random>
+#include <string>
+#include <fstream>
+#include <geometry_msgs/Twist.h>
+#include <cmath>
+#include <sstream>
+#include "line_follow/line_follow.h"
+#include "ucarmain2026/getpose_server.h"
+
+#include <tf/tf.h>
+#include <tf/transform_listener.h>
+#include <tf/transform_datatypes.h>
+#include <actionlib/client/simple_action_client.h>
+#include <move_base_msgs/MoveBaseAction.h>
+#include <dynamic_reconfigure/Reconfigure.h>
+#include <dynamic_reconfigure/Config.h>
+
+// 定义MoveBase客户端类型
+typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
+
+using namespace cv;
+using namespace std;
+
+// 声明赛道结构体（关键修复：在类外部或内部提前声明）
+struct RaceTrack {
+    double slope;                  // 赛道斜率
+    vector<Point> points;          // 赛道点集
+    int direction_change;          // 方向变化次数
+    int slope_change_count;        // 斜率变化次数
+    bool left_point;               // 是否为左赛道标志
+};
+
+class LineFollowerNode {
+private:
+    // ROS核心组件
+    ros::NodeHandle nh_;                  // 节点句柄
+    ros::NodeHandle pnh_;                 // 私有参数句柄（/line_left）
+    ros::ServiceServer line_server_;      // 服务端
+    ros::Publisher cmd_pub_;              // 速度发布者
+
+    ros::ServiceClient pose_client_;      // 位姿服务客户端
+    ros::ServiceClient reconfigure_client_;// 动态配置客户端
+    tf::TransformListener* tf_listener_;  // TF监听器
+    MoveBaseClient* ac_;                  // MoveBase客户端
+
+    // 消息对象
+    geometry_msgs::Twist twist_;
+
+    ucarmain2026::getpose_server pose_;
+
+    // 图像处理相关
+    Mat cameraMatrix_, distCoeffs_;       // 相机内参和畸变系数
+    VideoCapture cap_;                    // 相机捕获
+    VideoWriter out_;                     // 视频录制
+    string output_file_;                  // 视频保存路径
+    int fourcc_;                          // 视频编码格式
+    ostringstream displayStream_;         // 信息显示流
+    Rect roi_;                            // 图像裁剪区域
+    Mat map1_, map2_;                     // 去畸变映射表
+    int center_distance;
+
+    // 控制参数
+    double p_, i_, d_;                    // PID参数
+    double leftpoint_p_, leftpoint_I_, leftpoint_D_; // 左点控制参数
+    double x_max_, integration_limit_;    // 速度和积分限制
+    double out_turn_, out_forward_,out_turn_angel_;       // 旋转和前进参数
+    double integration_, pre_error_;      // 积分和前向误差
+    double pointx_integration_, pointx_pre_error_; // 左点积分和前向误差
+
+    // 状态变量
+
+    bool double_line_;                    // 双边巡线标志
+    bool right_point_start_;               // 左点追踪标志
+    bool point_forward_;                  // 左点前进标志
+    int trace_failed_count_;              // 追踪失败计数
+
+public:
+    // 构造函数：初始化所有组件
+    LineFollowerNode() : 
+        nh_(""),
+        pnh_("~"),
+        output_file_("/home/ucar/ucar_ws_copy/src/line_follow/image/line_left.avi"),
+        fourcc_(VideoWriter::fourcc('X', 'V', 'I', 'D')),
+        roi_(0, 210, 640, 270),
+
+        double_line_(false),
+        right_point_start_(false),
+        point_forward_(true),
+        trace_failed_count_(0),
+        integration_(0), 
+        pre_error_(0),
+        pointx_integration_(0),
+        pointx_pre_error_(0) {
+
+        ROS_INFO("开始初始化LineFollowerNode...");
+
+        // 1. 初始化服务端（优先初始化）
+        line_server_ = nh_.advertiseService("line_left", &LineFollowerNode::line_server_callback, this);
+        ROS_INFO("line_left服务已初始化");
+
+        // 2. 加载参数
+        loadParameters();
+
+        // 3. 初始化ROS客户端和发布者
+        initRosComponents();
+
+
+        ROS_INFO("所有组件初始化完成");
+    }
+
+    // 析构函数：释放资源
+    ~LineFollowerNode() {
+        cap_.release();
+        out_.release();
+        delete tf_listener_;
+        delete ac_;
+        ROS_INFO("节点资源已释放");
+    }
+
+    // 运行节点主循环
+    void run() {
+        ros::spin();
+    }
+
+private:
+    // 加载ROS参数
+    void loadParameters() {
+        // 节点名是 line_left，因此私有参数 ~xxx 对应 /line_left/xxx。
+        // 默认值与当前 line.yaml 保持一致，避免参数未加载时成员变量未初始化。
+        pnh_.param("right_P", p_, 0.015);
+        pnh_.param("right_I", i_, 0.05);
+        pnh_.param("right_D", d_, 0.04);
+        pnh_.param("leftpoint_p", leftpoint_p_, 0.004);
+        pnh_.param("leftpoint_I", leftpoint_I_, 0.05);
+        pnh_.param("leftpoint_D", leftpoint_D_, 0.017);
+        pnh_.param("x_max_", x_max_, 0.7);
+        pnh_.param("integration_limit", integration_limit_, 150.0);
+        pnh_.param("out_forward", out_forward_, 0.075);
+        pnh_.param("out_turn", out_turn_, -1.0);
+        pnh_.param("out_turn_angel", out_turn_angel_, -1.3);
+        pnh_.param("center_distance", center_distance, 240);
+        pnh_.param<std::string>("output_file", output_file_, output_file_);
+        ROS_INFO("参数加载完成: center_distance=%d, output_file=%s",
+                 center_distance, output_file_.c_str());
+    }
+
+    // 每次调用服务前后都恢复初始状态，保证服务可以重复调用。
+    void resetTrackingState() {
+        double_line_ = false;
+        right_point_start_ = false;
+        point_forward_ = true;
+        trace_failed_count_ = 0;
+        integration_ = 0.0;
+        pre_error_ = 0.0;
+        pointx_integration_ = 0.0;
+        pointx_pre_error_ = 0.0;
+        twist_ = geometry_msgs::Twist();
+    }
+
+    // 初始化ROS组件（客户端、发布者等）
+    void initRosComponents() {
+        // 初始化速度发布者
+        cmd_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
+        ROS_INFO("cmd_vel发布者已初始化");
+
+       
+
+        // 初始化位姿服务客户端
+        ROS_INFO("等待坐标获取服务中...");
+        pose_client_ = nh_.serviceClient<ucarmain2026::getpose_server>("/getpose_server");
+        pose_.request.getpose_start = 1;
+        if (!pose_client_.waitForExistence()) {
+            ROS_FATAL("超时未连接到getpose_server服务");
+            ros::shutdown();
+        }
+        ROS_INFO("getpose_server服务已连接");
+
+        // 初始化MoveBase客户端
+        ac_ = new MoveBaseClient("move_base", true);
+        ROS_INFO("等待movebase服务中...");
+        if (!ac_->waitForServer()) {
+            ROS_FATAL("超时未连接到move_base服务");
+            ros::shutdown();
+        }
+        ROS_INFO("move_base action server 已连接");
+
+        // 初始化动态配置客户端
+        reconfigure_client_ = nh_.serviceClient<dynamic_reconfigure::Reconfigure>("/move_base/set_parameters");
+        if (!reconfigure_client_.waitForExistence()) {
+            ROS_FATAL("超时未连接到动态配置服务");
+            ros::shutdown();
+        }
+        ROS_INFO("动态配置服务已连接");
+        configureMoveBaseParameters();
+
+        // 初始化TF监听器
+        tf_listener_ = new tf::TransformListener();
+        ROS_INFO("TF变换监听器已初始化");
+    }
+
+    // 配置move_base参数
+    void configureMoveBaseParameters() {
+        dynamic_reconfigure::ReconfigureRequest request;
+        dynamic_reconfigure::ReconfigureResponse response;
+        dynamic_reconfigure::DoubleParameter planner_frequency;
+        planner_frequency.name = "planner_frequency";
+        planner_frequency.value = 0.0;
+        request.config.doubles.push_back(planner_frequency);
+        
+        if (reconfigure_client_.call(request, response)) {
+            ROS_INFO("参数更新成功");
+            double new_value;
+            if (ros::param::get("/move_base/planner_frequency", new_value)) {
+                ROS_INFO("Current planner_frequency: %.2f", new_value);
+            }
+        } else {
+            ROS_ERROR("参数更新失败");
+        }
+    }
+
+    // 初始化相机和视频录制
+    bool initCameraAndVideo() {
+        cap_.release();
+        out_.release();
+
+        // 打开相机
+        cap_.open("/dev/video0", cv::CAP_V4L2);
+        if (!cap_.isOpened()) {
+            ROS_ERROR("无法打开相机");
+            return false;
+        }
+        cap_.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+        cap_.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+        cap_.set(cv::CAP_PROP_BUFFERSIZE, 5);
+
+        // 初始化视频录制
+        out_.open(output_file_, fourcc_, 5, Size(640, 270));
+        if (!out_.isOpened()) {
+            // 录制仅用于调试，不能因为目录不存在或编码器不可用而阻止巡线。
+            ROS_WARN("无法打开视频输出文件: %s，将继续巡线但不录制视频",
+                     output_file_.c_str());
+        } else {
+            ROS_INFO("视频将保存到: %s", output_file_.c_str());
+        }
+        ROS_INFO("相机初始化完成");
+        return true;
+    }
+
+    int brightness_threshold_calculator(Mat& gray_img,Mat& visualizeImg){//寻找跳变最剧烈的那个点，这个点的左值就是图像二值化阈值
+        int max_brightness_change = 0;
+        int best_binary_brightness = 180;//给个默认值，别一会没找到
+        Point threshold_keypoint;
+        for (int y = 220; y > 60; y--) {
+            for (int x = 30; x < 638; x++) {
+                int current = (int)gray_img.at<uchar>(y, x);
+                int next = (int)gray_img.at<uchar>(y, x + 1);
+                if (next>=150&&current>80){   
+                    if (next - current >= max_brightness_change) {
+                        max_brightness_change = next - current;
+                        best_binary_brightness = next-25;
+                        threshold_keypoint = Point(x,y);
+                    }
+                }
+            }
+        }
+        circle(visualizeImg, threshold_keypoint, 7, Scalar(0, 255, 255), -1);
+        return best_binary_brightness;
+    }
+
+    // 服务回调函数（核心逻辑）
+    bool line_server_callback(line_follow::line_follow::Request& req, line_follow::line_follow::Response& resp) {
+        resp.line_follow_done = 0;
+        if (req.line_follow_start != 1) {
+            ROS_WARN("收到无效的巡线启动指令: %d", req.line_follow_start);
+            return true;
+        }
+
+        resetTrackingState();
+        Mat image, brightness_threshold_image, cropped, gray_img;
+        // 5. 初始化相机和视频录制
+        if (!initCameraAndVideo()) {
+            ROS_ERROR("相机初始化失败，本次line_left服务调用终止");
+            stopRobot();
+            return true;
+        }
+        while (ros::ok()) {
+            
+
+            // 读取并预处理图像
+            cap_.read(image);
+            if (image.empty()) continue;
+            cropped = image(roi_);
+            flip(cropped, cropped, 1); // 翻转图像
+            vector<Mat> channels;
+            split(cropped, channels);
+            gray_img = channels[2]; // 红色通道作为灰度图
+            int brightness_threshold = brightness_threshold_calculator(gray_img,cropped);
+            threshold(gray_img, brightness_threshold_image, brightness_threshold, 255, THRESH_BINARY);
+            threshold_image(gray_img);
+
+            cv::cvtColor(gray_img, cropped, cv::COLOR_GRAY2BGR);
+            
+            // 巡线逻辑分支
+            if (double_line_) {
+                runDoubleLineTracking(gray_img, cropped);
+            } else if (right_point_start_) {
+                runRightPointTracking(gray_img, cropped);
+            } else {
+                runNormalTracking(gray_img, cropped);
+            }
+
+            // 发布速度指令
+            cmd_pub_.publish(twist_);
+
+            // 停车检测
+            int stop_point_count;
+            if ( stop_car(gray_img, stop_point_count, cropped)) {
+                ROS_INFO("巡线结束，触发停车");
+                twist_.linear.x = 0;
+                twist_.angular.z = 0;
+                cmd_pub_.publish(twist_);
+                break;
+            }
+        }
+
+        stopRobot();
+        cap_.release();
+        out_.release();
+        resetTrackingState();
+        resp.line_follow_done = 1;
+        return true;
+    }
+
+    
+    // 停止机器人
+    void stopRobot() {
+        twist_.linear.x = 0;
+        twist_.linear.y = 0;
+        twist_.angular.z = 0;
+        cmd_pub_.publish(twist_);
+        ros::Duration(0.1).sleep();
+    }
+
+    // 双边巡线逻辑
+    void runDoubleLineTracking(Mat& gray_img, Mat& cropped) {
+        displayStream_.str("");
+        double line_error = double_find(gray_img, cropped);
+        
+        // PID计算
+        integration_ += line_error * 0.03;
+        integration_ = clamp(integration_, -abs(line_error)/integration_limit_ -1, abs(line_error)/integration_limit_ +1);
+        double diff = line_error - pre_error_;
+        diff = clamp(diff, -50.0, 50.0);
+        
+        // 速度控制
+        twist_.linear.x = x_max_ / exp(abs(line_error) / 100.0);
+        twist_.angular.z = clamp(line_error*p_ + integration_*i_ + diff*d_, -1.0, 1.0);
+        pre_error_ = line_error;
+
+        // 显示信息
+        displayStream_ << "双边误差: " << line_error 
+                      << " P: " << line_error*p_ 
+                      << " I: " << integration_*i_ 
+                      << " D: " << diff*d_ 
+                      << " 角速度: " << twist_.angular.z;
+        putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+        out_.write(cropped);
+    }
+
+    // 左点追踪逻辑
+    void runRightPointTracking(Mat& gray_img, Mat& cropped) {
+        displayStream_.str("");
+        if (!point_forward_) {
+            // 丢线旋转
+            ROS_INFO("丢线旋转中");
+            twist_.linear.x = out_forward_;
+            twist_.angular.z = out_turn_*-1;
+            out_.write(cropped);
+            
+            // 旋转到位后切换模式
+            pose_client_.call(pose_);
+            ROS_INFO("角度%f,位姿%f",out_turn_angel_-3.14,pose_.response.pose_at[2]);
+            if (pose_.response.pose_at[2] >-out_turn_angel_-3.14) {
+                right_point_start_ = false;
+                double_line_ = true;
+                x_max_ = 0.5;
+                pnh_.param("double_P", p_, 0.005);
+                pnh_.param("double_I", i_, 0.05);
+                pnh_.param("double_D", d_, 0.017);
+                ROS_INFO("旋转完成，切换双边巡线 (P=%.2f)", p_);
+            }
+            return;
+        }
+
+        // 寻找右点并控制
+        Point right_point;
+        if (find_right_edge(gray_img, right_point, cropped)) {
+            double error_x = 320 - right_point.x;
+            pointx_integration_ += error_x * 0.02;
+            pointx_integration_ = clamp(pointx_integration_, -1.0, 1.0);
+            
+            // 左点过低时停止前进
+            if (right_point.y > 240) {
+                point_forward_ = false;
+            }
+
+            // PID计算
+            double point_diff = error_x - pointx_pre_error_;
+            twist_.linear.x = 0.23;
+            twist_.angular.z = error_x*leftpoint_p_ + pointx_integration_*leftpoint_I_ + point_diff*leftpoint_D_;
+            pointx_pre_error_ = error_x;
+
+            // 显示信息
+            displayStream_ << "左点误差: " << error_x 
+                          << " P: " << error_x*leftpoint_p_ 
+                          << " I: " << pointx_integration_*leftpoint_I_;
+            putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+        }
+        out_.write(cropped);
+    }
+
+    // 正常巡线逻辑
+    void runNormalTracking(Mat& gray_img, Mat& cropped) {
+        displayStream_.str("");
+        vector<Point> start_points = find_track_edge(gray_img, 300, 70, cropped);
+        RaceTrack racetrack;  // 现在RaceTrack已声明，可正常使用
+
+        if (trace_edge(gray_img, start_points, racetrack, cropped)) {
+            // 成功追踪到赛道
+            trace_failed_count_ = 0;
+            double line_error = error_calculater(racetrack.points, cropped);
+            
+            // PID计算
+            integration_ += line_error * 0.03;
+            integration_ = clamp(integration_, -abs(line_error)/integration_limit_ -1, abs(line_error)/integration_limit_ +1);
+            double diff = line_error - pre_error_;
+            diff = clamp(diff, -50.0, 50.0);
+            
+            // 速度控制
+            twist_.linear.x = x_max_ / exp(abs(line_error) / 100.0);
+            twist_.angular.z = clamp(line_error*p_ + integration_*i_ + diff*d_, -1.0, 1.0);
+            pre_error_ = line_error;
+
+            // 显示信息
+            displayStream_ << "正常误差: " << line_error 
+                          << " P: " << line_error*p_ 
+                          << " I: " << integration_*i_ 
+                          << " D: " << diff*d_ 
+                          << " 角速度: " << twist_.angular.z;
+            putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+        } else {
+            // 追踪失败计数
+            trace_failed_count_++;
+            if (trace_failed_count_ > 5) {
+                right_point_start_ = true;
+                ROS_INFO("连续追踪失败，切换至左点追踪模式");
+            }
+        }
+        out_.write(cropped);
+    }
+
+    // 工具函数：数值 clamping
+    template <typename T>
+    T clamp(T value, T min_val, T max_val) {
+        return std::max(min_val, std::min(value, max_val));
+    }
+
+    // 图像处理：阈值化
+    void threshold_image(Mat& gray) {
+        int adaptive_block = 45;
+        int adaptive_c = -15;
+        int min_contour_area = 250;
+
+        Mat binary;
+        adaptiveThreshold(gray, binary, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY, adaptive_block, adaptive_c);
+        vector<vector<Point>> contours;
+        vector<Vec4i> hierarchy;
+        findContours(binary, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+        Mat denoised = Mat::zeros(binary.size(), CV_8UC1);
+        for (size_t i = 0; i < contours.size(); i++) {
+            if (contourArea(contours[i]) > min_contour_area) {
+                drawContours(denoised, contours, i, Scalar(255), FILLED);
+            }
+        }
+        gray = denoised.clone();
+    }
+
+    // 停车检测
+    bool stop_car(Mat& gray, int& point, Mat& visual_img) {
+        int white_count = 0;
+        for (int y = 254; y >= 227; y--) {
+            for (int x = 1; x < 639; x++) {
+                if (gray.at<uchar>(y, x) == 255) {
+                    white_count++;
+                    circle(visual_img, Point(x, y), 2, Scalar(0, 0, 0), -1);
+                }
+            }
+        }
+        point = white_count;
+        return white_count > 2058;
+    }
+
+    // 寻找赛道边缘起点
+    vector<Point> find_track_edge(Mat& gray_img, int bottom_trace_end, int right_trace_end, Mat& visual_img) {
+        bool is_now_white = false;
+        vector<Point> maybe_start_point;
+
+        // 底部寻找
+        for (int i = 1; i < bottom_trace_end; i++) {
+            if (!is_now_white && gray_img.at<uchar>(269, i) == 255) {
+                is_now_white = true;
+            }
+            if (is_now_white && gray_img.at<uchar>(269, i) == 0) {
+                maybe_start_point.emplace_back(i-1, 269);
+                circle(visual_img, Point(i-1, 269), 5, Scalar(0, 0, 255), -1);
+                is_now_white = false;
+            }
+        }
+
+        // 左部寻找
+        is_now_white = true;
+        for (int i = 269; i > right_trace_end; i--) {
+            if (is_now_white && gray_img.at<uchar>(i, 1) == 0) {
+                is_now_white = false;
+            }
+            if (!is_now_white && gray_img.at<uchar>(i, 1) == 255) {
+                maybe_start_point.emplace_back(1, i);
+                circle(visual_img, Point(1, i), 5, Scalar(0, 0, 255), -1);
+                is_now_white = true;
+            }
+        }
+        // ROS_INFO("起始点有%zu",maybe_start_point.size());
+        return maybe_start_point;
+    }
+
+    // 追踪赛道边缘（修正参数：将int& racetrack改为RaceTrack& racetrack）
+    bool trace_edge(Mat& gray_img, vector<Point> start_points, RaceTrack& racetrack, Mat& visual_img) {
+        int point_number = start_points.size();
+        vector<RaceTrack> racetracks(point_number);  // 现在可正常声明RaceTrack向量
+        int height = gray_img.rows, width = gray_img.cols, search_range = 40;
+
+        for (int idx = 0; idx < point_number; idx++) {
+            bool broken = false, last_left = true, last_right = false;
+            int fail_count = 0;
+            Point start = start_points[idx];
+            int center_x = start.x, center_y = start.y - 1;
+
+            while (center_y > start.y - 100) {
+                bool left_found = false, right_found = false;
+                for (int dx = 0; dx <= search_range/2; dx++) {
+                    int cand_x = center_x + dx;
+                    int cand_x2 = center_x - dx;
+                    bool left_check = (cand_x2 > 1);
+                    bool right_check = (cand_x < width - 1);
+
+                    if (right_check && gray_img.at<uchar>(center_y, cand_x) == 0 && gray_img.at<uchar>(center_y, cand_x - 1) == 255) {
+                        racetracks[idx].points.emplace_back(cand_x-1, center_y);
+                        right_found = true;
+                        left_found = false;
+                        center_x = cand_x - 1;
+                        break;
+                    }
+
+                    if (left_check && gray_img.at<uchar>(center_y, cand_x2) == 255 && gray_img.at<uchar>(center_y, cand_x2 + 1) == 0) {
+                        left_found = true;
+                        right_found = false;
+                        center_x = cand_x2;
+                        break;
+                    }
+                    
+                }
+
+                // 更新方向变化计数,不允许赛道左右乱跳
+                if (last_left && right_found) {
+                    racetracks[idx].direction_change++;
+                    last_left = false;
+                    last_right = true;
+                }
+                else if (last_right && left_found) {
+                    racetracks[idx].direction_change++;
+                    last_left = true;
+                    last_right = false;
+                }
+
+                // 处理追踪结果
+                if (left_found || right_found) {
+                    fail_count = 0;
+                    center_y--;
+                } else {
+                    fail_count++;
+                    center_y--;
+                    if (fail_count >= 4) { broken = true; break; }
+                }
+                if (center_y <= 0 || racetracks[idx].points.size()>60) break;
+            }
+            // ROS_INFO("点集数量%zu",racetracks[idx].points.size());
+            // 计算斜率
+            if (racetracks[idx].points.size() > 15) {
+                Vec4f lineParams;
+                fitLine(racetracks[idx].points, lineParams, DIST_L2, 0, 0.01, 0.01);
+                racetracks[idx].slope = lineParams[1] / lineParams[0];
+            } else {
+                racetracks[idx].slope = 2.0;
+            }
+        }
+
+        // 选择最优赛道
+        int best_idx = -1;
+        float min_dangerous = 2.1;
+        for (int i = 0; i < point_number; i++) {
+            if (!(racetracks[i].slope > -0.05 && racetracks[i].slope < 10)) {
+                float ratio = racetracks[i].direction_change / (float)racetracks[i].points.size();
+                if (ratio < min_dangerous) {
+                    min_dangerous = ratio;
+                    best_idx = i;
+                }
+            }
+        }
+
+        if (best_idx != -1) {
+            racetrack = racetracks[best_idx];
+            for (const auto& p : racetrack.points) {
+                circle(visual_img, p, 2, Scalar(0, 255, 0), -1);
+            }
+            ostringstream oss;
+            oss << "斜率: " << racetrack.slope << " 方向变化: " << racetrack.direction_change;
+            putText(visual_img, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+            return true;
+        }
+        return false;
+    }
+
+    // 寻找左边缘
+    bool find_right_edge(Mat gray_img, Point& right_point, Mat& visualizeImg) {
+        bool is_now_white = false;
+        vector<Point> maybe_right_point;
+
+        // 左部寻找起点
+        for (int i = 2; i <268; i++) {
+            if (is_now_white && gray_img.at<uchar>(i, 634) == 0) {
+                is_now_white = false;
+            }
+            if (!is_now_white && gray_img.at<uchar>(i, 634) == 255) {
+                maybe_right_point.emplace_back(634, i);
+                circle(visualizeImg, Point(634, i), 9, Scalar(255, 0, 0), -1);
+                is_now_white = true;
+            }
+        }
+
+        int point_number = maybe_right_point.size();
+        vector<RaceTrack> racetracks(point_number);  // 现在可正常声明
+        int search_range = 40;
+
+        // 追踪左边缘
+        for (int idx = 0; idx < point_number; idx++) {
+            bool broken = false, last_up = false, last_down = true;
+            int fail_count = 0;
+            Point start = maybe_right_point[idx];
+            int center_x = start.x - 1, center_y = start.y;
+
+            while (center_x >20) {
+                bool found = false;
+                for (int dy = 0; dy <= search_range/2; dy++) {
+                    bool up_check = (center_y - dy > 2);
+                    bool down_check = (center_y + dy < 268);
+
+                    if (down_check && gray_img.at<uchar>(center_y + dy, center_x) == 255 && gray_img.at<uchar>(center_y + dy + 1, center_x) == 0) {
+                        racetracks[idx].points.emplace_back(center_x, center_y + dy);
+                        found = true;
+                        center_y += dy;
+                        if (last_up) racetracks[idx].direction_change++;
+                        last_down = true;
+                        last_up = false;
+                        break;
+                    }
+                    if (!found && up_check && gray_img.at<uchar>(center_y - dy, center_x) == 255 && gray_img.at<uchar>(center_y - dy + 1, center_x) == 0) {
+                        racetracks[idx].points.emplace_back(center_x + 1, center_y - dy);
+                        found = true;
+                        center_y -= dy;
+                        if (last_down) racetracks[idx].direction_change++;
+                        last_down = false;
+                        last_up = true;
+                        break;
+                    }
+                }
+
+                if (found) {
+                    fail_count = 0;
+                    center_x--;
+                } else {
+                    fail_count++;
+                    center_x--;
+                    if (fail_count >= 10) { broken = true; break; }
+                }
+            }
+            if (racetracks[idx].points.size() > 120) racetracks[idx].left_point = true;
+        }
+
+        // 选择最优左边缘
+        int best_idx = -1;
+        int lowest_y = 0;
+        for (int i = 0; i < point_number; i++) {
+            if (racetracks[i].left_point && racetracks[i].points[0].y > lowest_y) {
+                lowest_y = racetracks[i].points[0].y;
+                best_idx = i;
+            }
+        }
+
+        if (best_idx != -1) {
+            RaceTrack racetrack = racetracks[best_idx];  // 现在可正常使用
+            Point best_point(0, 0);
+            for (size_t i = 0; i < racetrack.points.size(); i += 3) {
+                if (racetrack.points[i].y > best_point.y) best_point = racetrack.points[i];
+                circle(visualizeImg, racetrack.points[i], 2, Scalar(255, 0, 0), -1);
+            }
+            circle(visualizeImg, best_point, 9, Scalar(0, 0, 255), -1);
+            right_point = best_point;
+            ostringstream oss;
+            oss << "左点: (" << best_point.x << "," << best_point.y << ")";
+            putText(visualizeImg, oss.str(), Point(50, 100), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+            return true;
+        }
+        return false;
+    }
+
+    // 双边巡线误差计算
+    double double_find(Mat gray_img, Mat& visual_img) {
+        vector<int> left_total, right_total;
+        double error = 0.0;
+        vector<Point> midPoints;
+
+        // 提取左边界
+        bool falg = false;
+        int failed = 0;
+        for (int y = 269; y >= 50; y--) {
+            int left = 0;
+            bool find = false;
+            for (int x = 319; x > 1; x--) {
+                if (gray_img.at<uchar>(y, x) == 255) {
+                    left = x;
+                    find = true;
+                    falg = true;
+                    failed = 0;
+                    break;
+                }
+            }
+            if (falg && !find) {
+                if (++failed > 10) break;
+            }
+            left_total.push_back(left);
+        }
+
+        // 提取右边界
+        falg = false;
+        failed = 0;
+        for (int y = 269; y >= 50; y--) {
+            int right = 639;
+            bool find = false;
+            for (int x = 319; x < 639; x++) {
+                if (gray_img.at<uchar>(y, x) == 255) {
+                    right = x;
+                    find = true;
+                    falg = true;
+                    failed = 0;
+                    break;
+                }
+            }
+            if (falg && !find) {
+                if (++failed > 10) break;
+            }
+            right_total.push_back(right);
+        }
+
+        // 计算误差
+        float row = min(left_total.size(), right_total.size());
+        for (int i = 0; i < row; i++) {
+            error += (640 - (left_total[i] + right_total[i])) * (1 - i / row);
+        }
+
+        // 绘制中线
+        int minSize = min(left_total.size(), right_total.size());
+        for (int i = 0; i < minSize; i++) {
+            int midX = (left_total[i] + right_total[i]) / 2;
+            int y = 269 - i;
+            midPoints.emplace_back(midX, y);
+            circle(visual_img, Point(midX, y), 1, Scalar(0, 255, 255), -1);
+        }
+
+        return error / row;
+    }
+
+    // 误差计算
+    double error_calculater(vector<Point>& traced_points, Mat& visualizeImg) {
+        if (traced_points.empty()) {
+            return 100.0;
+        }
+
+        double total_error = 0.0;
+
+        for (size_t i = 0; i < traced_points.size(); i++) {
+            double y = static_cast<double>(traced_points[i].y);
+
+            // 今年二代车相机标定结果
+            double center_offset =
+                center_distance + (y - 140.0) * 1.40;
+
+            // 根据左侧边线推算赛道中线
+            double estimated_center_x =
+                traced_points[i].x + center_offset;
+
+            double weight;
+            if (i <= 30) {
+                weight = 1.0 - static_cast<double>(i) / 100.0;
+            } else {
+                weight = 0.7 *
+                    exp(-0.064 * (static_cast<double>(i) - 30.0));
+            }
+
+            total_error +=
+                (estimated_center_x - 320.0) * weight;
+        }
+
+        // 绘制推算出的中线
+        for (const auto& point : traced_points) {
+            double y = static_cast<double>(point.y);
+            double center_offset =
+                center_distance + (y - 140.0) * 1.40;
+
+            Point center_point(
+                cvRound(point.x + center_offset),
+                point.y
+            );
+
+            circle(
+                visualizeImg,
+                center_point,
+                3,
+                Scalar(0, 255, 0),
+                -1
+            );
+        }
+
+        return -total_error / traced_points.size();
+    }
+};
+
+int main(int argc, char **argv) {
+    setlocale(LC_ALL, "");
+    ros::init(argc, argv, "line_left");
+    
+    // 创建节点对象（构造函数中完成所有初始化）
+    LineFollowerNode node;
+    
+    // 运行节点
+    node.run();
+    
+    return 0;
+}

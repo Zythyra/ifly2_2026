@@ -39,8 +39,8 @@ TebLocalPlannerROS:
  # Trajectory
   
  teb_autosize:  True
- max_samples:   40
- global_plan_overwrite_orientation: False   #覆盖由全局规划器提供的局部子目标的方向
+ max_samples:   25
+ global_plan_overwrite_orientation: true   #覆盖由全局规划器提供的局部子目标的方向
  allow_init_with_backwards_motion:  false
  max_global_plan_lookahead_dist:    0.8    #最大向前看距离 
                                             #应随车辆最大速度的增大而增大
@@ -61,7 +61,7 @@ TebLocalPlannerROS:
  is_footprint_dynamic: false
 
  # ********************** Carlike robot parameters ********************
- min_turning_radius:        0.15            #0.15 最小转弯半径--最大转角
+ min_turning_radius:        0.0            #0.15 最小转弯半径--最大转角
  wheelbase:                 0.26           # Wheelbase of our robot
  cmd_angle_instead_rotvel:  false            # stage simulator takes the angle instead of the rotvel as input (twist message)
  # ********************************************************************
@@ -102,7 +102,7 @@ TebLocalPlannerROS:
                                             #以减少计算量，但同时也考虑了许多相邻的障碍物
  dynamic_obstacle_inflation_dist:   0.4     #动态障碍物的膨胀范围，动态障碍物的预测位置周围的缓冲区的惩罚成本非零
                                             #（应大于min_obstacle_dist才能生效）4号 0.6
- include_dynamic_obstacles:         True 
+ include_dynamic_obstacles:         false 
 
  #costmap_converter_plugin:          "costmap_converter::CostmapToPolygonsDBSMCCH"
  #costmap_converter_spin_thread:     True
@@ -129,8 +129,8 @@ TebLocalPlannerROS:
  weight_acc_lim_theta:      0.3            #满足最大允许角加速度的优化权重
 
 
- weight_kinematics_nh:      1.2         #运动学的优化权重
- weight_kinematics_forward_drive:   100.0   #1大幅增加可禁止规划倒车
+ weight_kinematics_nh:      2.0         #运动学的优化权重
+ weight_kinematics_forward_drive:   300.0   #1大幅增加可禁止规划倒车
  weight_kinematics_turning_radius:  0.0      #90优化权重，以实现最小转弯半径  25原
 #  weight_kinematics_turning_radius:  5      #90优化权重，以实现最小转弯半径
 
@@ -142,8 +142,8 @@ TebLocalPlannerROS:
 
  weight_inflation:          0.2             #通胀惩罚的优化权重（应该很小）
 
- weight_dynamic_obstacle:   2.0              # not in use yet
- weight_dynamic_obstacle_inflation: 0.6     #优化过程中，和动态障碍物膨胀区的权重
+ weight_dynamic_obstacle:   0.0              # not in use yet
+ weight_dynamic_obstacle_inflation: 0.0     #优化过程中，和动态障碍物膨胀区的权重
  
 
  global_plan_viapoint_sep:   0.6            #从全局规划路径中提取的路点的相互距离,间隔多远设置一个point
@@ -154,7 +154,7 @@ TebLocalPlannerROS:
  # Homotopy Class Planner
  # 独特拓扑中的并行规划
  enable_homotopy_class_planning: false
- enable_multithreading: True
+ enable_multithreading: false
  max_number_classes:        2               #允许的线程数
  selection_cost_hysteresis: 1.0             #指定新候选人必须有多少轨迹成本 先前选择的轨迹以进行选择（如果new_cost <old_cost * factor则选择）
  selection_prefer_initial_plan:     0.95    #为初始计划的等价类中的轨迹指定在区间(0,1)中的成本降低。

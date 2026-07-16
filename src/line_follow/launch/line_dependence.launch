@@ -1,0 +1,48 @@
+<launch>
+    <!-- 分别加载到两个节点的私有命名空间 -->
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/line.yaml"
+        ns="line_right"/>
+
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/line.yaml"
+        ns="line_left"/>
+
+    <!-- 相机标定文件 -->
+    <param
+        name="/line_right/calibration_file"
+        value="$(find line_follow)/camera_info/pinhole.yaml"/>
+
+    <!-- line_left 的调试视频输出路径 -->
+    <param
+        name="/line_left/output_file"
+        value="$(find line_follow)/image/line_left.avi"/>
+
+    <!-- 位姿获取服务：/getpose_server -->
+    <node
+        pkg="ucarmain2026"
+        type="tf_pose_get"
+        name="tf_pose_get"
+        output="screen"
+        respawn="false"/>
+
+    
+
+    <!-- 左侧巡线服务：/line_left -->
+    <node
+        pkg="line_follow"
+        type="line_left"
+        name="line_left"
+        output="screen"
+        respawn="false"/>
+
+    <!-- 右侧巡线服务：/line_right -->
+    <node
+        pkg="line_follow"
+        type="line_right"
+        name="line_right"
+        output="screen"
+        respawn="false"/>
+</launch>
