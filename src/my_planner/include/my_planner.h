@@ -42,14 +42,15 @@ private:
     void resetForNewGoal();
     void stopImmediately(geometry_msgs::Twist& cmd_vel);
 
-    // 仿真版核心路径逻辑
+    // 保留二代车已经验证稳定的外围机制
     void updateHealedPath();
     bool checkPathCollision();
+
+    // Stage 0.1：基础类 Pure Pursuit 前视点选择与横移纠偏
     bool selectTrackingTarget(geometry_msgs::PoseStamped& target_pose);
     double computeLateralDeviation(
         const geometry_msgs::PoseStamped& target_pose);
 
-    // 三种控制状态
     bool computeInitialRotationCommand(
         const geometry_msgs::PoseStamped& target_pose,
         geometry_msgs::Twist& desired_cmd);
@@ -71,8 +72,8 @@ private:
     std::string base_frame_;
     std::string costmap_frame_;
 
-    // raw_plan_ 永远保存全局规划器下发的原始路径。
-    // global_plan_ 是当前周期从 raw_plan_ 重新生成的治愈路径。
+    // raw_plan_：全局规划器下发的原始路径
+    // global_plan_：当前控制周期生成的非累积治愈路径
     std::vector<geometry_msgs::PoseStamped> raw_plan_;
     std::vector<geometry_msgs::PoseStamped> global_plan_;
     geometry_msgs::PoseStamped goal_pose_;
@@ -83,7 +84,7 @@ private:
     bool goal_reached_;
     bool initial_rotation_done_;
 
-    // 仿真版路径跟踪控制律
+    // Stage 0.1 基础全向 PP 参数
     double lookahead_dist_;
     double path_linear_x_gain_;
     double path_linear_y_gain_;
@@ -99,7 +100,7 @@ private:
     double path_healing_gradient_deadband_;
     double path_healing_gradient_scale_;
 
-    // 一代车/仿真版单栅格路径检查
+    // 前方全局路径碰撞检查
     int collision_check_lookahead_points_;
     unsigned char collision_cost_threshold_;
 
@@ -123,7 +124,7 @@ private:
     double final_max_vel_y_;
     double final_max_vel_theta_;
 
-    // 实车最外层速度和加速度保护
+    // 最外层速度和加速度保护
     double max_vel_x_;
     double max_vel_y_;
     double max_vel_theta_;

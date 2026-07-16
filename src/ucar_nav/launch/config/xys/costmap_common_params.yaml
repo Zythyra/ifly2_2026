@@ -37,7 +37,7 @@ inflation_layer:
   # 13 -> 7
   cost_scaling_factor: 13.0    # 13
 # inflation_radius: 0.3
-  inflation_radius: 0.26
+  inflation_radius: 0.24
 #0.15
  
 static_layer:

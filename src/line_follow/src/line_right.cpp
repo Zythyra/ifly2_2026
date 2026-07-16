@@ -308,14 +308,9 @@ private:
             // waitKey(0);
             cv::cvtColor(gray_img, cropped, cv::COLOR_GRAY2BGR);
 
-            // 巡线逻辑分支
-            if (double_line_) {
-                runDoubleLineTracking(gray_img, cropped);
-            } else if (left_point_start_) {
-                runLeftPointTracking(gray_img, cropped);
-            } else {
-                runNormalTracking(gray_img, cropped);
-            }
+            // 新场地只保留右边巡线模式。
+            // 正常情况下跟踪右侧边线；右线连续丢失后，直接执行固定右转。
+            runNormalTracking(gray_img, cropped);
 
             // 发布速度指令
             cmd_pub_.publish(twist_);
@@ -331,10 +326,15 @@ private:
             }
         }
 
-        bool double_line_ = false;                    // 双边巡线标志
-        bool left_point_start_ = false;               // 左点追踪标志
-        bool point_forward_ = true;                  // 左点前进标志
-        int trace_failed_count_ = 0;              // 追踪失败计数
+        // 为下一次服务调用复位状态。
+        double_line_ = false;
+        left_point_start_ = false;
+        point_forward_ = true;
+        trace_failed_count_ = 0;
+        integration_ = 0.0;
+        pre_error_ = 0.0;
+        pointx_integration_ = 0.0;
+        pointx_pre_error_ = 0.0;
         cap_.release();
         out_.release();
         return true;
@@ -477,11 +477,25 @@ private:
                           << " 角速度: " << twist_.angular.z;
             putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
         } else {
-            // 追踪失败计数
+            // 保留原来的连续5帧丢线容错，避免单帧识别波动引起误转。
             trace_failed_count_++;
             if (trace_failed_count_ > 5) {
-                left_point_start_ = true;
-                ROS_INFO("连续追踪失败，切换至左点追踪模式");
+                // ROS约定 angular.z < 0 为顺时针旋转，也就是向右转。
+                // 使用 -abs() 后，YAML中的 out_turn 写正值或负值都能保证向右。
+                twist_.linear.x = out_forward_;
+                twist_.linear.y = 0.0;
+                twist_.angular.z = -std::abs(out_turn_);
+
+                if (trace_failed_count_ == 6) {
+                    ROS_INFO("右线连续丢失，开始固定右转：线速度=%.3f，角速度=%.3f",
+                             twist_.linear.x, twist_.angular.z);
+                }
+
+                displayStream_ << "右线丢失，固定右转"
+                               << " 线速度: " << twist_.linear.x
+                               << " 角速度: " << twist_.angular.z;
+                putText(cropped, displayStream_.str(), Point(50, 50),
+                        FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 165, 255), 1);
             }
         }
         out_.write(cropped);

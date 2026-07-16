@@ -1,45 +1,49 @@
-# MyPlanner V2.0-SIMBASE-20260715：仿真一代车移植算法的二代车保守实车参数
+# MyPlanner Stage 0.1：基础全向 Pure Pursuit 基线
 # 加载命名空间：/move_base/MyPlanner
-
-# -----------------------------------------------------------------------------
-# 仿真版核心路径跟踪
-# -----------------------------------------------------------------------------
-# 从当前 target_index 向前搜索第一个与车体距离超过该值的路径点。
-lookahead_dist: 0.23
-
-# 保留仿真版三条控制律：
-# vx = target.x * path_linear_x_gain
-# vy = lateral_deviation * path_linear_y_gain
-# wz = target.y * path_angular_y_gain
 #
-# 仿真值约为 8 / 6 / 35。实车第一轮降低比例增益，同时由下方最大速度限幅。
-path_linear_x_gain: 2.50
-path_linear_y_gain: 2.00
-path_angular_y_gain: 9.00
+# 相比 Stage 0 只做两处变化：
+#   1. 恢复全向底盘 linear.y 横移纠偏；
+#   2. 将角速度增益从 5.0 提高到 9.0，改善日志中明显的转弯迟缓。
+#
+# 正常跟踪仍然只有：
+#   vx = target.x * path_linear_x_gain
+#   vy = lateral_deviation * path_linear_y_gain
+#   wz = target.y * path_angular_y_gain
+#
+# 不包含路径切线、Frenet、样条、曲率前馈、曲率限速或延迟预测。
 
-# vy 回看 target_index 之前多少个路径点，取绝对值最小的 y 偏差。
+# -----------------------------------------------------------------------------
+# Stage 0.1 基础全向 PP
+# -----------------------------------------------------------------------------
+
+# 保持 Stage 0 的 0.20m，先隔离观察横移和转向增益的影响。
+lookahead_dist: 0.24
+
+path_linear_x_gain: 2.50
+
+# 横向纠偏恢复为二代车原有形式：
+# 在前视点前方索引区间内取绝对值最小的 y，避免直接追逐远处前视点。
+path_linear_y_gain: 2.00
 lateral_search_points: 10
 
+# Stage 0 日志中 target.y 最大约 0.17～0.18m，增益5只给约0.85～0.90rad/s。
+# 提高至9后，相同弯道约输出1.5～1.6rad/s，仍受 max_vel_theta=2.0 限制。
+path_angular_y_gain: 12.00
+
 # -----------------------------------------------------------------------------
-# 仿真版非累积路径治愈
+# 非累积路径治愈
 # -----------------------------------------------------------------------------
-# 每个控制周期都从原始全局路径重新计算，不累计修改。
 enable_path_healing: true
 path_healing_points_behind: 5
 path_healing_points_ahead: 60
 path_healing_iterations: 3
-
-# 单次最大推动距离。代码还会取 min(该值, costmap分辨率)。
 path_healing_max_step: 0.01
-
-# 忽略栅格量化造成的小梯度；超过死区后按 gradient_scale 渐进增加推动强度。
 path_healing_gradient_deadband: 4.0
 path_healing_gradient_scale: 20.0
 
 # -----------------------------------------------------------------------------
-# 一代车/仿真版路径障碍检查
+# 前方路径碰撞检查：命中后返回 false，触发全局重规划
 # -----------------------------------------------------------------------------
-# 从当前 target_index 开始检查前方10个路径点；每点只读取所在单个栅格。
 collision_check_lookahead_points: 10
 collision_cost_threshold: 253
 
@@ -48,11 +52,9 @@ collision_cost_threshold: 253
 # -----------------------------------------------------------------------------
 enable_initial_rotation: true
 initial_yaw_tolerance: 0.10
-
-# 仿真版为15、最低2、最高5rad/s；实车首轮改为保守值。
 initial_angular_gain: 2.00
 initial_min_angular_speed: 0.10
-initial_max_angular_speed: 0.30
+initial_max_angular_speed: 0.60
 
 # -----------------------------------------------------------------------------
 # 终点位姿调整
@@ -63,26 +65,25 @@ goal_yaw_tolerance: 0.05
 
 final_linear_x_gain: 0.80
 final_linear_y_gain: 0.80
-final_angular_gain: 1.50
+final_angular_gain: 6.50
 
 final_min_linear_speed: 0.03
 final_min_angular_speed: 0.08
 
-final_max_vel_x: 0.2
-final_max_vel_y: 0.1
-final_max_vel_theta: 0.9
+final_max_vel_x: 0.20
+final_max_vel_y: 0.10
+final_max_vel_theta: 0.90
 
 # -----------------------------------------------------------------------------
-# 二代车首轮全局速度与加速度保护
+# 二代车最外层速度和加速度保护
 # -----------------------------------------------------------------------------
-# 三个核心跟踪增益保持非零，安全性由输出限幅保证。
-max_vel_x: 0.6
-max_vel_y: 0.3
-max_vel_theta: 8.0
+max_vel_x: 0.60
+max_vel_y: 0.30
+max_vel_theta: 4.00
 
-acc_lim_x: 2.0
-acc_lim_y: 2.0
-acc_lim_theta: 14.40
+acc_lim_x: 2.00
+acc_lim_y: 2.00
+acc_lim_theta: 5.00
 
-# 每0.5秒打印一次目标点、原始速度和限幅后速度，首轮必须保持true。
+# 日志增加 alpha 和 lateral，便于判断下一步该调前视距离还是控制增益。
 debug_log: true
