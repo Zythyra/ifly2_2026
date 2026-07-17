@@ -8,12 +8,12 @@ TebLocalPlannerROS:
 
 
 
- max_vel_x:             1.0                #9.0 速度最大限制
+ max_vel_x:             1.2                #9.0 速度最大限制
  max_vel_x_backwards:   0.6                  #1.0
  max_vel_y:             0.4    # 25 原来
 
  acc_lim_theta:         2.60               #3.0 角加速度约束
- max_vel_theta:         3.0                 #4.0最大角速度约束(r = v / omega)   
+ max_vel_theta:         2.0                 #4.0最大角速度约束(r = v / omega)   
  acc_lim_x:             0.8                 
  acc_lim_y:             0.2    # 25 yuan
 
@@ -76,7 +76,7 @@ TebLocalPlannerROS:
 #   rear_offset: 0.2 # for type "two_circles"  后圆心坐标
 #   rear_radius: 0.2 # for type "two_circles"  后圆半径
    vertices: [ [0.171, -0.13], [0.171, 0.13], [-0.171, 0.13], [-0.171, -0.13] ] # for type "polygon"多边形边界点
-
+   vertices: [ [0.181, -0.13], [0.181, 0.13], [-0.161, 0.13], [-0.161, -0.13] ]
  # GoalTolerance
     
  free_goal_vel:          false              #自由目标速度
