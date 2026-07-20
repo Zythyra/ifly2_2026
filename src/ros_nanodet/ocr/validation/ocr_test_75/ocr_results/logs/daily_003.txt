@@ -1,0 +1,2 @@
+Model-../model/ppocrv4_rec.onnx is onnx model, starting val
+[('日用品加工车间', 0.998741626739502)]

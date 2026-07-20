@@ -1,0 +1,1 @@
+773fc4e13c25f4847fb82aa2112dc673355c13c0b32b066ae2fb082478810916  /home/ucar/rknn_model_zoo/examples/PPOCR/PPOCR-Rec/model/ppocrv4_rec.onnx

@@ -1,0 +1,41 @@
+ocr:
+  model_path: "/home/ucar/ucar_ws_copy/src/ros_nanodet/models/ppocrv4_rec_fp16.rknn"
+
+  target_platform: "rk3588"
+
+  input:
+    height: 48
+    width: 320
+
+  thresholds:
+    min_confidence: 0.20
+    min_similarity: 0.55
+    min_margin: 0.06
+    unique_prefix_min_length: 2
+    unique_prefix_min_confidence: 0.80
+
+  candidates:
+    - "食品加工车间"
+    - "日用品加工车间"
+    - "电子产品生产车间"
+
+  generic_texts:
+    - ""
+    - "车间"
+    - "加工车间"
+    - "生产车间"
+
+  voting:
+    window_size: 5
+    min_votes: 3
+
+  crop:
+    horizontal_padding_ratio: 0.04
+    vertical_padding_ratio: 0.06
+    min_box_width: 100
+    min_box_height: 25
+
+  debug:
+    print_raw_text: true
+    print_output_shape: false
+    save_unknown_crop: true

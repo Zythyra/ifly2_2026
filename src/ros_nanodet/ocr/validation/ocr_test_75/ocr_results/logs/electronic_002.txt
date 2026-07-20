@@ -1,0 +1,2 @@
+Model-../model/ppocrv4_rec.onnx is onnx model, starting val
+[('电子产品生产车', 0.9967669248580933)]

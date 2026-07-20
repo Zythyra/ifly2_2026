@@ -88,7 +88,7 @@
   <exec_depend>dynamic_reconfigure</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
-
+  <depend>ros_nanodet</depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>

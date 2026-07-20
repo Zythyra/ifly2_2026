@@ -1,0 +1,22 @@
+========================================================================
+PP-OCRv4-Rec 75张VOC裁剪图测试结果
+========================================================================
+总样本：75
+原始文字完全正确：62/75 (82.67%)
+候选匹配后最终正确：73/75 (97.33%)
+unknown：2/75 (2.67%)
+空结果：1/75 (1.33%)
+
+分类别统计：
+食品加工车间：原始完全正确=23/25，最终正确=25/25，unknown=0
+日用品加工车间：原始完全正确=19/25，最终正确=24/25，unknown=1
+电子产品生产车间：原始完全正确=20/25，最终正确=24/25，unknown=1
+
+详细CSV：/home/ucar/ocr_vehicle_test/ocr_test_75/ocr_results/ocr_results.csv
+原始识别错误图片：/home/ucar/ocr_vehicle_test/ocr_test_75/ocr_results/exact_wrong
+unknown图片：/home/ucar/ocr_vehicle_test/ocr_test_75/ocr_results/unknown
+候选匹配仍错误图片：/home/ucar/ocr_vehicle_test/ocr_test_75/ocr_results/decision_wrong
+
+注意：当前脚本每张图片都会重新加载ONNX模型，
+elapsed_seconds只用于确认程序运行，不代表最终实时速度。
+========================================================================

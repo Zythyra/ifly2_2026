@@ -23,7 +23,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_geometry_msgs
   message_generation  # 生成自定义消息头文件[7](@ref)
   dynamic_reconfigure
-
+  ros_nanodet
 )
 
 find_package(OpenCV REQUIRED COMPONENTS
@@ -313,3 +313,12 @@ add_dependencies(test_find_approach_node ${PROJECT_NAME}_generate_messages_cpp)
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+
+add_executable(target_scan_test src/target_scan_test.cpp)
+add_dependencies(target_scan_test
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(target_scan_test
+  ${catkin_LIBRARIES}
+)

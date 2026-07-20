@@ -1,0 +1,78 @@
+<launch>
+  <!-- 比赛目标类别：food / daily / electronic -->
+  <arg name="target_category" default="food" />
+
+  <!-- 需要先启动二代车导航以及 ros_nanodet/detect2026.launch。 -->
+  <node pkg="ucarmain2026"
+        type="simple_move_control"
+        name="simple_move_control"
+        output="screen">
+    <!-- 超过该时间没有收到新速度命令时，自动停车。 -->
+    <param name="command_timeout" value="0.50" />
+  </node>
+
+  <node pkg="ucarmain2026"
+        type="target_scan_test"
+        name="target_scan_test"
+        output="screen">
+    <param name="target_category" value="$(arg target_category)" />
+
+    <!-- 两个探测点：仅当第一个完整环扫未找到目标时才前往第二个。 -->
+    <param name="goal_x" value="1.75" />
+    <param name="goal_y" value="3.25" />
+    <param name="goal_yaw" value="0.0" />
+    <param name="second_scan_x" value="3.75" />
+    <param name="second_scan_y" value="3.75" />
+    <param name="second_scan_yaw" value="0.0" />
+
+    <!-- 每次 OCR 后快速逆时针转动20度，使旧目标进入右半屏。 -->
+    <param name="post_ocr_rotate_deg" value="20.0" />
+    <param name="post_ocr_rotate_speed" value="0.80" />
+    <param name="post_ocr_rotate_min_speed" value="0.15" />
+    <param name="post_ocr_slow_angle_deg" value="5.0" />
+    <param name="post_ocr_rotate_kp" value="5.0" />
+
+    <!-- 已经通过实车测试的搜索与对准参数。 -->
+    <param name="scan_speed" value="0.80" />
+    <param name="align_kp" value="0.0030" />
+    <param name="align_min_speed" value="0.10" />
+    <param name="align_max_speed" value="0.35" />
+    <param name="center_tolerance_px" value="20.0" />
+
+    <!-- 超时检测结果属于旧画面，禁止用于停车和对准。 -->
+    <param name="max_detection_duration" value="0.50" />
+
+    <!-- 找板房间：x=[0,5]，y=[2.5,4.5]，每格边长0.5米。 -->
+    <param name="room_min_x" value="0.0" />
+    <param name="room_max_x" value="5.0" />
+    <param name="room_min_y" value="2.5" />
+    <param name="room_max_y" value="4.5" />
+    <param name="grid_size" value="0.5" />
+
+    <!-- 摄像头正对base_link前方时为0；单位为弧度，逆时针为正。 -->
+    <param name="camera_yaw_offset" value="0.0" />
+
+    <!-- 第二段：保持车头朝向不变，使用全向底盘左右平移完成视觉居中。 -->
+    <param name="lateral_align_kp" value="0.0015" />
+    <param name="lateral_align_min_speed" value="0.06" />
+    <param name="lateral_align_max_speed" value="0.30" />
+    <param name="lateral_center_tolerance_px" value="10.0" />
+    <param name="lateral_stable_frames" value="3" />
+    <param name="lateral_align_timeout" value="15.0" />
+
+    <!-- 第三段：909点雷达自动计算0°索引，默认使用正前方共7个点。 -->
+    <param name="scan_topic" value="/scan" />
+    <param name="front_lidar_half_window" value="3" />
+    <param name="approach_stop_distance" value="0.23" />
+    <param name="approach_slow_distance" value="0.25" />
+    <param name="approach_min_speed" value="0.15" />
+    <param name="approach_max_speed" value="0.30" />
+    <param name="approach_timeout" value="15.0" />
+    <param name="lidar_data_timeout" value="0.50" />
+    <param name="lidar_loss_abort_timeout" value="2.0" />
+
+    <!-- 横移和直行阶段的车头朝向闭环。 -->
+    <param name="docking_yaw_kp" value="2.0" />
+    <param name="docking_yaw_max_speed" value="0.25" />
+  </node>
+</launch>

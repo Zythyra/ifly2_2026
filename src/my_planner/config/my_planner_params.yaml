@@ -19,7 +19,7 @@
 # 保持 Stage 0 的 0.20m，先隔离观察横移和转向增益的影响。
 lookahead_dist: 0.26
 
-path_linear_x_gain: 2.00
+path_linear_x_gain: 2.20
 
 # 横向纠偏恢复为二代车原有形式：
 # 在前视点前方索引区间内取绝对值最小的 y，避免直接追逐远处前视点。
@@ -28,7 +28,7 @@ lateral_search_points: 10
 
 # Stage 0 日志中 target.y 最大约 0.17～0.18m，增益5只给约0.85～0.90rad/s。
 # 提高至9后，相同弯道约输出1.5～1.6rad/s，仍受 max_vel_theta=2.0 限制。
-path_angular_y_gain: 11.00
+path_angular_y_gain: 10.00
 
 # -----------------------------------------------------------------------------
 # 非累积路径治愈
@@ -44,7 +44,7 @@ path_healing_gradient_scale: 20.0
 # -----------------------------------------------------------------------------
 # 前方路径碰撞检查：命中后返回 false，触发全局重规划
 # -----------------------------------------------------------------------------
-collision_check_lookahead_points: 10
+collision_check_lookahead_points: 20
 collision_cost_threshold: 253
 
 # -----------------------------------------------------------------------------
@@ -59,12 +59,12 @@ initial_max_angular_speed: 1.40
 # -----------------------------------------------------------------------------
 # 终点位姿调整
 # -----------------------------------------------------------------------------
-goal_dist_threshold: 0.15
+goal_dist_threshold: 0.5
 goal_position_tolerance: 0.025
 goal_yaw_tolerance: 0.05
 
-final_linear_x_gain: 0.80
-final_linear_y_gain: 0.80
+final_linear_x_gain: 1.60
+final_linear_y_gain: 1.20
 final_angular_gain: 6.50
 
 final_min_linear_speed: 0.03
@@ -77,8 +77,8 @@ final_max_vel_theta: 0.90
 # -----------------------------------------------------------------------------
 # 二代车最外层速度和加速度保护
 # -----------------------------------------------------------------------------
-max_vel_x: 0.70
-max_vel_y: 0.35
+max_vel_x: 0.80
+max_vel_y: 0.55
 max_vel_theta: 4.00
 
 acc_lim_x: 8.00

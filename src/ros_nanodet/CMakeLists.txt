@@ -17,6 +17,7 @@ find_package(catkin REQUIRED COMPONENTS
   image_transport
 )
 
+find_package(OpenCV REQUIRED)
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 
@@ -61,6 +62,7 @@ add_service_files(
   FILES
   aruco_cmd.srv
   detect_result_srv.srv
+  ocr_result_srv.srv
 )
 
 ## Generate actions in the 'action' folder
@@ -166,6 +168,7 @@ catkin_install_python(PROGRAMS
   # src/nanodet-0.2.0/test_banqian.py
   # src/nanodet-0.2.0/test1.py
   src/nanodet-0.2.0/detect2025.py
+  scripts/detect2026.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -209,3 +212,17 @@ catkin_install_python(PROGRAMS
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+
+add_executable(test_detect2026_camera
+  src/test_detect2026_camera.cpp
+)
+
+add_dependencies(test_detect2026_camera
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+
+target_link_libraries(test_detect2026_camera
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)

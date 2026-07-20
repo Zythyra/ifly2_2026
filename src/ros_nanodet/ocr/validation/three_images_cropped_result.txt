@@ -1,0 +1,24 @@
+
+============================================================
+当前测试类别：daily
+输入图片：/home/ucar/ocr_vehicle_test/textline/daily.png
+============================================================
+Model-../model/ppocrv4_rec.onnx is onnx model, starting val
+[('日用品加工车间', 0.9973821640014648)]
+
+
+============================================================
+当前测试类别：electronic
+输入图片：/home/ucar/ocr_vehicle_test/textline/electronic.png
+============================================================
+Model-../model/ppocrv4_rec.onnx is onnx model, starting val
+[('电子产品生产车间', 0.9963498711585999)]
+
+
+============================================================
+当前测试类别：food
+输入图片：/home/ucar/ocr_vehicle_test/textline/food.png
+============================================================
+Model-../model/ppocrv4_rec.onnx is onnx model, starting val
+[('食品加工车间', 0.9963911175727844)]
+

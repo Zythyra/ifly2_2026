@@ -1,0 +1,10 @@
+--> Load RKNN model
+done
+--> Init RKNNLite runtime
+done
+Model-../model/ppocrv4_rec_fp16.rknn is rknn model, starting val
+RKNN输出shape：(1, 40, 6625, 1) -> (1, 40, 6625)
+[('日用品加工车', 0.9966633915901184)]
+I RKNN: [15:50:25.924] RKNN Runtime Information: librknnrt version: 1.4.0 (a10f100eb@2022-09-09T09:07:14)
+I RKNN: [15:50:25.924] RKNN Driver Information: version: 0.8.2
+I RKNN: [15:50:25.925] RKNN Model Information: version: 1, toolkit version: 1.4.0-22dcfef4(compiler version: 1.4.0 (3b4520e4f@2022-09-05T20:52:35)), target: RKNPU v2, target platform: rk3588, framework name: ONNX, framework layout: NCHW

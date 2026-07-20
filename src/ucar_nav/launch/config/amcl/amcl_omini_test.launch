@@ -1,45 +1,72 @@
 <launch>
-<arg name="initial_pose_x" default="0.242"/>
-<arg name="initial_pose_y" default="0.255"/>
-<arg name="initial_pose_a" default="0.006"/>
-<node pkg="amcl" type="amcl" name="amcl">
-  <param name="odom_model_type" value="omni"/>
-  <param name="odom_alpha5" value="0.1"/>
-  <param name="transform_tolerance" value="0.2" />
-  <param name="gui_publish_rate" value="10.0"/>
-  <param name="laser_max_beams" value="90"/>
-  <param name="use_map_topic" value="false"/>
-  <param name="first_map_only" value="true"/>
-  <param name="initial_pose_x" value="$(arg initial_pose_x)"/>
-  <param name="initial_pose_y" value="$(arg initial_pose_y)"/>
-  <param name="initial_pose_a" value="$(arg initial_pose_a)"/>
-  <param name="initial_cov_xx" value="0.0"/>
-  <param name="initial_cov_yy" value="0.0"/>
-  <param name="initial_cov_aa" value="0.0"/>
-  <param name="min_particles" value="2000"/>
-  <param name="max_particles" value="5000"/>
-  <param name="kld_err" value="0.05"/>
-  <param name="kld_z" value="0.99"/>
-  <param name="odom_alpha1" value="0.4"/>
-  <param name="odom_alpha2" value="0.3"/>
-  <param name="odom_alpha3" value="0.5"/>
-  <param name="odom_alpha4" value="0.2"/>
-  <param name="laser_z_hit" value="0.75"/>
-  <param name="laser_z_short" value="0.05"/>
-  <param name="laser_z_max" value="0.05"/>
-  <param name="laser_z_rand" value="0.05"/>
-  <param name="laser_sigma_hit" value="0.12"/>
-  <param name="laser_lambda_short" value="0.1"/>
-  <param name="laser_model_type" value="likelihood_field"/>
-  <param name="laser_likelihood_max_dist" value="2.0"/>
-  <param name="update_min_d" value="0.04"/>
-  <!-- <param name="update_min_a" value="0.1"/>   -->
+  <arg name="initial_pose_x" default="0.242"/>
+  <arg name="initial_pose_y" default="0.255"/>
+  <arg name="initial_pose_a" default="0.006"/>
 
-  <param name="update_min_a" value="0.06"/>  
-  <param name="odom_frame_id" value="odom"/>
-  <param name="resample_interval" value="1"/>
-  <param name="transform_tolerance" value="0.1"/>
-  <param name="recovery_alpha_slow" value="0.0"/>
-  <param name="recovery_alpha_fast" value="0.0"/>
+  <node pkg="amcl"
+        type="amcl"
+        name="amcl"
+        output="screen"
+        clear_params="true">
+
+    <param name="global_frame_id" value="map"/>
+    <param name="odom_frame_id" value="odom"/>
+    <param name="base_frame_id" value="base_link"/>
+    <param name="tf_broadcast" value="true"/>
+    <param name="transform_tolerance" value="0.20"/>
+
+    <param name="use_map_topic" value="false"/>
+    <param name="first_map_only" value="true"/>
+
+    <param name="initial_pose_x" value="$(arg initial_pose_x)"/>
+    <param name="initial_pose_y" value="$(arg initial_pose_y)"/>
+    <param name="initial_pose_a" value="$(arg initial_pose_a)"/>
+
+    <param name="initial_cov_xx" value="0.0009"/>
+    <param name="initial_cov_yy" value="0.0009"/>
+    <param name="initial_cov_aa" value="0.0019"/>
+
+    <param name="odom_model_type" value="omni"/>
+
+    <param name="odom_alpha1" value="0.40"/>
+    <param name="odom_alpha2" value="0.30"/>
+    <param name="odom_alpha3" value="0.50"/>
+    <param name="odom_alpha4" value="0.20"/>
+    <param name="odom_alpha5" value="0.10"/>
+
+    <param name="min_particles" value="1800"/>
+    <param name="max_particles" value="4500"/>
+    <param name="kld_err" value="0.05"/>
+    <param name="kld_z" value="0.99"/>
+    <param name="resample_interval" value="2"/>
+
+    <param name="recovery_alpha_slow" value="0.0"/>
+    <param name="recovery_alpha_fast" value="0.0"/>
+
+    <param name="laser_model_type"
+           value="likelihood_field_prob"/>
+
+    <param name="laser_max_beams" value="90"/>
+    <param name="laser_likelihood_max_dist" value="2.0"/>
+
+    <param name="laser_z_hit" value="0.85"/>
+    <param name="laser_z_rand" value="0.15"/>
+    <param name="laser_sigma_hit" value="0.15"/>
+
+    <param name="laser_z_short" value="0.05"/>
+    <param name="laser_z_max" value="0.05"/>
+    <param name="laser_lambda_short" value="0.10"/>
+
+    <param name="do_beamskip" value="true"/>
+    <param name="beam_skip_distance" value="0.50"/>
+    <param name="beam_skip_threshold" value="0.20"/>
+    <param name="beam_skip_error_threshold" value="0.90"/>
+
+    <param name="update_min_d" value="0.06"/>
+    <param name="update_min_a" value="0.08"/>
+
+    <param name="gui_publish_rate" value="10.0"/>
+    <param name="save_pose_rate" value="0.5"/>
+
   </node>
 </launch>

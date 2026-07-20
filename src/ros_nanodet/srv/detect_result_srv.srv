@@ -1,13 +1,7 @@
-# 客户端请求
+# 客户端请求：-1打开摄像头，-2释放，-3丢弃缓存帧，其他值执行检测
 int32 detect_start
 ---
-# 服务器响应发送的数据
-#int32 class_name
-#int32 x0
-#int32 y0
-#int32 x1
-#int32 y1
-#把数据全部塞到一个数组里面，找需要的
+# 每个数组的相同下标共同表示一个检测框；target类别ID固定为0
 int32[] class_name
 int32[] x0
 int32[] y0

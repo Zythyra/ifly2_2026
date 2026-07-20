@@ -1,0 +1,18 @@
+<launch>
+  <!-- false：比赛耗时测试；true：发布并显示检测画面。 -->
+  <arg name="show_image" default="true" />
+  <!-- 视频录制与窗口互不依赖，可单独开启。 -->
+  <arg name="enable_debug_video" default="false" />
+
+  <include file="$(find ros_nanodet)/launch/detect2026.launch">
+    <arg name="enable_debug_image" value="$(arg show_image)" />
+    <arg name="enable_debug_video" value="$(arg enable_debug_video)" />
+  </include>
+
+  <node pkg="ros_nanodet"
+        type="test_detect2026_camera"
+        name="test_detect2026_camera"
+        output="screen">
+    <param name="show_image" value="$(arg show_image)" />
+  </node>
+</launch>
