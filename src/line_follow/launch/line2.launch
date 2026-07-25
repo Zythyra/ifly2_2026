@@ -1,0 +1,27 @@
+<launch>
+
+    <!-- 同一个 line2.yaml 加载给 line2_left -->
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/line2.yaml"
+        ns="/line2_left"/>
+
+    <!-- 同一个 line2.yaml 加载给 line2_right -->
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/line2.yaml"
+        ns="/line2_right"/>
+
+    <node
+        pkg="line_follow"
+        type="line2_left"
+        name="line2_left"
+        output="screen"/>
+
+    <node
+        pkg="line_follow"
+        type="line2_right"
+        name="line2_right"
+        output="screen"/>
+
+</launch>

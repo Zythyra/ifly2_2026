@@ -100,6 +100,9 @@ public:
         pnh_.param("room_min_y", room_min_y_, 2.5);
         pnh_.param("room_max_y", room_max_y_, 4.5);
         pnh_.param("grid_size", grid_size_, 0.5);
+        // 前两个探测点均未找到目标时，第三探测点位于第二探测点车头正前方一格。
+        // 默认直接使用grid_size（当前场地一格为0.5米），也可在launch中单独覆盖。
+        pnh_.param("third_scan_forward_distance", third_scan_forward_distance_, grid_size_);
         // 摄像头光轴相对base_link正前方的偏角；正值表示逆时针。
         pnh_.param("camera_yaw_offset", camera_yaw_offset_, 0.0);
 
@@ -146,9 +149,16 @@ public:
         front_lidar_half_window_ = std::max(0, front_lidar_half_window_);
         docking_yaw_kp_ = std::fabs(docking_yaw_kp_);
         docking_yaw_max_speed_ = std::fabs(docking_yaw_max_speed_);
+        third_scan_forward_distance_ = std::fabs(third_scan_forward_distance_);
+        if (third_scan_forward_distance_ <= 0.0) {
+            ROS_WARN("third_scan_forward_distance必须大于0，恢复为grid_size=%.2f米",
+                     grid_size_);
+            third_scan_forward_distance_ = grid_size_;
+        }
         configuration_valid_ = isValidCategory(target_category_) &&
                                room_max_x_ > room_min_x_ &&
                                room_max_y_ > room_min_y_ && grid_size_ > 0.0 &&
+                               third_scan_forward_distance_ > 0.0 &&
                                approach_stop_distance_ > 0.0 &&
                                approach_slow_distance_ > approach_stop_distance_ &&
                                lidar_data_timeout_ > 0.0;
@@ -159,6 +169,8 @@ public:
                  "本轮目标类别=%s",
                  post_ocr_rotate_deg_, post_ocr_rotate_speed_, max_detection_duration_,
                  target_category_.c_str());
+        ROS_INFO("第三探测点规则：前两个点均未找到目标时，前往第二点车头正前方%.2f米",
+                 third_scan_forward_distance_);
         if (!configuration_valid_) {
             ROS_ERROR("配置无效：target_category只允许food、daily、electronic，"
                       "且房间边界和grid_size必须有效");
@@ -184,7 +196,9 @@ public:
         if (!navigateToScanPoint()) return false;
         if (!openCamera()) return false;
 
-        for (int scan_point_index = 0; scan_point_index < 2; ++scan_point_index) {
+        const int scan_point_count = 3;
+        for (int scan_point_index = 0; scan_point_index < scan_point_count;
+             ++scan_point_index) {
             current_scan_point_index_ = scan_point_index;
             if (scan_point_index == 1) {
                 stopRobot();
@@ -193,6 +207,19 @@ public:
                 goal_yaw_ = second_scan_yaw_;
                 ROS_INFO("第一个探测点未找到目标，前往第二个探测点");
                 if (!navigateToScanPoint()) return false;
+            } else if (scan_point_index == 2) {
+                stopRobot();
+                ROS_INFO("前两个探测点均未找到目标，启用第三个探测点");
+                if (!configureThirdScanPoint()) {
+                    closeCamera();
+                    printFinalSummary();
+                    return false;
+                }
+                if (!navigateToScanPoint()) {
+                    closeCamera();
+                    printFinalSummary();
+                    return false;
+                }
             }
 
             ros::Duration(0.4).sleep();
@@ -413,6 +440,35 @@ private:
             ROS_ERROR("等待 /set_speed 超时，请确认 simple_move_control 节点已经启动");
             return false;
         }
+        return true;
+    }
+
+    bool configureThirdScanPoint() {
+        // 第三点严格由第二探测点的配置位姿计算，不使用完成360度环扫后的实际朝向，
+        // 从而避免环扫累计误差把“正前方一格”带偏。
+        goal_x_ = second_scan_x_ +
+                  third_scan_forward_distance_ * std::cos(second_scan_yaw_);
+        goal_y_ = second_scan_y_ +
+                  third_scan_forward_distance_ * std::sin(second_scan_yaw_);
+        goal_yaw_ = normalizeAngle(second_scan_yaw_);
+
+        const double boundary_tolerance = 0.05;
+        if (goal_x_ < room_min_x_ - boundary_tolerance ||
+            goal_x_ > room_max_x_ + boundary_tolerance ||
+            goal_y_ < room_min_y_ - boundary_tolerance ||
+            goal_y_ > room_max_y_ + boundary_tolerance) {
+            ROS_ERROR("第三探测点(%.3f, %.3f)超出找板房间边界，"
+                      "请检查second_scan位姿或third_scan_forward_distance",
+                      goal_x_, goal_y_);
+            return false;
+        }
+
+        ROS_INFO("第三探测点计算完成：第二点=(%.3f, %.3f, %.2f度)，"
+                 "沿车头正前方移动%.3f米，第三点=(%.3f, %.3f, %.2f度)",
+                 second_scan_x_, second_scan_y_,
+                 second_scan_yaw_ * 180.0 / kPi,
+                 third_scan_forward_distance_, goal_x_, goal_y_,
+                 goal_yaw_ * 180.0 / kPi);
         return true;
     }
 
@@ -1415,6 +1471,7 @@ private:
     double room_min_y_;
     double room_max_y_;
     double grid_size_;
+    double third_scan_forward_distance_;
     double camera_yaw_offset_;
     double lateral_align_kp_;
     double lateral_align_min_speed_;

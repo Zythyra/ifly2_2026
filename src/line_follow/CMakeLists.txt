@@ -263,3 +263,40 @@ add_dependencies(line_left ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORT
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+
+# ============================================================
+# 第二套巡线节点：使用 line2.yaml
+# ============================================================
+
+add_executable(line2_left
+  src/line2_left.cpp
+)
+
+add_dependencies(line2_left
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+
+target_link_libraries(line2_left
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+
+# ============================================================
+# 第二套右巡线节点：line2_right
+# ============================================================
+
+add_executable(line2_right
+  src/line2_right.cpp
+)
+
+add_dependencies(line2_right
+  ${PROJECT_NAME}_generate_messages_cpp
+  ${catkin_EXPORTED_TARGETS}
+)
+
+target_link_libraries(line2_right
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+)

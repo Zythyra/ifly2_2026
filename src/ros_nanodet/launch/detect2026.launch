@@ -2,7 +2,7 @@
   <!-- 比赛测速时保持为false；需要RViz/测试窗口画面时再打开。 -->
   <arg name="enable_debug_image" default="false" />
   <!-- 开启后会进行XVID编码并写入磁盘，会增加每次服务调用耗时。 -->
-  <arg name="enable_debug_video" default="false" />
+  <arg name="enable_debug_video" default="true" />
 
   <node pkg="ros_nanodet"
         type="detect2026.py"

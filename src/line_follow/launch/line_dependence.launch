@@ -1,5 +1,8 @@
 <launch>
-    <!-- 分别加载到两个节点的私有命名空间 -->
+    <!--
+        两个节点共用同一个 YAML 文件，但分别加载到各自命名空间。
+        line_right 只读取原赛道参数；line2_right 只读取新赛道参数。
+    -->
     <rosparam
         command="load"
         file="$(find line_follow)/config/line.yaml"
@@ -8,17 +11,16 @@
     <rosparam
         command="load"
         file="$(find line_follow)/config/line.yaml"
-        ns="line_left"/>
+        ns="line2_right"/>
 
-    <!-- 相机标定文件 -->
+    <!-- 两个节点使用同一份相机标定文件 -->
     <param
         name="/line_right/calibration_file"
         value="$(find line_follow)/camera_info/pinhole.yaml"/>
 
-    <!-- line_left 的调试视频输出路径 -->
     <param
-        name="/line_left/output_file"
-        value="$(find line_follow)/image/line_left.avi"/>
+        name="/line2_right/calibration_file"
+        value="$(find line_follow)/camera_info/pinhole.yaml"/>
 
     <!-- 位姿获取服务：/getpose_server -->
     <node
@@ -28,21 +30,19 @@
         output="screen"
         respawn="false"/>
 
-    
-
-    <!-- 左侧巡线服务：/line_left -->
-    <node
-        pkg="line_follow"
-        type="line_left"
-        name="line_left"
-        output="screen"
-        respawn="false"/>
-
-    <!-- 右侧巡线服务：/line_right -->
+    <!-- 原赛道右侧巡线服务：/line_right -->
     <node
         pkg="line_follow"
         type="line_right"
         name="line_right"
+        output="screen"
+        respawn="false"/>
+
+    <!-- 新赛道右侧巡线服务：/line2_right -->
+    <node
+        pkg="line_follow"
+        type="line2_right"
+        name="line2_right"
         output="screen"
         respawn="false"/>
 </launch>

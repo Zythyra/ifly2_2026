@@ -403,8 +403,10 @@ private:
         if (!point_forward_) {
             // 丢线旋转
             ROS_INFO("丢线旋转中");
-            twist_.linear.x = out_forward_;
-            twist_.angular.z = out_turn_;
+            // 此处保持原赛道“左点完成后转向”的原有速度；
+            // out_forward/out_turn 仅用于右线丢失后的固定右转。
+            twist_.linear.x = 0.075;
+            twist_.angular.z = -1.0;
             out_.write(cropped);
             
             // 旋转到位后切换模式

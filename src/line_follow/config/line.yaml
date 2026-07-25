@@ -33,10 +33,15 @@ double_D: 0.017
 out_turn_angel: -1.3
 out_forward: 0.075
 out_turn: -1.0
-x_max_: 0.8
+x_max_: 0.9
 
 out_forward: 0.32   # 丢线右转时的前进速度
 out_turn: 1.5      # 固定右转角速度的大小
+
+start_straight_distance: 0.25 # 从起始停止线向前行驶的距离，单位 m
+start_turn_angular_speed: 1.3 # 进入右半圆前的转弯角速度大小，保持正数
+start_rotate_angle_deg: 60.0       # 前进完成后先原地右转的角度，单位 °
+
 # right_P: 0.007
 # right_I: 0.05
 # right_D: 0.017
@@ -57,7 +62,7 @@ out_turn: 1.5      # 固定右转角速度的大小
 # out_turn: -1.0
 # x_max_: 0.5
 
-# 慢速版
+# # 慢速版
 # x_max_: 0.7
 
 # out_forward: 0.35   # 丢线右转时的前进速度
