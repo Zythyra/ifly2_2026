@@ -1,0 +1,21 @@
+<launch>
+    <!--
+      小车启动时预加载一次 Matcha + HiFi-GAN。
+      收到 generate_task_audios.py 的三段任务后，生成 WAV、
+      释放模型并正常退出；respawn 必须保持 false。
+    -->
+    <arg name="socket_path" default="/tmp/ucarmain2026_tts.sock" />
+    <arg name="num_threads" default="4" />
+    <arg name="cpu_set" default="4-7" />
+
+    <node pkg="ucarmain2026"
+          type="start_tts_preload.sh"
+          name="tts_preload"
+          output="screen"
+          respawn="false"
+          required="false">
+        <env name="TTS_SOCKET_PATH" value="$(arg socket_path)" />
+        <env name="TTS_NUM_THREADS" value="$(arg num_threads)" />
+        <env name="TTS_CPU_SET" value="$(arg cpu_set)" />
+    </node>
+</launch>

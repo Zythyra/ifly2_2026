@@ -322,3 +322,16 @@ add_dependencies(target_scan_test
 target_link_libraries(target_scan_test
   ${catkin_LIBRARIES}
 )
+
+add_executable(target_patrol_docking
+  src/target_patrol_docking.cpp
+)
+
+add_dependencies(target_patrol_docking
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+
+target_link_libraries(target_patrol_docking
+  ${catkin_LIBRARIES}
+)

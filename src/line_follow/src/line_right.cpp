@@ -1,3 +1,11 @@
+// 版本：雷达接管停车版 V3（连续速度发布，2026-07-27）
+// 修改基线：用户上传的 line_right(5).cpp（898行最终巡线代码）
+// 终点白线只用于触发控制模式切换，不会在白线处发布零速度。
+// 切换后使用独立参数控制前进速度；首次读取的左侧最小雷达距离作为目标距离，
+// 后续通过左墙拟合保持平行，并根据左侧最小雷达距离保持等距；
+// 雷达数据由永久订阅回调缓存，控制循环以固定频率持续发布速度；
+// 仅当前方雷达最近有效点不大于设定阈值时停车。
+
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <vector>
@@ -6,8 +14,13 @@
 #include <string>
 #include <fstream>
 #include <geometry_msgs/Twist.h>
+#include <sensor_msgs/LaserScan.h>
 #include <cmath>
 #include <sstream>
+#include <limits>
+#include <algorithm>
+#include <mutex>
+#include <cstdint>
 #include "line_follow/line_follow.h"
 #include "ucarmain2026/getpose_server.h"
 
@@ -40,6 +53,7 @@ private:
     ros::NodeHandle nh_;                  // 节点句柄
     ros::ServiceServer line_server_;      // 服务端
     ros::Publisher cmd_pub_;              // 速度发布者
+    ros::Subscriber scan_sub_;            // 永久雷达订阅者
 
     ros::ServiceClient pose_client_;      // 位姿服务客户端
     ros::ServiceClient reconfigure_client_;// 动态配置客户端
@@ -70,6 +84,32 @@ private:
     double integration_, pre_error_;      // 积分和前向误差
     double pointx_integration_, pointx_pre_error_; // 左点积分和前向误差
 
+    // 雷达靠左墙行驶参数
+    string scan_topic_;                    // 雷达话题
+    double lidar_left_angle_min_deg_;      // 左侧拟合扇区最小角度
+    double lidar_left_angle_max_deg_;      // 左侧拟合扇区最大角度
+    double lidar_front_half_angle_deg_;    // 前方停车检测半角
+    double lidar_forward_speed_;           // 雷达停车阶段的独立前进速度
+    double lidar_front_stop_distance_;     // 前方立即停车距离
+    double lidar_heading_kp_;              // 平行控制增益
+    double lidar_distance_kp_;             // 等距控制增益
+    double lidar_max_angular_speed_;        // 雷达阶段最大角速度
+    double lidar_min_valid_range_;         // 参与拟合的最小量程
+    double lidar_max_valid_range_;         // 参与拟合的最大量程
+    double lidar_wall_max_residual_;       // 墙面拟合离群点阈值
+    double lidar_filter_alpha_;            // 墙面结果低通滤波系数
+    double lidar_control_rate_;            // 雷达阶段速度发布频率
+    double lidar_scan_stale_timeout_;       // 雷达数据过期停车阈值
+    int lidar_min_wall_points_;             // 拟合左墙所需的最少点数
+    int lidar_wall_invalid_grace_scans_;    // 左墙无效帧容错次数
+    int lidar_front_invalid_grace_scans_;   // 前方无效帧容错次数
+
+    // 雷达缓存由AsyncSpinner的雷达回调写入、巡线服务线程读取。
+    std::mutex scan_mutex_;
+    sensor_msgs::LaserScanConstPtr latest_scan_;
+    ros::Time latest_scan_receive_time_;
+    std::uint64_t scan_sequence_;
+
     // 状态变量
 
     bool double_line_;                    // 双边巡线标志
@@ -80,7 +120,9 @@ private:
 public:
     // 构造函数：初始化所有组件
     LineFollowerNode() : 
-        nh_(""), 
+        nh_(""),
+        tf_listener_(nullptr),
+        ac_(nullptr),
         output_file_("/home/ucar/ucar_ws_copy/src/line_follow/image/line_right.avi"),
         fourcc_(VideoWriter::fourcc('X', 'V', 'I', 'D')),
         roi_(0, 210, 640, 270),
@@ -92,9 +134,10 @@ public:
         integration_(0), 
         pre_error_(0),
         pointx_integration_(0),
-        pointx_pre_error_(0) {
+        pointx_pre_error_(0),
+        scan_sequence_(0) {
 
-        ROS_INFO("开始初始化LineFollowerNode...");
+        ROS_INFO("启动 line_right 雷达接管版 V3（永久订阅雷达、固定频率连续发布速度）");
 
         // 1. 初始化服务端（优先初始化）
         line_server_ = nh_.advertiseService("line_right", &LineFollowerNode::line_server_callback, this);
@@ -127,7 +170,11 @@ public:
 
     // 运行节点主循环
     void run() {
-        ros::spin();
+        // 服务回调会持续执行视觉巡线和雷达控制循环，至少需要另一个线程
+        // 专门接收/缓存LaserScan，否则服务执行期间雷达回调无法运行。
+        ros::AsyncSpinner spinner(2);
+        spinner.start();
+        ros::waitForShutdown();
     }
 
 private:
@@ -145,7 +192,36 @@ private:
         nh_.getParam("/line_right/out_turn", out_turn_);
         nh_.getParam("/line_right/out_turn_angel", out_turn_angel_);
         nh_.getParam("/line_right/center_distance", center_distance);
-        ROS_INFO("参数加载完成: center_distance=%d",center_distance);
+
+        nh_.param<string>("/line_right/scan_topic", scan_topic_, "/scan");
+        nh_.param("/line_right/lidar_left_angle_min_deg", lidar_left_angle_min_deg_, 60.0);
+        nh_.param("/line_right/lidar_left_angle_max_deg", lidar_left_angle_max_deg_, 120.0);
+        nh_.param("/line_right/lidar_front_half_angle_deg", lidar_front_half_angle_deg_, 15.0);
+        nh_.param("/line_right/lidar_forward_speed", lidar_forward_speed_, 0.50);
+        nh_.param("/line_right/lidar_front_stop_distance", lidar_front_stop_distance_, 0.25);
+        nh_.param("/line_right/lidar_heading_kp", lidar_heading_kp_, 1.8);
+        nh_.param("/line_right/lidar_distance_kp", lidar_distance_kp_, 2.0);
+        nh_.param("/line_right/lidar_max_angular_speed", lidar_max_angular_speed_, 0.8);
+        nh_.param("/line_right/lidar_min_valid_range", lidar_min_valid_range_, 0.08);
+        nh_.param("/line_right/lidar_max_valid_range", lidar_max_valid_range_, 1.50);
+        nh_.param("/line_right/lidar_wall_max_residual", lidar_wall_max_residual_, 0.03);
+        nh_.param("/line_right/lidar_filter_alpha", lidar_filter_alpha_, 0.35);
+        nh_.param("/line_right/lidar_control_rate", lidar_control_rate_, 30.0);
+        nh_.param("/line_right/lidar_scan_stale_timeout", lidar_scan_stale_timeout_, 0.25);
+        nh_.param("/line_right/lidar_min_wall_points", lidar_min_wall_points_, 8);
+        nh_.param("/line_right/lidar_wall_invalid_grace_scans", lidar_wall_invalid_grace_scans_, 3);
+        nh_.param("/line_right/lidar_front_invalid_grace_scans", lidar_front_invalid_grace_scans_, 2);
+
+        lidar_filter_alpha_ = clamp(lidar_filter_alpha_, 0.0, 1.0);
+        lidar_control_rate_ = std::max(lidar_control_rate_, 1.0);
+        lidar_scan_stale_timeout_ = std::max(lidar_scan_stale_timeout_, 0.05);
+        lidar_wall_invalid_grace_scans_ = std::max(lidar_wall_invalid_grace_scans_, 0);
+        lidar_front_invalid_grace_scans_ = std::max(lidar_front_invalid_grace_scans_, 0);
+
+        ROS_INFO("参数加载完成: center_distance=%d, 雷达话题=%s, 雷达前进速度=%.3f m/s, 前方停车=%.3f m, 控制频率=%.1f Hz",
+                 center_distance, scan_topic_.c_str(),
+                 lidar_forward_speed_, lidar_front_stop_distance_,
+                 lidar_control_rate_);
     }
 
     // 初始化ROS组件（客户端、发布者等）
@@ -154,7 +230,15 @@ private:
         cmd_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
         ROS_INFO("cmd_vel发布者已初始化");
 
-       
+        // 节点启动后永久订阅雷达。服务回调运行时，由AsyncSpinner的另一个
+        // 线程持续更新缓存，雷达控制循环无需重复建立订阅。
+        scan_sub_ = nh_.subscribe(
+            scan_topic_,
+            10,
+            &LineFollowerNode::scanCallback,
+            this
+        );
+        ROS_INFO("已永久订阅雷达话题：%s", scan_topic_.c_str());
 
         // 初始化位姿服务客户端
         ROS_INFO("等待坐标获取服务中...");
@@ -187,6 +271,13 @@ private:
         // 初始化TF监听器
         tf_listener_ = new tf::TransformListener();
         ROS_INFO("TF变换监听器已初始化");
+    }
+
+    void scanCallback(const sensor_msgs::LaserScanConstPtr& scan) {
+        std::lock_guard<std::mutex> lock(scan_mutex_);
+        latest_scan_ = scan;
+        latest_scan_receive_time_ = ros::Time::now();
+        ++scan_sequence_;
     }
 
     // 配置move_base参数
@@ -284,14 +375,16 @@ private:
     // 服务回调函数（核心逻辑）
     bool line_server_callback(line_follow::line_follow::Request& req, line_follow::line_follow::Response& resp) {
         Mat image, brightness_threshold_image, cropped, gray_img;
+        bool switch_to_lidar = false;
+
         // 5. 初始化相机和视频录制
         if (!initCameraAndVideo()) {
             ROS_FATAL("相机或视频初始化失败，节点无法启动");
-            ros::shutdown();
+            stopRobot();
+            return false;
         }
-        while (ros::ok()) {
-            
 
+        while (ros::ok()) {
             // 读取并预处理图像
             cap_.read(image);
             if (image.empty()) continue;
@@ -308,22 +401,30 @@ private:
             // waitKey(0);
             cv::cvtColor(gray_img, cropped, cv::COLOR_GRAY2BGR);
 
+            // 检测到白线后不再停车，也不再使用视觉计算速度。
+            // 雷达阶段改用独立的前进速度参数。
+            int stop_point_count = 0;
+            if (stop_car(gray_img, stop_point_count, cropped)) {
+                switch_to_lidar = true;
+                out_.write(cropped);
+
+                ROS_INFO("检测到白线（白点数=%d），切换为雷达左墙跟随，独立前进速度 %.3f m/s",
+                         stop_point_count, lidar_forward_speed_);
+                break;
+            }
+
             // 新场地只保留右边巡线模式。
             // 正常情况下跟踪右侧边线；右线连续丢失后，直接执行固定右转。
             runNormalTracking(gray_img, cropped);
 
             // 发布速度指令
             cmd_pub_.publish(twist_);
+        }
 
-            // 停车检测
-            int stop_point_count;
-            if ( stop_car(gray_img, stop_point_count, cropped)) {
-                ROS_INFO("巡线结束，触发停车");
-                twist_.linear.x = 0;
-                twist_.angular.z = 0;
-                cmd_pub_.publish(twist_);
-                break;
-            }
+        if (ros::ok() && switch_to_lidar) {
+            runLidarWallFollowing();
+        } else {
+            stopRobot();
         }
 
         // 为下一次服务调用复位状态。
@@ -335,6 +436,7 @@ private:
         pre_error_ = 0.0;
         pointx_integration_ = 0.0;
         pointx_pre_error_ = 0.0;
+        twist_ = geometry_msgs::Twist();
         cap_.release();
         out_.release();
         return true;
@@ -368,7 +470,369 @@ private:
         twist_.linear.y = 0;
         twist_.angular.z = 0;
         cmd_pub_.publish(twist_);
-        ros::Duration(0.1).sleep();
+    }
+
+    struct WallEstimate {
+        double heading;   // 左墙方向相对车头方向的夹角，单位 rad
+        double distance;  // 雷达到左墙拟合直线的垂直距离，单位 m
+        int point_count;
+    };
+
+    bool isValidRange(const sensor_msgs::LaserScan& scan, float range) const {
+        if (!std::isfinite(range)) {
+            return false;
+        }
+
+        const double lower = std::max(
+            lidar_min_valid_range_,
+            static_cast<double>(scan.range_min)
+        );
+
+        double upper = lidar_max_valid_range_;
+        if (std::isfinite(scan.range_max) && scan.range_max > 0.0) {
+            upper = std::min(
+                upper,
+                static_cast<double>(scan.range_max)
+            );
+        }
+
+        return range >= lower && range <= upper;
+    }
+
+    bool getFrontMinDistance(
+        const sensor_msgs::LaserScan& scan,
+        double& front_min_distance
+    ) const {
+        const double pi = 3.14159265358979323846;
+        const double half_angle =
+            lidar_front_half_angle_deg_ * pi / 180.0;
+
+        front_min_distance = std::numeric_limits<double>::infinity();
+        bool found_valid_sample = false;
+
+        for (size_t i = 0; i < scan.ranges.size(); ++i) {
+            const double angle =
+                scan.angle_min + static_cast<double>(i) * scan.angle_increment;
+
+            if (std::abs(angle) > half_angle) {
+                continue;
+            }
+
+            const float range = scan.ranges[i];
+            // 正无穷通常表示该方向量程内没有回波，应视作“前方无近障”，
+            // 而不是无效帧。NaN、负无穷和越界有限值才忽略。
+            if (std::isinf(range) && range > 0.0f) {
+                found_valid_sample = true;
+                continue;
+            }
+
+            if (!std::isfinite(range) ||
+                range < scan.range_min ||
+                (std::isfinite(scan.range_max) && range > scan.range_max)) {
+                continue;
+            }
+
+            front_min_distance =
+                std::min(front_min_distance, static_cast<double>(range));
+            found_valid_sample = true;
+        }
+
+        return found_valid_sample;
+    }
+
+    bool getLeftMinDistance(
+        const sensor_msgs::LaserScan& scan,
+        double& left_min_distance
+    ) const {
+        const double pi = 3.14159265358979323846;
+        const double min_angle =
+            lidar_left_angle_min_deg_ * pi / 180.0;
+        const double max_angle =
+            lidar_left_angle_max_deg_ * pi / 180.0;
+
+        left_min_distance = std::numeric_limits<double>::infinity();
+        bool found = false;
+
+        for (size_t i = 0; i < scan.ranges.size(); ++i) {
+            const double angle =
+                scan.angle_min + static_cast<double>(i) * scan.angle_increment;
+
+            if (angle < min_angle || angle > max_angle) {
+                continue;
+            }
+
+            const float range = scan.ranges[i];
+            if (!isValidRange(scan, range)) {
+                continue;
+            }
+
+            left_min_distance =
+                std::min(left_min_distance, static_cast<double>(range));
+            found = true;
+        }
+
+        return found;
+    }
+
+    bool fitLeftWall(
+        const sensor_msgs::LaserScan& scan,
+        WallEstimate& estimate
+    ) const {
+        const double pi = 3.14159265358979323846;
+        const double min_angle =
+            lidar_left_angle_min_deg_ * pi / 180.0;
+        const double max_angle =
+            lidar_left_angle_max_deg_ * pi / 180.0;
+
+        vector<Point2f> points;
+        points.reserve(scan.ranges.size());
+
+        for (size_t i = 0; i < scan.ranges.size(); ++i) {
+            const double angle =
+                scan.angle_min + static_cast<double>(i) * scan.angle_increment;
+
+            if (angle < min_angle || angle > max_angle) {
+                continue;
+            }
+
+            const float range = scan.ranges[i];
+            if (!isValidRange(scan, range)) {
+                continue;
+            }
+
+            // 雷达坐标系：x向前，y向左。
+            points.emplace_back(
+                range * std::cos(angle),
+                range * std::sin(angle)
+            );
+        }
+
+        if (static_cast<int>(points.size()) < lidar_min_wall_points_) {
+            return false;
+        }
+
+        Vec4f first_line;
+        fitLine(points, first_line, DIST_L2, 0, 0.01, 0.01);
+
+        const double first_vx = first_line[0];
+        const double first_vy = first_line[1];
+        const double first_x0 = first_line[2];
+        const double first_y0 = first_line[3];
+
+        vector<Point2f> inliers;
+        inliers.reserve(points.size());
+        for (const auto& point : points) {
+            const double residual = std::abs(
+                first_vy * (point.x - first_x0) -
+                first_vx * (point.y - first_y0)
+            );
+
+            if (residual <= lidar_wall_max_residual_) {
+                inliers.push_back(point);
+            }
+        }
+
+        if (static_cast<int>(inliers.size()) < lidar_min_wall_points_) {
+            return false;
+        }
+
+        Vec4f line;
+        fitLine(inliers, line, DIST_L2, 0, 0.01, 0.01);
+
+        double vx = line[0];
+        double vy = line[1];
+        const double x0 = line[2];
+        const double y0 = line[3];
+
+        // fitLine得到的方向存在正反二义性，统一令方向指向车头前方。
+        if (vx < 0.0) {
+            vx = -vx;
+            vy = -vy;
+        }
+
+        estimate.heading = std::atan2(vy, vx);
+
+        // 单位法向量(-vy, vx)指向车辆左侧，点积即左墙有符号距离。
+        estimate.distance = -vy * x0 + vx * y0;
+        estimate.point_count = static_cast<int>(inliers.size());
+
+        return std::isfinite(estimate.heading) &&
+               std::isfinite(estimate.distance) &&
+               estimate.distance > 0.0;
+    }
+
+    bool runLidarWallFollowing() {
+        bool filter_initialized = false;
+        bool target_distance_initialized = false;
+        bool control_command_initialized = false;
+        bool front_distance_initialized = false;
+
+        double filtered_heading = 0.0;
+        double filtered_distance = 0.0;
+        double target_left_distance = 0.0;
+        double last_front_min_distance =
+            std::numeric_limits<double>::infinity();
+        double last_angular_command = 0.0;
+        int last_wall_point_count = 0;
+
+        int wall_invalid_count = 0;
+        int front_invalid_count = 0;
+        std::uint64_t last_processed_sequence = 0;
+
+        ros::Rate control_rate(lidar_control_rate_);
+
+        while (ros::ok()) {
+            sensor_msgs::LaserScanConstPtr scan;
+            ros::Time scan_receive_time;
+            std::uint64_t scan_sequence = 0;
+
+            {
+                std::lock_guard<std::mutex> lock(scan_mutex_);
+                scan = latest_scan_;
+                scan_receive_time = latest_scan_receive_time_;
+                scan_sequence = scan_sequence_;
+            }
+
+            if (!scan || scan_receive_time.isZero()) {
+                ROS_ERROR_THROTTLE(1.0, "尚未收到雷达数据，保持停车");
+                stopRobot();
+                return false;
+            }
+
+            const double scan_age =
+                (ros::Time::now() - scan_receive_time).toSec();
+            if (scan_age > lidar_scan_stale_timeout_) {
+                ROS_ERROR("雷达数据已过期 %.3f s > %.3f s，安全停车",
+                          scan_age, lidar_scan_stale_timeout_);
+                stopRobot();
+                return false;
+            }
+
+            // 只有新LaserScan到来时才重新计算并累加无效帧次数。
+            // 控制循环的其余周期继续发布上一条有效速度指令。
+            if (scan_sequence != last_processed_sequence) {
+                last_processed_sequence = scan_sequence;
+
+                double front_min_distance =
+                    std::numeric_limits<double>::infinity();
+                if (getFrontMinDistance(*scan, front_min_distance)) {
+                    front_invalid_count = 0;
+                    front_distance_initialized = true;
+                    last_front_min_distance = front_min_distance;
+
+                    // 前方急停优先级最高，不等待左墙拟合结果。
+                    if (front_min_distance <= lidar_front_stop_distance_) {
+                        ROS_INFO("前方最近障碍 %.3f m <= %.3f m，立即停车",
+                                 front_min_distance,
+                                 lidar_front_stop_distance_);
+                        stopRobot();
+                        return true;
+                    }
+                } else {
+                    ++front_invalid_count;
+                    ROS_WARN("前方扇区雷达数据无效（%d/%d），短暂沿用上一帧结果",
+                             front_invalid_count,
+                             lidar_front_invalid_grace_scans_);
+
+                    if (front_invalid_count >
+                        lidar_front_invalid_grace_scans_) {
+                        ROS_ERROR("前方雷达连续无效，安全停车");
+                        stopRobot();
+                        return false;
+                    }
+                }
+
+                double left_min_distance = 0.0;
+                WallEstimate wall;
+                if (getLeftMinDistance(*scan, left_min_distance) &&
+                    fitLeftWall(*scan, wall)) {
+                    wall_invalid_count = 0;
+                    last_wall_point_count = wall.point_count;
+
+                    // 第一帧有效左侧雷达数据决定本次要保持的距离。
+                    if (!target_distance_initialized) {
+                        target_left_distance = left_min_distance;
+                        target_distance_initialized = true;
+                        ROS_INFO("锁存左侧雷达最小距离 %.3f m 作为本次目标距离",
+                                 target_left_distance);
+                    }
+
+                    if (!filter_initialized) {
+                        filtered_heading = wall.heading;
+                        filtered_distance = left_min_distance;
+                        filter_initialized = true;
+                    } else {
+                        filtered_heading =
+                            lidar_filter_alpha_ * wall.heading +
+                            (1.0 - lidar_filter_alpha_) * filtered_heading;
+                        filtered_distance =
+                            lidar_filter_alpha_ * left_min_distance +
+                            (1.0 - lidar_filter_alpha_) * filtered_distance;
+                    }
+
+                    const double heading_error = filtered_heading;
+                    const double distance_error =
+                        filtered_distance - target_left_distance;
+
+                    // 左墙向左张开或离左墙过远时，正角速度向左修正。
+                    const double angular_command =
+                        lidar_heading_kp_ * heading_error +
+                        lidar_distance_kp_ * distance_error;
+
+                    last_angular_command = clamp(
+                        angular_command,
+                        -lidar_max_angular_speed_,
+                        lidar_max_angular_speed_
+                    );
+                    control_command_initialized = true;
+                } else {
+                    ++wall_invalid_count;
+                    ROS_WARN("左侧最小距离无效或墙面拟合失败（%d/%d），短暂沿用上一角速度",
+                             wall_invalid_count,
+                             lidar_wall_invalid_grace_scans_);
+
+                    if (wall_invalid_count >
+                        lidar_wall_invalid_grace_scans_) {
+                        ROS_ERROR("左墙连续拟合失败，安全停车");
+                        stopRobot();
+                        return false;
+                    }
+                }
+            }
+
+            // 第一条有效控制量出现前不盲目前进。永久订阅通常会使这里
+            // 在进入雷达模式的首个周期就满足，不会再等待临时订阅。
+            if (!front_distance_initialized ||
+                !control_command_initialized) {
+                stopRobot();
+                control_rate.sleep();
+                continue;
+            }
+
+            // 无论雷达发布频率是多少，均以固定控制频率重复发布最新有效指令，
+            // 避免底盘因/cmd_vel超时出现“走一下、停一下”。
+            twist_.linear.x = lidar_forward_speed_;
+            twist_.linear.y = 0.0;
+            twist_.angular.z = last_angular_command;
+            cmd_pub_.publish(twist_);
+
+            ROS_INFO_THROTTLE(
+                0.5,
+                "雷达连续跟随：前方=%.3f m，左侧最小值=%.3f m，目标=%.3f m，方向误差=%.2f°，角速度=%.3f，拟合点=%d，发布频率=%.1f Hz",
+                last_front_min_distance,
+                filtered_distance,
+                target_left_distance,
+                filtered_heading * 180.0 / 3.14159265358979323846,
+                twist_.angular.z,
+                last_wall_point_count,
+                lidar_control_rate_
+            );
+
+            control_rate.sleep();
+        }
+
+        stopRobot();
+        return false;
     }
 
     // 双边巡线逻辑

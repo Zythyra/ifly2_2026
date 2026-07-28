@@ -68,6 +68,7 @@ private:
     double x_max_, integration_limit_;    // 速度和积分限制
     double out_turn_angel_;               // 右点追踪完成后的目标角度
     double start_straight_distance_;       // 从起始停止线向前行驶的距离
+    double start_straight_speed_;          // 起始直行速度（从line.yaml读取）
     double start_turn_angular_speed_;      // 原地左转和搜线时的角速度大小
     double start_rotate_angle_deg_;        // 前进完成后的原地左转角度（度）
     double integration_, pre_error_;      // 积分和前向误差
@@ -171,6 +172,11 @@ private:
             0.20
         );
         nh_.param<double>(
+            "/line2_left/start_straight_speed",
+            start_straight_speed_,
+            0.18
+        );
+        nh_.param<double>(
             "/line2_left/start_turn_angular_speed",
             start_turn_angular_speed_,
             0.35
@@ -183,9 +189,11 @@ private:
 
         ROS_INFO(
             "参数加载完成: center_distance=%d, 起点直行距离=%.3f m, "
-            "原地左转角度=%.1f 度, 左转角速度大小=%.3f rad/s",
+            "起点直行速度=%.3f m/s, 原地左转角度=%.1f 度, "
+            "左转角速度大小=%.3f rad/s",
             center_distance,
             start_straight_distance_,
+            start_straight_speed_,
             start_rotate_angle_deg_,
             start_turn_angular_speed_
         );
@@ -362,9 +370,10 @@ private:
         start_y_ = pose_.response.pose_at[1];
 
         ROS_INFO(
-            "圆弧巡线启动：起点=(%.3f, %.3f)，先直行 %.3f m",
+            "圆弧巡线启动：起点=(%.3f, %.3f)，以 %.3f m/s 直行 %.3f m",
             start_x_,
             start_y_,
+            start_straight_speed_,
             start_straight_distance_
         );
 
@@ -412,7 +421,7 @@ private:
                     const double moved_distance = std::hypot(dx, dy);
 
                     if (moved_distance < start_straight_distance_) {
-                        twist_.linear.x = 0.18;
+                        twist_.linear.x = start_straight_speed_;
                         twist_.linear.y = 0.0;
                         twist_.angular.z = 0.0;
 

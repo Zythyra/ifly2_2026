@@ -1,7 +1,7 @@
 <launch>
     <!-- 比赛参数：必须先于 lidar_process 和 race 加载 -->
     <rosparam command="load" file="$(find ucarmain2026)/cfg/detect.yaml" ns="myplanernav" />
-      
+    <include file="$(find ucarmain2026)/launch/tts_preload.launch" />
 
     <!-- 比赛基础服务 -->
     <node pkg="ucarmain2026" type="tf_pose_get" name="tf_pose_get" output="screen" />

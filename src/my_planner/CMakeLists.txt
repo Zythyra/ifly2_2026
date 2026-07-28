@@ -15,12 +15,38 @@ find_package(catkin REQUIRED COMPONENTS
   tf2
   tf2_ros
   tf2_geometry_msgs
-
+  visualization_msgs
+  costmap_2d
+  geometry_msgs
+  nav_msgs
+  std_msgs
 )
+
+
+
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenCV REQUIRED)
+
+find_package(osqp REQUIRED)
+find_package(OsqpEigen REQUIRED)
+find_path(OSQP_INCLUDE_DIR
+  NAMES osqp.h
+  HINTS
+    /usr/local/include/osqp
+    /usr/local/include
+  PATH_SUFFIXES
+    osqp
+)
+
+if(NOT OSQP_INCLUDE_DIR)
+  message(FATAL_ERROR
+    "找不到osqp.h，请执行：find /usr/local/include -name osqp.h")
+endif()
+
+message(STATUS "OSQP头文件目录：${OSQP_INCLUDE_DIR}")
+
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -124,20 +150,29 @@ include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
- 
+  ${OSQP_INCLUDE_DIR}
 )
 
 ## Declare a C++ library
 add_library(my_planner
   src/my_planner.cpp
+  src/corridor_visualization.cpp
+
+  src/pp_x_brake_shield.cpp
 )
+
+find_package(Threads REQUIRED)
 
 add_dependencies(my_planner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 target_link_libraries(my_planner
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
- 
+  ${CMAKE_THREAD_LIBS_INIT}
+  OsqpEigen::OsqpEigen
+)
+set_target_properties(my_planner PROPERTIES
+  LINK_FLAGS "-Wl,--no-undefined"
 )
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries

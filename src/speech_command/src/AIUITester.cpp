@@ -1,6 +1,16 @@
 #include <AIUITester.h>
 // #include <msp_cmn.h>
 // #include <msp_errors.h>
+#include <cerrno>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <string>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vector>
+
 #define MAX_BUFFER 2097152
 
 //using namespace VA;
@@ -10,6 +20,238 @@ void gSleep();
 void clearAudioFile(char *fileName);
 static RingBuffer buffer_source(MAX_BUFFER);
 unsigned int rate = AUDIO_RATE_SET;
+
+namespace
+{
+const char *const TASK_RECORD_DIR =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record";
+const char *const TASK_WAV_PATH =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav";
+const char *const TASK_WAV_TEMP_PATH =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav.tmp";
+const char *const TASK_DONE_PATH =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.done";
+const char *const TASK_DONE_TEMP_PATH =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.done.tmp";
+
+const unsigned int TASK_SAMPLE_RATE = 16000;
+const unsigned int TASK_CHANNELS = 1;
+const unsigned int TASK_BITS_PER_SAMPLE = 16;
+const unsigned int TASK_RECORD_SECONDS = 9;
+const unsigned int TASK_PRE_ROLL_MILLISECONDS = 300;
+const size_t TASK_BYTES_PER_SECOND =
+    TASK_SAMPLE_RATE * TASK_CHANNELS * TASK_BITS_PER_SAMPLE / 8;
+const size_t TASK_POST_WAKEUP_BYTES =
+    TASK_BYTES_PER_SECOND * TASK_RECORD_SECONDS;
+const size_t TASK_PRE_ROLL_BYTES =
+    TASK_BYTES_PER_SECOND * TASK_PRE_ROLL_MILLISECONDS / 1000;
+
+bool task_record_requested = false;
+bool task_recording = false;
+bool task_record_completed = false;
+FILE *task_wav_file = NULL;
+uint32_t task_wav_data_bytes = 0;
+size_t task_post_wakeup_bytes = 0;
+std::deque<std::vector<char> > task_pre_roll;
+size_t task_pre_roll_bytes = 0;
+
+void writeLittleEndian16(FILE *file, uint16_t value)
+{
+    const unsigned char bytes[2] = {
+        static_cast<unsigned char>(value & 0xff),
+        static_cast<unsigned char>((value >> 8) & 0xff)
+    };
+    fwrite(bytes, 1, sizeof(bytes), file);
+}
+
+void writeLittleEndian32(FILE *file, uint32_t value)
+{
+    const unsigned char bytes[4] = {
+        static_cast<unsigned char>(value & 0xff),
+        static_cast<unsigned char>((value >> 8) & 0xff),
+        static_cast<unsigned char>((value >> 16) & 0xff),
+        static_cast<unsigned char>((value >> 24) & 0xff)
+    };
+    fwrite(bytes, 1, sizeof(bytes), file);
+}
+
+void writeWavHeader(FILE *file, uint32_t data_bytes)
+{
+    const uint16_t block_align =
+        TASK_CHANNELS * TASK_BITS_PER_SAMPLE / 8;
+    const uint32_t byte_rate = TASK_SAMPLE_RATE * block_align;
+
+    fseek(file, 0, SEEK_SET);
+    fwrite("RIFF", 1, 4, file);
+    writeLittleEndian32(file, 36u + data_bytes);
+    fwrite("WAVE", 1, 4, file);
+    fwrite("fmt ", 1, 4, file);
+    writeLittleEndian32(file, 16);
+    writeLittleEndian16(file, 1);
+    writeLittleEndian16(file, TASK_CHANNELS);
+    writeLittleEndian32(file, TASK_SAMPLE_RATE);
+    writeLittleEndian32(file, byte_rate);
+    writeLittleEndian16(file, block_align);
+    writeLittleEndian16(file, TASK_BITS_PER_SAMPLE);
+    fwrite("data", 1, 4, file);
+    writeLittleEndian32(file, data_bytes);
+}
+
+void clearOldTaskRecording()
+{
+    if (mkdir(TASK_RECORD_DIR, 0755) != 0 && errno != EEXIST)
+    {
+        cout << ">>>>>无法创建任务录音目录: "
+             << strerror(errno) << endl;
+    }
+
+    remove(TASK_WAV_PATH);
+    remove(TASK_WAV_TEMP_PATH);
+    remove(TASK_DONE_PATH);
+    remove(TASK_DONE_TEMP_PATH);
+}
+
+void pushTaskPreRoll(const char *data, size_t size)
+{
+    task_pre_roll.push_back(std::vector<char>(data, data + size));
+    task_pre_roll_bytes += size;
+
+    while (
+        !task_pre_roll.empty()
+        && task_pre_roll_bytes > TASK_PRE_ROLL_BYTES
+    )
+    {
+        task_pre_roll_bytes -= task_pre_roll.front().size();
+        task_pre_roll.pop_front();
+    }
+}
+
+bool startTaskRecording()
+{
+    task_wav_file = fopen(TASK_WAV_TEMP_PATH, "wb");
+    if (task_wav_file == NULL)
+    {
+        cout << ">>>>>无法创建任务录音临时文件: "
+             << strerror(errno) << endl;
+        task_record_requested = false;
+        return false;
+    }
+
+    writeWavHeader(task_wav_file, 0);
+    task_wav_data_bytes = 0;
+    task_post_wakeup_bytes = 0;
+
+    for (
+        std::deque<std::vector<char> >::const_iterator it =
+            task_pre_roll.begin();
+        it != task_pre_roll.end();
+        ++it
+    )
+    {
+        if (!it->empty())
+        {
+            fwrite(&(*it)[0], 1, it->size(), task_wav_file);
+            task_wav_data_bytes +=
+                static_cast<uint32_t>(it->size());
+        }
+    }
+
+    task_pre_roll.clear();
+    task_pre_roll_bytes = 0;
+    task_record_requested = false;
+    task_recording = true;
+
+    cout << ">>>>>唤醒后任务录音已无缝启动，已补入约 "
+         << TASK_PRE_ROLL_MILLISECONDS
+         << " ms 唤醒衔接音频" << endl;
+    return true;
+}
+
+bool publishTaskRecording()
+{
+    if (task_wav_file == NULL)
+    {
+        return false;
+    }
+
+    writeWavHeader(task_wav_file, task_wav_data_bytes);
+    fflush(task_wav_file);
+    fsync(fileno(task_wav_file));
+    fclose(task_wav_file);
+    task_wav_file = NULL;
+
+    if (rename(TASK_WAV_TEMP_PATH, TASK_WAV_PATH) != 0)
+    {
+        cout << ">>>>>发布任务录音失败: "
+             << strerror(errno) << endl;
+        return false;
+    }
+
+    FILE *done_file = fopen(TASK_DONE_TEMP_PATH, "wb");
+    if (done_file == NULL)
+    {
+        cout << ">>>>>创建任务录音完成标志失败: "
+             << strerror(errno) << endl;
+        return false;
+    }
+    fwrite("ready\n", 1, 6, done_file);
+    fflush(done_file);
+    fsync(fileno(done_file));
+    fclose(done_file);
+
+    if (rename(TASK_DONE_TEMP_PATH, TASK_DONE_PATH) != 0)
+    {
+        cout << ">>>>>发布任务录音完成标志失败: "
+             << strerror(errno) << endl;
+        return false;
+    }
+
+    task_recording = false;
+    task_record_completed = true;
+    cout << ">>>>>任务语音录制完成，WAV 已原子发布" << endl;
+    return true;
+}
+
+void processTaskRecordingFrame(const char *data, size_t size)
+{
+    if (
+        task_record_requested
+        && !task_recording
+        && !task_record_completed
+    )
+    {
+        startTaskRecording();
+    }
+
+    if (task_recording)
+    {
+        const size_t written = fwrite(data, 1, size, task_wav_file);
+        if (written != size)
+        {
+            cout << ">>>>>写入任务录音失败: "
+                 << strerror(errno) << endl;
+            fclose(task_wav_file);
+            task_wav_file = NULL;
+            task_recording = false;
+            remove(TASK_WAV_TEMP_PATH);
+            return;
+        }
+
+        task_wav_data_bytes += static_cast<uint32_t>(written);
+        task_post_wakeup_bytes += written;
+        if (task_post_wakeup_bytes >= TASK_POST_WAKEUP_BYTES)
+        {
+            publishTaskRecording();
+        }
+        return;
+    }
+
+    if (!task_record_completed)
+    {
+        pushTaskPreRoll(data, size);
+    }
+}
+}
 /**
  * @brief 使用RingBuff来播放
  * 
@@ -954,6 +1196,17 @@ void process_recv(const unsigned char *buf, int len)
 				{
 					angle = root["ivw"]["angle"].asFloat();
 					cout << "awake_angle: "<< angle<<endl;
+					if (
+						!task_record_requested
+						&& !task_recording
+						&& !task_record_completed
+					)
+					{
+						task_record_requested = true;
+						cout
+							<< ">>>>>检测到唤醒词，直接从当前 PCM 流接录任务语音"
+							<< endl;
+					}
 					if(result.length() > 10) {
 						if(testCallback != NULL ) {
 							testCallback();
@@ -1063,6 +1316,8 @@ void AIUITester::bind(TEST_CALLBACK callback)
 
 void AIUITester::test()
 {
+	clearOldTaskRecording();
+
 	cout << ">>>>>创建AIUI代理Agent\n"<< endl;
 	createAgent();
 
@@ -1196,6 +1451,12 @@ void AIUITester::test()
 			printf("从音频接口读取失败(%s)\n",snd_strerror(err));
 			exit(1);
 		}
+
+		processTaskRecordingFrame(
+			buffer1,
+			buffer_frames * frame_byte * AUDIO_CHANNEL_SET
+		);
+
 		//
 		Buffer *buffer = Buffer::alloc(buffer_frames*frame_byte*AUDIO_CHANNEL_SET); 
 		memcpy(buffer->data(),buffer1,buffer_frames*frame_byte*AUDIO_CHANNEL_SET);

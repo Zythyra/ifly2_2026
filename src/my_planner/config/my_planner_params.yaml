@@ -1,38 +1,24 @@
-# MyPlanner Stage 0.1：基础全向 Pure Pursuit 基线
+# =============================================================================
+# MyPlanner PP-C0.5：最早稳定PP + 固定半速X抑制器
 # 加载命名空间：/move_base/MyPlanner
 #
-# 相比 Stage 0 只做两处变化：
-#   1. 恢复全向底盘 linear.y 横移纠偏；
-#   2. 将角速度增益从 5.0 提高到 9.0，改善日志中明显的转弯迟缓。
+# 控制主体完全使用最早稳定版治愈路径PP：
+#   vx = target.x * Kx
+#   vy = lateral * Ky
+#   wz = target.y * Kw
 #
-# 正常跟踪仍然只有：
-#   vx = target.x * path_linear_x_gain
-#   vy = lateral_deviation * path_linear_y_gain
-#   wz = target.y * path_angular_y_gain
-#
-# 不包含路径切线、Frenet、样条、曲率前馈、曲率限速或延迟预测。
+# 安全框不参与前视目标选择，也不生成框优化曲线。
+# 明确预测出框时，linear.x固定乘0.5；linear.y和angular.z保持原PP值。
+# =============================================================================
 
-# -----------------------------------------------------------------------------
-# Stage 0.1 基础全向 PP
-# -----------------------------------------------------------------------------
-
-# 保持 Stage 0 的 0.20m，先隔离观察横移和转向增益的影响。
+# 最早稳定版全向PP
 lookahead_dist: 0.26
-
 path_linear_x_gain: 2.20
-
-# 横向纠偏恢复为二代车原有形式：
-# 在前视点前方索引区间内取绝对值最小的 y，避免直接追逐远处前视点。
 path_linear_y_gain: 2.00
+path_angular_y_gain: 10.00
 lateral_search_points: 10
 
-# Stage 0 日志中 target.y 最大约 0.17～0.18m，增益5只给约0.85～0.90rad/s。
-# 提高至9后，相同弯道约输出1.5～1.6rad/s，仍受 max_vel_theta=2.0 限制。
-path_angular_y_gain: 10.00
-
-# -----------------------------------------------------------------------------
 # 非累积路径治愈
-# -----------------------------------------------------------------------------
 enable_path_healing: true
 path_healing_points_behind: 5
 path_healing_points_ahead: 60
@@ -41,49 +27,102 @@ path_healing_max_step: 0.01
 path_healing_gradient_deadband: 4.0
 path_healing_gradient_scale: 20.0
 
-# -----------------------------------------------------------------------------
-# 前方路径碰撞检查：命中后返回 false，触发全局重规划
-# -----------------------------------------------------------------------------
+# 原稳定版前方路径碰撞检查
 collision_check_lookahead_points: 20
 collision_cost_threshold: 253
 
-# -----------------------------------------------------------------------------
-# 新目标初始姿态调整
-# -----------------------------------------------------------------------------
+# 初始姿态调整
 enable_initial_rotation: true
 initial_yaw_tolerance: 0.10
 initial_angular_gain: 8.00
 initial_min_angular_speed: 0.10
 initial_max_angular_speed: 1.40
 
-# -----------------------------------------------------------------------------
 # 终点位姿调整
-# -----------------------------------------------------------------------------
-goal_dist_threshold: 0.5
+goal_dist_threshold: 0.50
 goal_position_tolerance: 0.025
 goal_yaw_tolerance: 0.05
-
 final_linear_x_gain: 1.60
 final_linear_y_gain: 1.20
 final_angular_gain: 6.50
-
 final_min_linear_speed: 0.03
 final_min_angular_speed: 0.08
-
 final_max_vel_x: 0.30
 final_max_vel_y: 0.20
 final_max_vel_theta: 0.90
 
-# -----------------------------------------------------------------------------
-# 二代车最外层速度和加速度保护
-# -----------------------------------------------------------------------------
+# 原稳定版速度与加速度上限
 max_vel_x: 0.80
 max_vel_y: 0.55
 max_vel_theta: 4.00
-
 acc_lim_x: 8.00
 acc_lim_y: 8.00
 acc_lim_theta: 15.00
 
-# 日志增加 alpha 和 lateral，便于判断下一步该调前视距离还是控制增益。
+# -----------------------------------------------------------------------------
+# 简化固定倍率X抑制器
+# -----------------------------------------------------------------------------
+pp_safety_enable: true
+
+# 安全框快照超过该时间后不介入，原稳定PP直接通过。
+pp_safety_snapshot_max_age: 0.80
+
+# 只预测未来0.20s：0.05s一步，共4步，避免远期姿态误报。
+pp_safety_prediction_dt: 0.05
+pp_safety_prediction_horizon: 0.20
+
+# 只有margin小于-1cm，并且至少2个预测步越界，才视为明确出框。
+pp_x_brake_margin_threshold: -0.010
+pp_x_brake_min_outside_steps: 2
+pp_safety_footprint_margin: 0.005
+
+# 明确出框后固定将linear.x乘0.5。
+# 代码强制该参数不得小于0.5，linear.y和angular.z始终保持原PP值。
+pp_x_brake_scale: 0.50
+
+# 连续2周期明确出框才进入减速；连续3周期安全才解除，防止边界抖动。
+pp_x_brake_enter_cycles: 2
+pp_x_brake_exit_cycles: 3
+
+# -----------------------------------------------------------------------------
+# 异步安全框：只用于安全盾和RViz，不参与PP目标选择
+# -----------------------------------------------------------------------------
+enable_corridor_visualization: true
+corridor_update_frequency: 2.0
+
+local_path_behind_distance: 0.10
+local_path_horizon_distance: 1.10
+local_path_resample_distance: 0.03
+
+corridor_skeleton_corner_angle_deg: 20.0
+corridor_skeleton_corner_window: 0.06
+corridor_skeleton_max_segment_length: 0.15
+corridor_skeleton_min_segment_length: 0.06
+
+corridor_initial_half_width: 0.35
+corridor_longitudinal_extension: 0.12
+corridor_post_shrink_longitudinal_reserve: 0.08
+corridor_map_boundary_margin: 0.01
+
+corridor_hard_cost_threshold: 254
+corridor_treat_unknown_as_obstacle: true
+corridor_obstacle_padding: 0.0
+corridor_max_obstacle_cuts: 120
+corridor_min_polygon_area: 0.0005
+
+corridor_use_costmap_footprint: true
+corridor_robot_half_length: 0.17
+corridor_robot_half_width: 0.13
+corridor_extra_margin: 0.015
+
+# 本版用clipped_polygon并集检查实际footprint，不要求中心走廊有效。
+corridor_min_overlap_area: 0.0025
+corridor_reference_validation_step: 0.01
+corridor_min_usable_chain_length: 0.35
+corridor_preferred_chain_length: 0.75
+corridor_terminal_ignore_distance: 0.10
+corridor_projection_search_behind_points: 120
+corridor_projection_search_ahead_points: 500
+
+corridor_debug_log: true
 debug_log: true
