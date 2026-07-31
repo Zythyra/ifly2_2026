@@ -26,23 +26,28 @@
     <param name="map_frame" value="map" />
     <param name="base_frame" value="base_link" />
     <param name="scan_topic" value="/scan" />
-    <param name="costmap_topic"
-           value="/move_base/local_costmap/costmap" />
 
-    <!-- 房间和辅助线；这里只限制目标坐标不越界，不额外缩小可行区域。 -->
+    <!-- 场地边界。 -->
     <param name="room_min_x" value="0.0" />
     <param name="room_max_x" value="5.0" />
     <param name="room_min_y" value="2.5" />
     <param name="room_max_y" value="4.5" />
-    <param name="grid_size" value="0.5" />
-    <!-- 初始点：(0.25, 4.0)，车头90度。 -->
+    <!-- 初始点位于原巡检线交点，车头沿+x方向向前。 -->
     <param name="start_x" value="0.25" />
-    <param name="start_y" value="4.0" />
-    <param name="start_yaw_deg" value="90.0" />
+    <param name="start_y" value="4.25" />
+    <param name="start_yaw_deg" value="0.0" />
     <param name="navigation_timeout" value="180.0" />
 
-    <!-- 四段巡检均以车体linear.y负方向平移，linear.x守线。 -->
-    <param name="patrol_lateral_speed" value="0.25" />
+    <!--
+      四条巡检基准线保持为：
+      y=4.25 → x=4.75 → y=2.75 → x=0.25。
+      每段仅在到达下一条巡检线前5cm提前停车：
+      上段停于x=4.70，右段停于y=2.80，
+      下段停于x=0.30，左段停于y=4.20。
+      转向后linear.x负责向前，现有linear.y守线修正会在行进中
+      将小车带回下一条巡检基准线。
+    -->
+    <param name="patrol_forward_speed" value="0.55" />
     <param name="line_hold_kp" value="2.0" />
     <param name="line_hold_max_speed" value="0.16" />
     <param name="yaw_hold_kp" value="2.5" />
@@ -51,7 +56,34 @@
     <param name="segment_end_tolerance" value="0.025" />
     <param name="control_rate" value="15.0" />
 
-    <!-- 90/0/-90/180度换向，并在旋转时保持当前位置。 -->
+    <!--
+      巡检直线段优先使用左侧雷达拟合墙面：
+      linear.y保持距左墙0.25m，angular.z保持车头与墙平行。
+      拟合无效时自动回退到上面的map巡检线控制。
+      将patrol_use_lidar_wall_follow改为false即可做原控制方案的A/B测试。
+    -->
+    <param name="patrol_use_lidar_wall_follow" value="true" />
+    <param name="wall_target_distance" value="0.25" />
+    <param name="wall_distance_kp" value="1.8" />
+    <param name="wall_angle_kp" value="2.5" />
+    <param name="wall_max_lateral_speed" value="0.16" />
+    <param name="wall_max_angular_speed" value="0.30" />
+
+    <!-- 左侧50°~130°、0.10~0.70m范围内取点。 -->
+    <param name="wall_scan_min_angle_deg" value="50.0" />
+    <param name="wall_scan_max_angle_deg" value="130.0" />
+    <param name="wall_scan_min_range" value="0.10" />
+    <param name="wall_scan_max_range" value="0.70" />
+    <!-- RANSAC剔除路障/文字板/转角墙，再用PCA精拟合。 -->
+    <param name="wall_fit_inlier_threshold" value="0.025" />
+    <param name="wall_fit_min_points" value="12" />
+    <param name="wall_fit_min_inliers" value="10" />
+    <param name="wall_fit_min_span" value="0.16" />
+    <param name="wall_fit_max_angle_deg" value="30.0" />
+    <param name="wall_fit_max_rms" value="0.030" />
+    <param name="wall_fit_filter_alpha" value="0.35" />
+
+    <!-- 0/-90/180/90度前进朝向换向，并在旋转时保持当前位置。 -->
     <param name="rotate_kp" value="3.5" />
     <param name="rotate_min_speed" value="0.15" />
     <param name="rotate_max_speed" value="0.65" />
@@ -61,33 +93,27 @@
     <param name="position_hold_kp" value="2.0" />
     <param name="position_hold_max_speed" value="0.10" />
 
-    <!-- 只把交叉点附近的致命代价视为路障，不把普通膨胀层误判为路障。 -->
-    <param name="costmap_wait_timeout" value="15.0" />
-    <param name="costmap_data_timeout" value="2.0" />
-    <param name="obstacle_cost_threshold" value="90" />
-    <param name="obstacle_deadzone_radius" value="0.11" />
-    <param name="obstacle_check_lookahead" value="0.55" />
-    <!-- 小车直接沿原辅助线巡检，因此路障交叉点横向偏移为0。 -->
-    <param name="obstacle_grid_lateral_offset" value="0.0" />
-    <param name="obstacle_pass_offset" value="0.45" />
-    <param name="grid_pass_epsilon" value="0.07" />
-    <param name="unknown_cost_is_obstacle" value="false" />
-
-    <!-- NanoDet运动发现、停车后OCR；过期画面阈值与看门狗一致。 -->
+    <!-- NanoDet巡检采用图像左侧三分之二区域；停靠对准仍使用全画面。 -->
     <param name="image_width" value="640" />
     <!-- 640宽、约60度水平视场角时fx约554.256；有标定值时替换这里。 -->
     <param name="camera_fx" value="554.256" />
     <param name="camera_yaw_offset_deg" value="0.0" />
+    <!-- 板边界坐标向场地内延伸0.5m，作为move_base停靠导航点。 -->
+    <param name="docking_standoff" value="0.50" />
     <param name="settle_time" value="0.25" />
     <param name="ocr_attempts" value="3" />
     <param name="ocr_retry_interval" value="0.12" />
     <param name="max_detection_duration" value="0.50" />
     <!-- 同一墙面上估计坐标相距不超过0.5m，判定为同一块板。 -->
     <param name="duplicate_coordinate_distance" value="0.50" />
+    <!--
+      超过该距离时记录“大跨度重新捕获”警告，但不再把全画面中的
+      有效框直接判为丢失，避免目标进入右侧三分之一后无法恢复跟踪。
+    -->
     <param name="max_track_jump_px" value="140.0" />
     <param name="max_lost_frames" value="4" />
 
-    <!-- 现实目标先找到时，停靠后不走move_base，直接后退回当前巡检线。 -->
+    <!-- 现实目标先找到时，停靠后直接后退回当前前进巡检线。 -->
     <param name="retreat_line_tolerance" value="0.025" />
     <param name="retreat_slow_distance" value="0.15" />
     <param name="retreat_min_speed" value="0.06" />

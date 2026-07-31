@@ -932,7 +932,10 @@ private:
             diff = clamp(diff, -50.0, 50.0);
             
             // 速度控制
-            twist_.linear.x = x_max_ / exp(abs(line_error) / 100.0);
+            twist_.linear.x = x_max_ / exp(abs(line_error) / 130.0);
+            
+
+
             twist_.angular.z = clamp(line_error*p_ + integration_*i_ + diff*d_, -1.0, 1.0);
             pre_error_ = line_error;
 

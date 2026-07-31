@@ -1,5 +1,6 @@
-// 版本：雷达接管停车版 V3（连续速度发布，2026-07-27）
+// 版本：初始直行找线 + 雷达接管停车版 V4（2026-07-29）
 // 修改基线：用户上传的 line_right(5).cpp（898行最终巡线代码）
+// 启动巡线服务后先以 x_max_ 直行，检测到有效右边白线后永久切入正常巡线；
 // 终点白线只用于触发控制模式切换，不会在白线处发布零速度。
 // 切换后使用独立参数控制前进速度；首次读取的左侧最小雷达距离作为目标距离，
 // 后续通过左墙拟合保持平行，并根据左侧最小雷达距离保持等距；
@@ -137,7 +138,7 @@ public:
         pointx_pre_error_(0),
         scan_sequence_(0) {
 
-        ROS_INFO("启动 line_right 雷达接管版 V3（永久订阅雷达、固定频率连续发布速度）");
+        ROS_INFO("启动 line_right V4（初始直行找线、正常巡线、雷达接管停车）");
 
         // 1. 初始化服务端（优先初始化）
         line_server_ = nh_.advertiseService("line_right", &LineFollowerNode::line_server_callback, this);
@@ -376,6 +377,9 @@ private:
     bool line_server_callback(line_follow::line_follow::Request& req, line_follow::line_follow::Response& resp) {
         Mat image, brightness_threshold_image, cropped, gray_img;
         bool switch_to_lidar = false;
+        // 每次启动巡线服务时，先进入“初始直行找线”状态。
+        // 该状态只会退出一次；检测到有效右边线后，后续丢线仍执行原来的固定右转逻辑。
+        bool initial_straight_mode = true;
 
         // 5. 初始化相机和视频录制
         if (!initCameraAndVideo()) {
@@ -383,6 +387,9 @@ private:
             stopRobot();
             return false;
         }
+
+        ROS_INFO("进入初始直行找线状态：以 x_max_=%.3f m/s 直行，检测到有效白线后进入正常巡线",
+                 x_max_);
 
         while (ros::ok()) {
             // 读取并预处理图像
@@ -401,6 +408,20 @@ private:
             // waitKey(0);
             cv::cvtColor(gray_img, cropped, cv::COLOR_GRAY2BGR);
 
+            if (initial_straight_mode) {
+                // 初始阶段复用正常巡线的边线识别，但禁止执行“丢线右转”。
+                // 未找到有效右边线时，runNormalTracking() 会强制保持 x_max_ 直行；
+                // 找到后则在当前帧直接输出正常PID巡线速度。
+                if (runNormalTracking(gray_img, cropped, false)) {
+                    initial_straight_mode = false;
+                    trace_failed_count_ = 0;
+                    ROS_INFO("初始直行阶段检测到有效白线，退出初始状态并进入正常巡线");
+                }
+
+                cmd_pub_.publish(twist_);
+                continue;
+            }
+
             // 检测到白线后不再停车，也不再使用视觉计算速度。
             // 雷达阶段改用独立的前进速度参数。
             int stop_point_count = 0;
@@ -415,7 +436,7 @@ private:
 
             // 新场地只保留右边巡线模式。
             // 正常情况下跟踪右侧边线；右线连续丢失后，直接执行固定右转。
-            runNormalTracking(gray_img, cropped);
+            runNormalTracking(gray_img, cropped, true);
 
             // 发布速度指令
             cmd_pub_.publish(twist_);
@@ -914,7 +935,7 @@ private:
     }
 
     // 正常巡线逻辑
-    void runNormalTracking(Mat& gray_img, Mat& cropped) {
+    bool runNormalTracking(Mat& gray_img, Mat& cropped, bool enable_lost_turn = true) {
         displayStream_.str("");
         vector<Point> start_points = find_track_edge(gray_img, 340, 70, cropped);
         RaceTrack racetrack;  // 现在RaceTrack已声明，可正常使用
@@ -942,29 +963,46 @@ private:
                           << " D: " << diff*d_ 
                           << " 角速度: " << twist_.angular.z;
             putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+            out_.write(cropped);
+            return true;
         } else {
-            // 保留原来的连续5帧丢线容错，避免单帧识别波动引起误转。
-            trace_failed_count_++;
-            if (trace_failed_count_ > 5) {
-                // ROS约定 angular.z < 0 为顺时针旋转，也就是向右转。
-                // 使用 -abs() 后，YAML中的 out_turn 写正值或负值都能保证向右。
-                twist_.linear.x = out_forward_;
+            if (!enable_lost_turn) {
+                // 初始找线阶段视野内没有线是正常情况，不能累计丢线次数，
+                // 也不能触发固定右转；始终以x_max_保持正向直行。
+                trace_failed_count_ = 0;
+                twist_.linear.x = x_max_;
                 twist_.linear.y = 0.0;
-                twist_.angular.z = -std::abs(out_turn_);
+                twist_.angular.z = 0.0;
 
-                if (trace_failed_count_ == 6) {
-                    ROS_INFO("右线连续丢失，开始固定右转：线速度=%.3f，角速度=%.3f",
-                             twist_.linear.x, twist_.angular.z);
-                }
-
-                displayStream_ << "右线丢失，固定右转"
-                               << " 线速度: " << twist_.linear.x
-                               << " 角速度: " << twist_.angular.z;
+                displayStream_ << "初始直行找线"
+                               << " 线速度: " << twist_.linear.x;
                 putText(cropped, displayStream_.str(), Point(50, 50),
-                        FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 165, 255), 1);
+                        FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 255), 1);
+            } else {
+                // 保留原来的连续5帧丢线容错，避免单帧识别波动引起误转。
+                trace_failed_count_++;
+                if (trace_failed_count_ > 5) {
+                    // ROS约定 angular.z < 0 为顺时针旋转，也就是向右转。
+                    // 使用 -abs() 后，YAML中的 out_turn 写正值或负值都能保证向右。
+                    twist_.linear.x = out_forward_;
+                    twist_.linear.y = 0.0;
+                    twist_.angular.z = -std::abs(out_turn_);
+
+                    if (trace_failed_count_ == 6) {
+                        ROS_INFO("右线连续丢失，开始固定右转：线速度=%.3f，角速度=%.3f",
+                                 twist_.linear.x, twist_.angular.z);
+                    }
+
+                    displayStream_ << "右线丢失，固定右转"
+                                   << " 线速度: " << twist_.linear.x
+                                   << " 角速度: " << twist_.angular.z;
+                    putText(cropped, displayStream_.str(), Point(50, 50),
+                            FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 165, 255), 1);
+                }
             }
         }
         out_.write(cropped);
+        return false;
     }
 
     // 工具函数：数值 clamping

@@ -8,7 +8,7 @@ base_shape_a: 0.2169
 wheel_radius: 0.04657 
 vel_topic: /cmd_vel
 # provide_odom_tf: true
-cmd_timeout: 0.2
+cmd_timeout: 0.1
 serial_timeout: 50
 linear_speed_max:  3.0
 angular_speed_max: 3.14

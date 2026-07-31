@@ -144,11 +144,6 @@ int data_send(int argc, char **argv)
         
 	while (ros::ok())
 	{
-		if(angle!=0){											//唤醒修改
-			std_msgs::Int32 msg2;
-			msg2.data = angle;
-			pub_angle.publish(msg2);
-		}
 		if ((sign_conversation_cloud == 1) || (sign_conversation_local == 1))
 		{
 			string question_str(question);

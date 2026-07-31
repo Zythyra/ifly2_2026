@@ -1,4 +1,4 @@
-// 交付构建标识：MYPLANNER_PP_C0_5_STABLE_PP_FIXED_HALF_X_BRAKE_20260726
+// 交付构建标识：MYPLANNER_MPC_C3_2_MEASURED_STATE_DELAY_PROGRESS_20260731
 #include "my_planner.h"
 
 #include <pluginlib/class_list_macros.h>
@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <clocale>
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 
 PLUGINLIB_EXPORT_CLASS(my_planner::MyPlanner, nav_core::BaseLocalPlanner)
@@ -26,104 +25,15 @@ MyPlanner::MyPlanner()
       pose_adjusting_(false),
       goal_reached_(false),
       initial_rotation_done_(false),
-      lookahead_dist_(0.26),
-      path_linear_x_gain_(2.20),
-      path_linear_y_gain_(2.00),
-      path_angular_y_gain_(10.00),
-      lateral_search_points_(10),
-      enable_path_healing_(true),
-      path_healing_points_behind_(5),
-      path_healing_points_ahead_(60),
-      path_healing_iterations_(3),
-      path_healing_max_step_(0.01),
-      path_healing_gradient_deadband_(4.0),
-      path_healing_gradient_scale_(20.0),
-      collision_check_lookahead_points_(20),
-      collision_cost_threshold_(253),
-      enable_initial_rotation_(true),
-      initial_yaw_tolerance_(0.10),
-      initial_angular_gain_(8.0),
-      initial_min_angular_speed_(0.10),
-      initial_max_angular_speed_(1.40),
-      goal_dist_threshold_(0.50),
-      goal_position_tolerance_(0.025),
-      goal_yaw_tolerance_(0.05),
-      final_linear_x_gain_(1.60),
-      final_linear_y_gain_(1.20),
-      final_angular_gain_(6.50),
-      final_min_linear_speed_(0.03),
-      final_min_angular_speed_(0.08),
-      final_max_vel_x_(0.30),
-      final_max_vel_y_(0.20),
-      final_max_vel_theta_(0.90),
-      max_vel_x_(0.80),
-      max_vel_y_(0.55),
-      max_vel_theta_(4.00),
-      acc_lim_x_(8.00),
-      acc_lim_y_(8.00),
-      acc_lim_theta_(15.00),
-      debug_log_(true),
-      pp_safety_enable_(true),
-      pp_safety_snapshot_max_age_(0.80),
-      pp_safety_prediction_dt_(0.05),
-      pp_safety_prediction_horizon_(0.20),
-      pp_x_brake_margin_threshold_(-0.01),
-      pp_safety_footprint_margin_(0.005),
-      pp_x_brake_min_outside_steps_(2),
-      pp_x_brake_scale_(0.50),
-      pp_x_brake_enter_cycles_(2),
-      pp_x_brake_exit_cycles_(3),
-      pp_x_brake_unsafe_count_(0),
-      pp_x_brake_safe_count_(0),
-      safety_mode_(SAFETY_DISABLED),
-      enable_corridor_visualization_(true),
-      corridor_update_frequency_(2.0),
-      local_path_behind_distance_(0.10),
-      local_path_horizon_distance_(1.10),
-      local_path_resample_distance_(0.03),
-      corridor_skeleton_corner_angle_deg_(20.0),
-      corridor_skeleton_corner_window_(0.06),
-      corridor_skeleton_max_segment_length_(0.15),
-      corridor_skeleton_min_segment_length_(0.06),
-      corridor_initial_half_width_(0.35),
-      corridor_longitudinal_extension_(0.12),
-      corridor_post_shrink_longitudinal_reserve_(0.08),
-      corridor_map_boundary_margin_(0.01),
-      corridor_hard_cost_threshold_(254),
-      corridor_treat_unknown_as_obstacle_(true),
-      corridor_obstacle_padding_(0.0),
-      corridor_max_obstacle_cuts_(120),
-      corridor_min_polygon_area_(0.0005),
-      corridor_use_costmap_footprint_(true),
-      corridor_robot_half_length_(0.17),
-      corridor_robot_half_width_(0.13),
-      corridor_extra_margin_(0.015),
-      corridor_min_overlap_area_(0.0025),
-      corridor_reference_validation_step_(0.01),
-      corridor_min_usable_chain_length_(0.35),
-      corridor_preferred_chain_length_(0.75),
-      corridor_terminal_ignore_distance_(0.10),
-      corridor_projection_search_behind_points_(120),
-      corridor_projection_search_ahead_points_(500),
-      corridor_debug_log_(true),
-      corridor_reference_revision_(0),
-      force_corridor_update_(true),
-      corridor_worker_stop_(false),
-      corridor_update_requested_(false),
-      corridor_clear_requested_(false),
-      corridor_worker_busy_(false),
-      corridor_visualization_cleared_(true),
-      corridor_plan_generation_(0),
-      corridor_progress_segment_index_(0),
-      corridor_worker_seen_generation_(0)
+      mpc_consecutive_failures_(0),
+      mpc_locked_to_pp_(false),
+      odom_received_(false)
 {
     setlocale(LC_ALL, "");
 }
 
 MyPlanner::~MyPlanner()
 {
-    stopCorridorWorker();
-
     if (tf_listener_ != NULL)
     {
         delete tf_listener_;
@@ -145,7 +55,204 @@ double MyPlanner::applyMinimumMagnitude(double value, double minimum)
 {
     if (value == 0.0 || minimum <= 0.0 || std::abs(value) >= minimum)
         return value;
+
     return std::copysign(minimum, value);
+}
+
+
+double MyPlanner::filterMeasuredOmega(
+    double raw_omega,
+    const ros::Time& stamp)
+{
+    if (c3_measured_omega_filter_cutoff_hz_ <= 0.0)
+        return raw_omega;
+
+    if (!omega_filter_state_.initialized)
+    {
+        omega_filter_state_.initialized = true;
+        omega_filter_state_.x1 = raw_omega;
+        omega_filter_state_.x2 = raw_omega;
+        omega_filter_state_.y1 = raw_omega;
+        omega_filter_state_.y2 = raw_omega;
+        omega_filter_state_.last_stamp = stamp;
+        return raw_omega;
+    }
+
+    double dt = (stamp - omega_filter_state_.last_stamp).toSec();
+    if (!std::isfinite(dt) || dt <= 1.0e-4 || dt > 0.50)
+    {
+        omega_filter_state_ = ButterworthFilterState();
+        omega_filter_state_.initialized = true;
+        omega_filter_state_.x1 = raw_omega;
+        omega_filter_state_.x2 = raw_omega;
+        omega_filter_state_.y1 = raw_omega;
+        omega_filter_state_.y2 = raw_omega;
+        omega_filter_state_.last_stamp = stamp;
+        return raw_omega;
+    }
+
+    omega_filter_state_.last_stamp = stamp;
+    const double sample_rate = 1.0 / dt;
+    const double cutoff = std::min(
+        c3_measured_omega_filter_cutoff_hz_, 0.45 * sample_rate);
+    if (cutoff <= 1.0e-3)
+        return raw_omega;
+
+    // 标准二阶Butterworth低通，双线性变换离散化。
+    const double k = std::tan(M_PI * cutoff / sample_rate);
+    const double norm = 1.0 / (1.0 + std::sqrt(2.0) * k + k * k);
+    const double b0 = k * k * norm;
+    const double b1 = 2.0 * b0;
+    const double b2 = b0;
+    const double a1 = 2.0 * (k * k - 1.0) * norm;
+    const double a2 = (1.0 - std::sqrt(2.0) * k + k * k) * norm;
+
+    const double filtered = b0 * raw_omega
+        + b1 * omega_filter_state_.x1
+        + b2 * omega_filter_state_.x2
+        - a1 * omega_filter_state_.y1
+        - a2 * omega_filter_state_.y2;
+
+    omega_filter_state_.x2 = omega_filter_state_.x1;
+    omega_filter_state_.x1 = raw_omega;
+    omega_filter_state_.y2 = omega_filter_state_.y1;
+    omega_filter_state_.y1 = filtered;
+    return filtered;
+}
+
+void MyPlanner::odomCallback(const nav_msgs::Odometry::ConstPtr& message)
+{
+    if (!message)
+        return;
+
+    const ros::Time stamp = message->header.stamp.isZero()
+        ? ros::Time::now() : message->header.stamp;
+
+    std::lock_guard<std::mutex> lock(measured_state_mutex_);
+    measured_body_twist_ = message->twist.twist;
+    measured_body_twist_.angular.z = filterMeasuredOmega(
+        message->twist.twist.angular.z, stamp);
+    last_odom_stamp_ = stamp;
+    odom_received_ = true;
+}
+
+MyPlanner::MeasuredBodyState MyPlanner::getMeasuredBodyState(
+    const ros::Time& now) const
+{
+    MeasuredBodyState result;
+    {
+        std::lock_guard<std::mutex> lock(measured_state_mutex_);
+        if (c3_use_odometry_ && odom_received_)
+        {
+            result.age = std::max(0.0, (now - last_odom_stamp_).toSec());
+            if (std::isfinite(result.age) && result.age <= c3_odom_timeout_)
+            {
+                result.vx = measured_body_twist_.linear.x;
+                result.vy = measured_body_twist_.linear.y;
+                result.omega = measured_body_twist_.angular.z;
+                result.valid = std::isfinite(result.vx)
+                    && std::isfinite(result.vy)
+                    && std::isfinite(result.omega);
+            }
+        }
+    }
+
+    if (!result.valid)
+    {
+        result.vx = last_cmd_vel_.linear.x;
+        result.vy = last_cmd_vel_.linear.y;
+        result.omega = last_cmd_vel_.angular.z;
+        result.age = -1.0;
+    }
+    return result;
+}
+
+geometry_msgs::Twist MyPlanner::commandAtTime(
+    const std::deque<TimedCommand>& history,
+    const ros::Time& query_time) const
+{
+    if (history.empty())
+        return last_cmd_vel_;
+
+    geometry_msgs::Twist result = history.front().command;
+    for (std::deque<TimedCommand>::const_iterator it = history.begin();
+         it != history.end(); ++it)
+    {
+        if (it->stamp > query_time)
+            break;
+        result = it->command;
+    }
+    return result;
+}
+
+MyPlanner::DelayCompensatedState MyPlanner::predictStateThroughInputDelay(
+    const MeasuredBodyState& measured,
+    const ros::Time& now) const
+{
+    DelayCompensatedState state;
+    state.vx = measured.vx;
+    state.vy = measured.vy;
+    state.omega = measured.omega;
+
+    if (c3_input_delay_ <= 1.0e-4)
+        return state;
+
+    std::deque<TimedCommand> history;
+    {
+        std::lock_guard<std::mutex> lock(command_history_mutex_);
+        history = command_history_;
+    }
+
+    const double integration_dt = std::max(
+        0.002, std::min(c3_delay_integration_dt_, c3_input_delay_));
+    double elapsed = 0.0;
+    while (elapsed < c3_input_delay_ - 1.0e-9)
+    {
+        const double dt = std::min(
+            integration_dt, c3_input_delay_ - elapsed);
+        const ros::Time command_time = now
+            - ros::Duration(c3_input_delay_ - elapsed);
+        const geometry_msgs::Twist command = commandAtTime(
+            history, command_time);
+
+        const double alpha_v = c3_translational_response_tau_ <= 1.0e-4
+            ? 1.0
+            : 1.0 - std::exp(-dt / c3_translational_response_tau_);
+        const double alpha_omega = c3_angular_response_tau_ <= 1.0e-4
+            ? 1.0
+            : 1.0 - std::exp(-dt / c3_angular_response_tau_);
+
+        state.vx += alpha_v * (command.linear.x - state.vx);
+        state.vy += alpha_v * (command.linear.y - state.vy);
+        state.omega += alpha_omega * (command.angular.z - state.omega);
+
+        const double c = std::cos(state.yaw);
+        const double ss = std::sin(state.yaw);
+        state.x += dt * (c * state.vx - ss * state.vy);
+        state.y += dt * (ss * state.vx + c * state.vy);
+        state.yaw = normalizeAngle(state.yaw + dt * state.omega);
+        elapsed += dt;
+    }
+    return state;
+}
+
+void MyPlanner::recordPublishedCommand(
+    const geometry_msgs::Twist& command,
+    const ros::Time& stamp)
+{
+    std::lock_guard<std::mutex> lock(command_history_mutex_);
+    TimedCommand item;
+    item.stamp = stamp;
+    item.command = command;
+    command_history_.push_back(item);
+
+    const ros::Time keep_after = stamp - ros::Duration(
+        std::max(1.0, c3_input_delay_ + 0.50));
+    while (!command_history_.empty()
+           && command_history_.front().stamp < keep_after)
+    {
+        command_history_.pop_front();
+    }
 }
 
 void MyPlanner::initialize(std::string name,
@@ -168,216 +275,361 @@ void MyPlanner::initialize(std::string name,
 
     ros::NodeHandle private_nh("~/" + name);
 
-    // 最早稳定版PP参数。
-    private_nh.param("lookahead_dist", lookahead_dist_, 0.26);
-    private_nh.param("path_linear_x_gain", path_linear_x_gain_, 2.20);
+    // -------------------------------------------------------------------------
+    // Stage 0.1：基础类 PP，并恢复全向底盘横移纠偏
+    // -------------------------------------------------------------------------
+    private_nh.param("lookahead_dist", lookahead_dist_, 0.20);
+    private_nh.param("path_linear_x_gain", path_linear_x_gain_, 1.50);
     private_nh.param("path_linear_y_gain", path_linear_y_gain_, 2.00);
-    private_nh.param("path_angular_y_gain", path_angular_y_gain_, 10.00);
+    private_nh.param("path_angular_y_gain", path_angular_y_gain_, 9.00);
     private_nh.param("lateral_search_points", lateral_search_points_, 10);
 
-    private_nh.param("enable_path_healing", enable_path_healing_, true);
-    private_nh.param("path_healing_points_behind", path_healing_points_behind_, 5);
-    private_nh.param("path_healing_points_ahead", path_healing_points_ahead_, 60);
-    private_nh.param("path_healing_iterations", path_healing_iterations_, 3);
-    private_nh.param("path_healing_max_step", path_healing_max_step_, 0.01);
-    private_nh.param("path_healing_gradient_deadband", path_healing_gradient_deadband_, 4.0);
-    private_nh.param("path_healing_gradient_scale", path_healing_gradient_scale_, 20.0);
+    // -------------------------------------------------------------------------
+    // 保留二代车现有的非累积路径治愈
+    // -------------------------------------------------------------------------
+    private_nh.param("enable_path_healing", enable_path_healing_, false);
+    private_nh.param("path_healing_points_behind",
+                     path_healing_points_behind_, 5);
+    private_nh.param("path_healing_points_ahead",
+                     path_healing_points_ahead_, 60);
+    private_nh.param("path_healing_iterations",
+                     path_healing_iterations_, 3);
+    private_nh.param("path_healing_max_step",
+                     path_healing_max_step_, 0.01);
+    private_nh.param("path_healing_gradient_deadband",
+                     path_healing_gradient_deadband_, 4.0);
+    private_nh.param("path_healing_gradient_scale",
+                     path_healing_gradient_scale_, 20.0);
 
-    private_nh.param("collision_check_lookahead_points", collision_check_lookahead_points_, 20);
+    // -------------------------------------------------------------------------
+    // 保留前方全局路径碰撞检查；命中障碍后返回 false 触发全局重规划
+    // -------------------------------------------------------------------------
+    private_nh.param("collision_check_lookahead_points",
+                     collision_check_lookahead_points_, 10);
+
     int collision_cost_threshold = 253;
-    private_nh.param("collision_cost_threshold", collision_cost_threshold, 253);
-    collision_cost_threshold_ = static_cast<unsigned char>(
-        std::max(1, std::min(collision_cost_threshold, 255)));
+    private_nh.param("collision_cost_threshold",
+                     collision_cost_threshold, 253);
+    collision_cost_threshold =
+        std::max(1, std::min(collision_cost_threshold, 255));
+    collision_cost_threshold_ =
+        static_cast<unsigned char>(collision_cost_threshold);
 
-    private_nh.param("enable_initial_rotation", enable_initial_rotation_, true);
-    private_nh.param("initial_yaw_tolerance", initial_yaw_tolerance_, 0.10);
-    private_nh.param("initial_angular_gain", initial_angular_gain_, 8.00);
-    private_nh.param("initial_min_angular_speed", initial_min_angular_speed_, 0.10);
-    private_nh.param("initial_max_angular_speed", initial_max_angular_speed_, 1.40);
+    // -------------------------------------------------------------------------
+    // 初始姿态调整
+    // -------------------------------------------------------------------------
+    private_nh.param("enable_initial_rotation",
+                     enable_initial_rotation_, true);
+    private_nh.param("initial_yaw_tolerance",
+                     initial_yaw_tolerance_, 0.10);
+    private_nh.param("initial_angular_gain",
+                     initial_angular_gain_, 2.00);
+    private_nh.param("initial_min_angular_speed",
+                     initial_min_angular_speed_, 0.10);
+    private_nh.param("initial_max_angular_speed",
+                     initial_max_angular_speed_, 0.30);
 
-    private_nh.param("goal_dist_threshold", goal_dist_threshold_, 0.50);
-    private_nh.param("goal_position_tolerance", goal_position_tolerance_, 0.025);
-    private_nh.param("goal_yaw_tolerance", goal_yaw_tolerance_, 0.05);
-    private_nh.param("final_linear_x_gain", final_linear_x_gain_, 1.60);
-    private_nh.param("final_linear_y_gain", final_linear_y_gain_, 1.20);
-    private_nh.param("final_angular_gain", final_angular_gain_, 6.50);
-    private_nh.param("final_min_linear_speed", final_min_linear_speed_, 0.03);
-    private_nh.param("final_min_angular_speed", final_min_angular_speed_, 0.08);
-    private_nh.param("final_max_vel_x", final_max_vel_x_, 0.30);
-    private_nh.param("final_max_vel_y", final_max_vel_y_, 0.20);
-    private_nh.param("final_max_vel_theta", final_max_vel_theta_, 0.90);
+    // -------------------------------------------------------------------------
+    // 终点位姿调整
+    // -------------------------------------------------------------------------
+    private_nh.param("goal_dist_threshold",
+                     goal_dist_threshold_, 0.15);
+    private_nh.param("goal_position_tolerance",
+                     goal_position_tolerance_, 0.025);
+    private_nh.param("goal_yaw_tolerance",
+                     goal_yaw_tolerance_, 0.05);
+    private_nh.param("final_linear_x_gain",
+                     final_linear_x_gain_, 0.80);
+    private_nh.param("final_linear_y_gain",
+                     final_linear_y_gain_, 0.80);
+    private_nh.param("final_angular_gain",
+                     final_angular_gain_, 1.50);
+    private_nh.param("final_min_linear_speed",
+                     final_min_linear_speed_, 0.03);
+    private_nh.param("final_min_angular_speed",
+                     final_min_angular_speed_, 0.08);
+    private_nh.param("final_max_vel_x",
+                     final_max_vel_x_, 0.20);
+    private_nh.param("final_max_vel_y",
+                     final_max_vel_y_, 0.10);
+    private_nh.param("final_max_vel_theta",
+                     final_max_vel_theta_, 0.90);
 
-    private_nh.param("max_vel_x", max_vel_x_, 0.80);
-    private_nh.param("max_vel_y", max_vel_y_, 0.55);
-    private_nh.param("max_vel_theta", max_vel_theta_, 4.00);
-    private_nh.param("acc_lim_x", acc_lim_x_, 8.00);
-    private_nh.param("acc_lim_y", acc_lim_y_, 8.00);
-    private_nh.param("acc_lim_theta", acc_lim_theta_, 15.00);
+    // -------------------------------------------------------------------------
+    // 最外层实车速度和加速度保护
+    // -------------------------------------------------------------------------
+    private_nh.param("max_vel_x", max_vel_x_, 0.60);
+    private_nh.param("max_vel_y", max_vel_y_, 0.30);
+    private_nh.param("max_vel_theta", max_vel_theta_, 2.50);
+    private_nh.param("acc_lim_x", acc_lim_x_, 2.00);
+    private_nh.param("acc_lim_y", acc_lim_y_, 2.00);
+    private_nh.param("acc_lim_theta", acc_lim_theta_, 8.00);
 
-    // 简化固定倍率X抑制器：只判断名义命令，触发后固定将linear.x乘0.5。
-    private_nh.param("pp_safety_enable", pp_safety_enable_, true);
-    private_nh.param("pp_safety_snapshot_max_age", pp_safety_snapshot_max_age_, 0.80);
-    private_nh.param("pp_safety_prediction_dt", pp_safety_prediction_dt_, 0.05);
-    private_nh.param("pp_safety_prediction_horizon", pp_safety_prediction_horizon_, 0.20);
-    private_nh.param("pp_x_brake_margin_threshold", pp_x_brake_margin_threshold_, -0.01);
-    private_nh.param("pp_safety_footprint_margin", pp_safety_footprint_margin_, 0.005);
-    private_nh.param("pp_x_brake_min_outside_steps", pp_x_brake_min_outside_steps_, 2);
-    private_nh.param("pp_x_brake_scale", pp_x_brake_scale_, 0.50);
-    private_nh.param("pp_x_brake_enter_cycles", pp_x_brake_enter_cycles_, 2);
-    private_nh.param("pp_x_brake_exit_cycles", pp_x_brake_exit_cycles_, 3);
 
-    // 异步安全框参数。安全框只用于检测，不改变PP跟踪目标。
-    private_nh.param("enable_corridor_visualization", enable_corridor_visualization_, true);
-    private_nh.param("corridor_update_frequency", corridor_update_frequency_, 2.0);
-    private_nh.param("local_path_behind_distance", local_path_behind_distance_, 0.10);
-    private_nh.param("local_path_horizon_distance", local_path_horizon_distance_, 1.10);
-    private_nh.param("local_path_resample_distance", local_path_resample_distance_, 0.03);
-    private_nh.param("corridor_skeleton_corner_angle_deg", corridor_skeleton_corner_angle_deg_, 20.0);
-    private_nh.param("corridor_skeleton_corner_window", corridor_skeleton_corner_window_, 0.06);
-    private_nh.param("corridor_skeleton_max_segment_length", corridor_skeleton_max_segment_length_, 0.15);
-    private_nh.param("corridor_skeleton_min_segment_length", corridor_skeleton_min_segment_length_, 0.06);
-    private_nh.param("corridor_initial_half_width", corridor_initial_half_width_, 0.35);
-    private_nh.param("corridor_longitudinal_extension", corridor_longitudinal_extension_, 0.12);
-    private_nh.param("corridor_post_shrink_longitudinal_reserve", corridor_post_shrink_longitudinal_reserve_, 0.08);
-    private_nh.param("corridor_map_boundary_margin", corridor_map_boundary_margin_, 0.01);
 
-    int hard_cost_threshold = 254;
-    private_nh.param("corridor_hard_cost_threshold", hard_cost_threshold, 254);
-    corridor_hard_cost_threshold_ = static_cast<unsigned char>(
-        std::max(1, std::min(hard_cost_threshold, 255)));
+    // -------------------------------------------------------------------------
+    // C3：C2双曲率速度规划＋车头预瞄主动漂移参考。
+    // 路径位置不平滑、不优化；运动方向chi与车头姿态psi解耦。
+    // -------------------------------------------------------------------------
+    private_nh.param("controller_mode", controller_mode_, std::string("mpc"));
+    private_nh.param("mpc_horizon_steps", mpc_horizon_steps_, 20);
+    private_nh.param("mpc_dt", mpc_dt_, 0.05);
+    private_nh.param("mpc_min_reference_length", mpc_min_reference_length_, 0.25);
+    private_nh.param("mpc_reference_search_behind_points", mpc_reference_search_behind_points_, 160);
+    private_nh.param("mpc_reference_search_ahead_points", mpc_reference_search_ahead_points_, 1000);
 
-    private_nh.param("corridor_treat_unknown_as_obstacle", corridor_treat_unknown_as_obstacle_, true);
-    private_nh.param("corridor_obstacle_padding", corridor_obstacle_padding_, 0.0);
-    private_nh.param("corridor_max_obstacle_cuts", corridor_max_obstacle_cuts_, 120);
-    private_nh.param("corridor_min_polygon_area", corridor_min_polygon_area_, 0.0005);
-    private_nh.param("corridor_use_costmap_footprint", corridor_use_costmap_footprint_, true);
-    private_nh.param("corridor_robot_half_length", corridor_robot_half_length_, 0.17);
-    private_nh.param("corridor_robot_half_width", corridor_robot_half_width_, 0.13);
-    private_nh.param("corridor_extra_margin", corridor_extra_margin_, 0.015);
-    private_nh.param("corridor_min_overlap_area", corridor_min_overlap_area_, 0.0025);
-    private_nh.param("corridor_reference_validation_step", corridor_reference_validation_step_, 0.01);
-    private_nh.param("corridor_min_usable_chain_length", corridor_min_usable_chain_length_, 0.35);
-    private_nh.param("corridor_preferred_chain_length", corridor_preferred_chain_length_, 0.75);
-    private_nh.param("corridor_terminal_ignore_distance", corridor_terminal_ignore_distance_, 0.10);
-    private_nh.param("corridor_projection_search_behind_points", corridor_projection_search_behind_points_, 120);
-    private_nh.param("corridor_projection_search_ahead_points", corridor_projection_search_ahead_points_, 500);
-    private_nh.param("corridor_debug_log", corridor_debug_log_, true);
+    private_nh.param("c2_resample_distance", c2_resample_distance_, 0.02);
+    private_nh.param("c2_duplicate_point_distance", c2_duplicate_point_distance_, 0.003);
+    private_nh.param("c2_tracking_curvature_distance", c2_tracking_curvature_distance_, 0.08);
+    private_nh.param("c2_speed_curvature_distance", c2_speed_curvature_distance_, 0.12);
+    private_nh.param("c2_curvature_median_window", c2_curvature_median_window_, 5);
+    private_nh.param("c2_curvature_preview_distance", c2_curvature_preview_distance_, 0.45);
+    private_nh.param("c2_hold_speed_after_curve", c2_hold_speed_after_curve_, 0.12);
+    private_nh.param("c2_max_reference_speed", c2_max_reference_speed_, 0.45);
+    private_nh.param("c2_min_curve_speed", c2_min_curve_speed_, 0.30);
+    private_nh.param("c2_curve_lateral_acc_limit", c2_curve_lateral_acc_limit_, 0.22);
+    private_nh.param("c2_reference_acceleration", c2_reference_acceleration_, 0.90);
+    private_nh.param("c2_reference_deceleration", c2_reference_deceleration_, 1.50);
+
+    private_nh.param("c3_enable_active_drift", c3_enable_active_drift_, true);
+    private_nh.param("c3_yaw_preview_distance", c3_yaw_preview_distance_, 0.10);
+    private_nh.param("c3_yaw_preview_gain", c3_yaw_preview_gain_, 0.40);
+    private_nh.param("c3_yaw_preview_curvature_deadband", c3_yaw_preview_curvature_deadband_, 0.25);
+    private_nh.param("c3_yaw_preview_full_curvature", c3_yaw_preview_full_curvature_, 1.50);
+
+    double c3_beta_max_low_speed_deg = 35.0;
+    double c3_beta_max_mid_speed_deg = 28.0;
+    double c3_beta_max_high_speed_deg = 22.0;
+    double c3_beta_rate_limit_deg_per_s = 90.0;
+    private_nh.param("c3_beta_max_low_speed_deg", c3_beta_max_low_speed_deg, 35.0);
+    private_nh.param("c3_beta_max_mid_speed_deg", c3_beta_max_mid_speed_deg, 28.0);
+    private_nh.param("c3_beta_max_high_speed_deg", c3_beta_max_high_speed_deg, 22.0);
+    private_nh.param("c3_beta_low_speed_threshold", c3_beta_low_speed_threshold_, 0.35);
+    private_nh.param("c3_beta_high_speed_threshold", c3_beta_high_speed_threshold_, 0.60);
+    private_nh.param("c3_beta_rate_limit_deg_per_s", c3_beta_rate_limit_deg_per_s, 90.0);
+    private_nh.param("c3_reference_omega_limit", c3_reference_omega_limit_, 2.40);
+    private_nh.param("c3_reference_omega_accel_rate", c3_reference_omega_accel_rate_, 8.00);
+    private_nh.param("c3_reference_omega_decel_rate", c3_reference_omega_decel_rate_, 14.00);
+    private_nh.param("c3_reference_omega_reverse_rate", c3_reference_omega_reverse_rate_, 16.00);
+    private_nh.param("c3_omega_curvature_feedforward_gain",
+                     c3_omega_curvature_feedforward_gain_, 0.30);
+
+    private_nh.param("c3_use_odometry", c3_use_odometry_, true);
+    private_nh.param("c3_odom_topic", c3_odom_topic_, std::string("/odom"));
+    private_nh.param("c3_odom_timeout", c3_odom_timeout_, 0.20);
+    private_nh.param("c3_measured_omega_filter_cutoff_hz",
+                     c3_measured_omega_filter_cutoff_hz_, 5.0);
+    private_nh.param("c3_input_delay", c3_input_delay_, 0.05);
+    private_nh.param("c3_translational_response_tau",
+                     c3_translational_response_tau_, 0.08);
+    private_nh.param("c3_angular_response_tau",
+                     c3_angular_response_tau_, 0.12);
+    private_nh.param("c3_delay_integration_dt",
+                     c3_delay_integration_dt_, 0.01);
+
+    const double deg_to_rad = M_PI / 180.0;
+    c3_beta_max_low_speed_ = c3_beta_max_low_speed_deg * deg_to_rad;
+    c3_beta_max_mid_speed_ = c3_beta_max_mid_speed_deg * deg_to_rad;
+    c3_beta_max_high_speed_ = c3_beta_max_high_speed_deg * deg_to_rad;
+    c3_beta_rate_limit_ = c3_beta_rate_limit_deg_per_s * deg_to_rad;
+
+    private_nh.param("mpc_weight_longitudinal", mpc_weight_longitudinal_, 3.0);
+    private_nh.param("mpc_weight_lateral", mpc_weight_lateral_, 110.0);
+    private_nh.param("mpc_weight_yaw_straight", mpc_weight_yaw_straight_, 12.0);
+    private_nh.param("mpc_weight_yaw_curve", mpc_weight_yaw_curve_, 8.0);
+    private_nh.param("mpc_weight_omega_state_straight",
+                     mpc_weight_omega_state_straight_, 8.0);
+    private_nh.param("mpc_weight_omega_state_curve",
+                     mpc_weight_omega_state_curve_, 0.40);
+    private_nh.param("mpc_terminal_position_weight_scale",
+                     mpc_terminal_position_weight_scale_, 4.0);
+    private_nh.param("mpc_terminal_yaw_weight_scale",
+                     mpc_terminal_yaw_weight_scale_, 4.0);
+    private_nh.param("mpc_terminal_omega_weight_scale",
+                     mpc_terminal_omega_weight_scale_, 8.0);
+    private_nh.param("mpc_weight_tangent_velocity", mpc_weight_tangent_velocity_, 4.0);
+    private_nh.param("mpc_weight_path_normal_velocity", mpc_weight_path_normal_velocity_, 35.0);
+    private_nh.param("mpc_weight_progress", mpc_weight_progress_, 0.80);
+
+    private_nh.param("mpc_weight_vx", mpc_weight_vx_, 0.20);
+    private_nh.param("mpc_weight_vy", mpc_weight_vy_, 0.20);
+    private_nh.param("mpc_weight_omega_straight",
+                     mpc_weight_omega_straight_, 0.90);
+    private_nh.param("mpc_weight_omega_curve",
+                     mpc_weight_omega_curve_, 0.15);
+    private_nh.param("mpc_weight_delta_vx", mpc_weight_delta_vx_, 10.0);
+    private_nh.param("mpc_weight_delta_vy", mpc_weight_delta_vy_, 12.0);
+    private_nh.param("mpc_weight_delta_omega", mpc_weight_delta_omega_, 8.0);
+
+    private_nh.param("mpc_min_vx_ratio", mpc_min_vx_ratio_, 0.50);
+    private_nh.param("mpc_min_vx", mpc_min_vx_, 0.0);
+    private_nh.param("mpc_max_vx", mpc_max_vx_, 0.45);
+    private_nh.param("mpc_min_vy", mpc_min_vy_, -0.30);
+    private_nh.param("mpc_max_vy", mpc_max_vy_, 0.30);
+    private_nh.param("mpc_min_omega", mpc_min_omega_, -2.50);
+    private_nh.param("mpc_max_omega", mpc_max_omega_, 2.50);
+    private_nh.param("mpc_max_translational_speed", mpc_max_translational_speed_, 0.70);
+    private_nh.param("mpc_velocity_polygon_sides", mpc_velocity_polygon_sides_, 16);
+
+    private_nh.param("mpc_max_accel_x", mpc_max_accel_x_, 2.00);
+    private_nh.param("mpc_max_decel_x", mpc_max_decel_x_, 2.00);
+    private_nh.param("mpc_max_accel_y", mpc_max_accel_y_, 2.00);
+    private_nh.param("mpc_max_accel_theta", mpc_max_accel_theta_, 8.00);
+
+    private_nh.param("mpc_osqp_max_iterations", mpc_osqp_max_iterations_, 180);
+    private_nh.param("mpc_osqp_eps_abs", mpc_osqp_eps_abs_, 0.001);
+    private_nh.param("mpc_osqp_eps_rel", mpc_osqp_eps_rel_, 0.001);
+    private_nh.param("mpc_osqp_polish", mpc_osqp_polish_, false);
+    private_nh.param("mpc_osqp_verbose", mpc_osqp_verbose_, false);
+    private_nh.param("mpc_max_total_time_ms", mpc_max_total_time_ms_, 15.0);
+    private_nh.param("mpc_max_consecutive_failures", mpc_max_consecutive_failures_, 5);
+    private_nh.param("mpc_lock_to_pp_after_failures", mpc_lock_to_pp_after_failures_, true);
+    private_nh.param("mpc_publish_debug_paths", mpc_publish_debug_paths_, true);
+
     private_nh.param("debug_log", debug_log_, true);
 
     lookahead_dist_ = std::max(0.01, lookahead_dist_);
+    path_healing_points_behind_ =
+        std::max(0, path_healing_points_behind_);
+    path_healing_points_ahead_ =
+        std::max(1, path_healing_points_ahead_);
+    path_healing_iterations_ =
+        std::max(0, path_healing_iterations_);
+    path_healing_gradient_scale_ =
+        std::max(1e-6, path_healing_gradient_scale_);
+    collision_check_lookahead_points_ =
+        std::max(1, collision_check_lookahead_points_);
     lateral_search_points_ = std::max(0, lateral_search_points_);
-    path_healing_points_behind_ = std::max(0, path_healing_points_behind_);
-    path_healing_points_ahead_ = std::max(1, path_healing_points_ahead_);
-    path_healing_iterations_ = std::max(0, path_healing_iterations_);
-    path_healing_gradient_scale_ = std::max(1e-6, path_healing_gradient_scale_);
-    collision_check_lookahead_points_ = std::max(1, collision_check_lookahead_points_);
 
-    pp_safety_snapshot_max_age_ = std::max(0.10, pp_safety_snapshot_max_age_);
-    pp_safety_prediction_dt_ = clampValue(pp_safety_prediction_dt_, 0.01, 0.10);
-    pp_safety_prediction_horizon_ = std::max(pp_safety_prediction_dt_, pp_safety_prediction_horizon_);
-    pp_safety_footprint_margin_ = std::max(0.0, pp_safety_footprint_margin_);
-    pp_x_brake_min_outside_steps_ = std::max(1, pp_x_brake_min_outside_steps_);
-    // 用户要求最多只削减到0.5倍率，因此参数下限强制为0.5。
-    pp_x_brake_scale_ = clampValue(pp_x_brake_scale_, 0.50, 1.00);
-    pp_x_brake_enter_cycles_ = std::max(1, pp_x_brake_enter_cycles_);
-    pp_x_brake_exit_cycles_ = std::max(1, pp_x_brake_exit_cycles_);
-
-    corridor_update_frequency_ = std::max(0.1, corridor_update_frequency_);
-    local_path_behind_distance_ = std::max(0.0, local_path_behind_distance_);
-    local_path_horizon_distance_ = std::max(0.20, local_path_horizon_distance_);
-    local_path_resample_distance_ = std::max(0.01, local_path_resample_distance_);
-    corridor_skeleton_corner_angle_deg_ = clampValue(corridor_skeleton_corner_angle_deg_, 1.0, 170.0);
-    corridor_skeleton_corner_window_ = std::max(local_path_resample_distance_, corridor_skeleton_corner_window_);
-    corridor_skeleton_min_segment_length_ = std::max(local_path_resample_distance_, corridor_skeleton_min_segment_length_);
-    corridor_skeleton_max_segment_length_ = std::max(corridor_skeleton_min_segment_length_, corridor_skeleton_max_segment_length_);
-    corridor_initial_half_width_ = std::max(0.05, corridor_initial_half_width_);
-    corridor_longitudinal_extension_ = std::max(0.0, corridor_longitudinal_extension_);
-    corridor_post_shrink_longitudinal_reserve_ = std::max(0.02, corridor_post_shrink_longitudinal_reserve_);
-    corridor_map_boundary_margin_ = std::max(0.0, corridor_map_boundary_margin_);
-    corridor_obstacle_padding_ = std::max(0.0, corridor_obstacle_padding_);
-    corridor_max_obstacle_cuts_ = std::max(1, corridor_max_obstacle_cuts_);
-    corridor_min_polygon_area_ = std::max(1e-6, corridor_min_polygon_area_);
-    corridor_robot_half_length_ = std::max(0.01, corridor_robot_half_length_);
-    corridor_robot_half_width_ = std::max(0.01, corridor_robot_half_width_);
-    corridor_extra_margin_ = std::max(0.0, corridor_extra_margin_);
-    corridor_min_overlap_area_ = std::max(0.0, corridor_min_overlap_area_);
-    corridor_reference_validation_step_ = std::max(0.005, corridor_reference_validation_step_);
-    corridor_min_usable_chain_length_ = std::max(0.05, corridor_min_usable_chain_length_);
-    corridor_preferred_chain_length_ = std::max(corridor_min_usable_chain_length_, corridor_preferred_chain_length_);
-    corridor_terminal_ignore_distance_ = std::max(0.02, corridor_terminal_ignore_distance_);
-    corridor_projection_search_behind_points_ = std::max(1, corridor_projection_search_behind_points_);
-    corridor_projection_search_ahead_points_ = std::max(10, corridor_projection_search_ahead_points_);
-
-    if (pp_safety_enable_ && !enable_corridor_visualization_)
+    if (controller_mode_ != "mpc" && controller_mode_ != "pp")
     {
-        ROS_WARN("仅X减速安全盾依赖异步安全框，已自动启用安全框worker。");
-        enable_corridor_visualization_ = true;
+        ROS_WARN("未知controller_mode=%s，自动使用mpc。", controller_mode_.c_str());
+        controller_mode_ = "mpc";
     }
 
-    corridor_robot_footprint_.clear();
-    if (corridor_use_costmap_footprint_)
-    {
-        const std::vector<geometry_msgs::Point> footprint =
-            costmap_ros_->getRobotFootprint();
-        if (footprint.size() >= 3)
-        {
-            double half_length = 0.0;
-            double half_width = 0.0;
-            for (std::size_t i = 0; i < footprint.size(); ++i)
-            {
-                corridor_robot_footprint_.push_back(
-                    Point2D(footprint[i].x, footprint[i].y));
-                half_length = std::max(half_length, std::abs(footprint[i].x));
-                half_width = std::max(half_width, std::abs(footprint[i].y));
-            }
-            if (half_length > 0.01 && half_width > 0.01)
-            {
-                corridor_robot_half_length_ = half_length;
-                corridor_robot_half_width_ = half_width;
-            }
-            else
-            {
-                corridor_robot_footprint_.clear();
-            }
-        }
-    }
+    mpc_horizon_steps_ = std::max(5, mpc_horizon_steps_);
+    mpc_dt_ = clampValue(mpc_dt_, 0.02, 0.20);
+    mpc_min_reference_length_ = std::max(0.05, mpc_min_reference_length_);
+    mpc_reference_search_behind_points_ = std::max(1, mpc_reference_search_behind_points_);
+    mpc_reference_search_ahead_points_ = std::max(20, mpc_reference_search_ahead_points_);
 
-    if (corridor_robot_footprint_.size() < 3)
-    {
-        corridor_robot_footprint_.clear();
-        corridor_robot_footprint_.push_back(Point2D( corridor_robot_half_length_,  corridor_robot_half_width_));
-        corridor_robot_footprint_.push_back(Point2D( corridor_robot_half_length_, -corridor_robot_half_width_));
-        corridor_robot_footprint_.push_back(Point2D(-corridor_robot_half_length_, -corridor_robot_half_width_));
-        corridor_robot_footprint_.push_back(Point2D(-corridor_robot_half_length_,  corridor_robot_half_width_));
-    }
+    c2_resample_distance_ = clampValue(c2_resample_distance_, 0.005, 0.10);
+    c2_duplicate_point_distance_ = clampValue(
+        c2_duplicate_point_distance_, 1e-5, 0.5 * c2_resample_distance_);
+    c2_tracking_curvature_distance_ = std::max(
+        c2_resample_distance_, c2_tracking_curvature_distance_);
+    c2_speed_curvature_distance_ = std::max(
+        c2_tracking_curvature_distance_, c2_speed_curvature_distance_);
+    c2_curvature_median_window_ = std::max(1, c2_curvature_median_window_);
+    if (c2_curvature_median_window_ % 2 == 0)
+        ++c2_curvature_median_window_;
+    c2_curvature_preview_distance_ = std::max(
+        c2_resample_distance_, c2_curvature_preview_distance_);
+    c2_hold_speed_after_curve_ = std::max(0.0, c2_hold_speed_after_curve_);
+    c2_max_reference_speed_ = clampValue(
+        c2_max_reference_speed_, 0.05, std::max(0.05, max_vel_x_));
+    c2_min_curve_speed_ = clampValue(
+        c2_min_curve_speed_, 0.02, c2_max_reference_speed_);
+    c2_curve_lateral_acc_limit_ = std::max(1e-4, c2_curve_lateral_acc_limit_);
+    c2_reference_acceleration_ = std::max(0.01, c2_reference_acceleration_);
+    c2_reference_deceleration_ = std::max(0.01, c2_reference_deceleration_);
+    c3_yaw_preview_distance_ = std::max(c2_resample_distance_, c3_yaw_preview_distance_);
+    c3_yaw_preview_gain_ = clampValue(c3_yaw_preview_gain_, 0.0, 1.5);
+    c3_yaw_preview_curvature_deadband_ = std::max(0.0, c3_yaw_preview_curvature_deadband_);
+    c3_yaw_preview_full_curvature_ = std::max(
+        c3_yaw_preview_curvature_deadband_ + 1e-3,
+        c3_yaw_preview_full_curvature_);
+    c3_beta_max_low_speed_ = clampValue(c3_beta_max_low_speed_, 0.0, 1.2);
+    c3_beta_max_mid_speed_ = clampValue(c3_beta_max_mid_speed_, 0.0, c3_beta_max_low_speed_);
+    c3_beta_max_high_speed_ = clampValue(c3_beta_max_high_speed_, 0.0, c3_beta_max_mid_speed_);
+    c3_beta_low_speed_threshold_ = std::max(0.01, c3_beta_low_speed_threshold_);
+    c3_beta_high_speed_threshold_ = std::max(
+        c3_beta_low_speed_threshold_ + 0.01,
+        c3_beta_high_speed_threshold_);
+    c3_beta_rate_limit_ = std::max(0.01, c3_beta_rate_limit_);
+    c3_reference_omega_limit_ = std::max(0.05, c3_reference_omega_limit_);
+    c3_reference_omega_accel_rate_ = std::max(0.05, c3_reference_omega_accel_rate_);
+    c3_reference_omega_decel_rate_ = std::max(
+        c3_reference_omega_accel_rate_, c3_reference_omega_decel_rate_);
+    c3_reference_omega_reverse_rate_ = std::max(
+        c3_reference_omega_decel_rate_, c3_reference_omega_reverse_rate_);
+    c3_omega_curvature_feedforward_gain_ = clampValue(
+        c3_omega_curvature_feedforward_gain_, 0.0, 1.0);
+    c3_odom_timeout_ = std::max(0.02, c3_odom_timeout_);
+    c3_measured_omega_filter_cutoff_hz_ = std::max(
+        0.0, c3_measured_omega_filter_cutoff_hz_);
+    c3_input_delay_ = clampValue(c3_input_delay_, 0.0, 0.50);
+    c3_translational_response_tau_ = std::max(0.0, c3_translational_response_tau_);
+    c3_angular_response_tau_ = std::max(0.01, c3_angular_response_tau_);
+    c3_delay_integration_dt_ = clampValue(c3_delay_integration_dt_, 0.002, 0.05);
+    mpc_terminal_position_weight_scale_ = std::max(1.0, mpc_terminal_position_weight_scale_);
+    mpc_terminal_yaw_weight_scale_ = std::max(1.0, mpc_terminal_yaw_weight_scale_);
+    mpc_terminal_omega_weight_scale_ = std::max(1.0, mpc_terminal_omega_weight_scale_);
+    mpc_weight_yaw_straight_ = std::max(0.0, mpc_weight_yaw_straight_);
+    mpc_weight_yaw_curve_ = std::max(0.0, mpc_weight_yaw_curve_);
+    mpc_weight_tangent_velocity_ = std::max(0.0, mpc_weight_tangent_velocity_);
+    mpc_weight_path_normal_velocity_ = std::max(0.0, mpc_weight_path_normal_velocity_);
+    mpc_weight_progress_ = std::max(0.0, mpc_weight_progress_);
+    mpc_weight_omega_state_straight_ = std::max(0.0, mpc_weight_omega_state_straight_);
+    mpc_weight_omega_state_curve_ = std::max(0.0, mpc_weight_omega_state_curve_);
+    mpc_weight_omega_straight_ = std::max(0.0, mpc_weight_omega_straight_);
+    mpc_weight_omega_curve_ = std::max(0.0, mpc_weight_omega_curve_);
+    mpc_min_vx_ratio_ = clampValue(mpc_min_vx_ratio_, 0.0, 1.0);
+    mpc_max_vx_ = std::max(mpc_min_vx_, mpc_max_vx_);
+    mpc_max_vy_ = std::max(mpc_min_vy_, mpc_max_vy_);
+    mpc_max_omega_ = std::max(mpc_min_omega_, mpc_max_omega_);
+    mpc_max_translational_speed_ = std::max(
+        0.05, std::min(mpc_max_translational_speed_, std::hypot(mpc_max_vx_, std::max(std::abs(mpc_min_vy_), std::abs(mpc_max_vy_)))));
+    mpc_velocity_polygon_sides_ = std::max(8, mpc_velocity_polygon_sides_);
+    mpc_max_accel_x_ = std::max(0.01, mpc_max_accel_x_);
+    mpc_max_decel_x_ = std::max(0.01, mpc_max_decel_x_);
+    mpc_max_accel_y_ = std::max(0.01, mpc_max_accel_y_);
+    mpc_max_accel_theta_ = std::max(0.01, mpc_max_accel_theta_);
+    mpc_osqp_max_iterations_ = std::max(20, mpc_osqp_max_iterations_);
+    mpc_max_total_time_ms_ = std::max(1.0, mpc_max_total_time_ms_);
+    mpc_max_consecutive_failures_ = std::max(1, mpc_max_consecutive_failures_);
 
-    corridor_markers_pub_ = private_nh.advertise<visualization_msgs::MarkerArray>("safe_corridors", 1, true);
-    corridor_reference_path_pub_ = private_nh.advertise<nav_msgs::Path>("safety_reference_path", 1, true);
-    pp_raw_prediction_pub_ = private_nh.advertise<nav_msgs::Path>("pp_raw_prediction", 1, false);
-    pp_safe_prediction_pub_ = private_nh.advertise<nav_msgs::Path>("pp_safe_prediction", 1, false);
-    pp_unsafe_footprint_pub_ = private_nh.advertise<visualization_msgs::Marker>("pp_unsafe_footprint", 1, false);
 
     target_index_ = 0;
     pose_adjusting_ = false;
     goal_reached_ = false;
     initial_rotation_done_ = !enable_initial_rotation_;
     last_cmd_vel_ = geometry_msgs::Twist();
+    measured_body_twist_ = geometry_msgs::Twist();
+    last_odom_stamp_ = ros::Time(0);
+    odom_received_ = false;
+    omega_filter_state_ = ButterworthFilterState();
     last_control_time_ = ros::Time(0);
-    last_corridor_request_time_ = ros::Time(0);
-    force_corridor_update_ = true;
-    pp_x_brake_unsafe_count_ = 0;
-    pp_x_brake_safe_count_ = 0;
-    safety_mode_ = pp_safety_enable_ ? SAFETY_SAFE : SAFETY_DISABLED;
+    resetMpcState();
+
+    if (c3_use_odometry_)
+    {
+        odom_sub_ = private_nh.subscribe<nav_msgs::Odometry>(
+            c3_odom_topic_, 20, &MyPlanner::odomCallback, this);
+    }
+
+    mpc_reference_path_pub_ =
+        private_nh.advertise<nav_msgs::Path>("mpc_reference_path", 1, false);
+    mpc_predicted_path_pub_ =
+        private_nh.advertise<nav_msgs::Path>("mpc_predicted_path", 1, false);
 
     initialized_ = true;
-    startCorridorWorker();
 
-    ROS_WARN("MyPlanner PP-C0.5 STABLE-PP-FIXED-HALF-X-BRAKE 启动："
-             "控制主体为最早稳定治愈路径PP；安全框不参与目标选择。"
-             "连续2周期明确出框后linear.x固定乘0.5，linear.y与angular.z保持PP原值；不停车、不由安全盾重规划。"
-             "lookahead=%.3f，K=(%.2f,%.2f,%.2f)，base=%s，costmap=%s。",
-             lookahead_dist_, path_linear_x_gain_, path_linear_y_gain_,
-             path_angular_y_gain_, base_frame_.c_str(), costmap_frame_.c_str());
+    ROS_WARN("MyPlanner MPC-C3.2 MEASURED-STATE-DELAY-PROGRESS 启动："
+             "mode=%s，路径合速度=%.2f~%.2fm/s，N=%d，dt=%.3fs；"
+             "odom=%s topic=%s timeout=%.2fs，input_delay=%.3fs，tau(v/w)=%.3f/%.3fs；"
+             "omegaRate(acc/dec/rev)=%.1f/%.1f/%.1f，curvatureFF=%.2f，"
+             "progressWeight=%.2f，速度圆=%.2fm/s(%d边)。base=%s，costmap=%s。",
+             controller_mode_.c_str(), c2_min_curve_speed_, c2_max_reference_speed_,
+             mpc_horizon_steps_, mpc_dt_,
+             c3_use_odometry_ ? "启用" : "关闭", c3_odom_topic_.c_str(),
+             c3_odom_timeout_, c3_input_delay_,
+             c3_translational_response_tau_, c3_angular_response_tau_,
+             c3_reference_omega_accel_rate_, c3_reference_omega_decel_rate_,
+             c3_reference_omega_reverse_rate_,
+             c3_omega_curvature_feedforward_gain_, mpc_weight_progress_,
+             mpc_max_translational_speed_, mpc_velocity_polygon_sides_,
+             base_frame_.c_str(), costmap_frame_.c_str());
 }
 
 bool MyPlanner::transformPose(const std::string& target_frame,
@@ -426,17 +678,14 @@ void MyPlanner::resetForNewGoal()
     initial_rotation_done_ = !enable_initial_rotation_;
     last_cmd_vel_ = geometry_msgs::Twist();
     last_control_time_ = ros::Time(0);
-    last_corridor_request_time_ = ros::Time(0);
-    force_corridor_update_ = true;
-    pp_x_brake_unsafe_count_ = 0;
-    pp_x_brake_safe_count_ = 0;
-    safety_mode_ = pp_safety_enable_ ? SAFETY_SAFE : SAFETY_DISABLED;
+    resetMpcState();
 }
 
 void MyPlanner::stopImmediately(geometry_msgs::Twist& cmd_vel)
 {
     cmd_vel = geometry_msgs::Twist();
     last_cmd_vel_ = geometry_msgs::Twist();
+    recordPublishedCommand(last_cmd_vel_, ros::Time::now());
 }
 
 bool MyPlanner::setPlan(
@@ -449,17 +698,17 @@ bool MyPlanner::setPlan(
     }
 
     const bool new_goal = isNewGoal(plan.back());
+
     raw_plan_ = plan;
     global_plan_ = plan;
     goal_pose_ = plan.back();
     has_goal_ = true;
+
+    // 全局规划器每次更新路径后，从新路径起点重新搜索前视点。
     target_index_ = 0;
     pose_adjusting_ = false;
     goal_reached_ = false;
-    force_corridor_update_ = true;
-    pp_x_brake_unsafe_count_ = 0;
-    pp_x_brake_safe_count_ = 0;
-    safety_mode_ = pp_safety_enable_ ? SAFETY_SAFE : SAFETY_DISABLED;
+    resetMpcState();
 
     if (new_goal)
     {
@@ -471,9 +720,6 @@ bool MyPlanner::setPlan(
         ROS_INFO("同一目标的全局路径已更新；路径点数：%zu。", plan.size());
     }
 
-    invalidateCorridorReferenceSnapshot();
-    rebuildCorridorPlanCache(plan);
-    // 下一控制周期先完成路径治愈，再由force_corridor_update_生成安全框。
     return true;
 }
 
@@ -833,13 +1079,10 @@ bool MyPlanner::computeFinalPoseCommand(
     return false;
 }
 
-void MyPlanner::limitCommandWithoutCommit(
+void MyPlanner::applyVelocityAndAccelerationLimits(
     const geometry_msgs::Twist& desired_cmd,
     geometry_msgs::Twist& limited_cmd,
-    double dt,
-    double accel_x,
-    double accel_y,
-    double accel_theta) const
+    double dt)
 {
     geometry_msgs::Twist target = desired_cmd;
 
@@ -852,83 +1095,78 @@ void MyPlanner::limitCommandWithoutCommit(
                    -max_vel_theta_,
                    max_vel_theta_);
 
-    const double max_delta_x = std::max(0.0, accel_x) * dt;
-    const double max_delta_y = std::max(0.0, accel_y) * dt;
+    const double max_delta_x = std::max(0.0, acc_lim_x_) * dt;
+    const double max_delta_y = std::max(0.0, acc_lim_y_) * dt;
     const double max_delta_theta =
-        std::max(0.0, accel_theta) * dt;
+        std::max(0.0, acc_lim_theta_) * dt;
 
     limited_cmd = geometry_msgs::Twist();
+
     limited_cmd.linear.x =
         clampValue(target.linear.x,
                    last_cmd_vel_.linear.x - max_delta_x,
                    last_cmd_vel_.linear.x + max_delta_x);
+
     limited_cmd.linear.y =
         clampValue(target.linear.y,
                    last_cmd_vel_.linear.y - max_delta_y,
                    last_cmd_vel_.linear.y + max_delta_y);
+
     limited_cmd.angular.z =
         clampValue(target.angular.z,
                    last_cmd_vel_.angular.z - max_delta_theta,
                    last_cmd_vel_.angular.z + max_delta_theta);
-}
 
-void MyPlanner::applyVelocityAndAccelerationLimits(
-    const geometry_msgs::Twist& desired_cmd,
-    geometry_msgs::Twist& limited_cmd,
-    double dt)
-{
-    limitCommandWithoutCommit(
-        desired_cmd,
-        limited_cmd,
-        dt,
-        acc_lim_x_,
-        acc_lim_y_,
-        acc_lim_theta_);
     last_cmd_vel_ = limited_cmd;
-}
-
-void MyPlanner::computePurePursuitCommand(
-    const geometry_msgs::PoseStamped& target_pose,
-    double lateral_deviation,
-    geometry_msgs::Twist& desired_cmd) const
-{
-    desired_cmd = geometry_msgs::Twist();
-    desired_cmd.linear.x =
-        target_pose.pose.position.x * path_linear_x_gain_;
-    desired_cmd.linear.y =
-        lateral_deviation * path_linear_y_gain_;
-    desired_cmd.angular.z =
-        target_pose.pose.position.y * path_angular_y_gain_;
+    recordPublishedCommand(limited_cmd, ros::Time::now());
 }
 
 bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 {
     cmd_vel = geometry_msgs::Twist();
 
-    if (!initialized_ || raw_plan_.empty() || costmap_ros_ == NULL)
+    if (!initialized_
+        || raw_plan_.empty()
+        || costmap_ros_ == NULL)
+    {
         return false;
+    }
 
     const ros::Time now = ros::Time::now();
+
     double dt = 0.05;
     if (!last_control_time_.isZero())
         dt = (now - last_control_time_).toSec();
+
     last_control_time_ = now;
     dt = clampValue(dt, 0.01, 0.20);
 
-    // 与最早稳定版一致：每周期重新生成非累积治愈路径。
+    if (controller_mode_ == "mpc"
+        && std::abs(dt - mpc_dt_) > 0.015)
+    {
+        ROS_WARN_THROTTLE(
+            2.0,
+            "C3.2实际控制周期%.3fs与mpc_dt=%.3fs差异较大；"
+            "建议controller_frequency与mpc_dt匹配。",
+            dt, mpc_dt_);
+    }
+
+    // 1. 每周期从原始路径重新生成非累积治愈路径。
     updateHealedPath();
 
-    // 安全框只读取治愈路径，不改变PP目标。
-    updateCorridorVisualizationIfNeeded();
-
+    // 2. 前方路径有障碍时停车并返回 false，保留全局重规划机制。
     if (!checkPathCollision())
     {
         stopImmediately(cmd_vel);
         return false;
     }
 
+    // 3. 终点附近进入独立位姿调整。
     geometry_msgs::PoseStamped final_pose;
-    if (!transformPose(base_frame_, global_plan_.back(), final_pose))
+
+    if (!transformPose(base_frame_,
+                       global_plan_.back(),
+                       final_pose))
     {
         stopImmediately(cmd_vel);
         return false;
@@ -938,12 +1176,13 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         std::hypot(final_pose.pose.position.x,
                    final_pose.pose.position.y);
 
-    if (!pose_adjusting_ && final_distance < goal_dist_threshold_)
+    if (!pose_adjusting_
+        && final_distance < goal_dist_threshold_)
     {
         pose_adjusting_ = true;
-        requestCorridorClear();
-        invalidateCorridorReferenceSnapshot();
-        ROS_INFO("距离目标 %.3fm，进入终点位姿调整。", final_distance);
+
+        ROS_INFO("距离目标 %.3fm，进入终点位姿调整。",
+                 final_distance);
     }
 
     geometry_msgs::Twist desired_cmd;
@@ -955,107 +1194,170 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
             stopImmediately(cmd_vel);
             return true;
         }
-        applyVelocityAndAccelerationLimits(desired_cmd, cmd_vel, dt);
+
+        applyVelocityAndAccelerationLimits(
+            desired_cmd, cmd_vel, dt);
         return true;
     }
 
+    // 4. 选择第一个距离车体超过 lookahead_dist 的路径点。
     geometry_msgs::PoseStamped target_pose;
+
     if (!selectTrackingTarget(target_pose))
     {
         stopImmediately(cmd_vel);
         return false;
     }
 
+    // 5. 新目标开始时，保留现有的初始姿态调整层。
     if (!initial_rotation_done_)
     {
         if (computeInitialRotationCommand(target_pose, desired_cmd))
         {
-            applyVelocityAndAccelerationLimits(desired_cmd, cmd_vel, dt);
+            applyVelocityAndAccelerationLimits(
+                desired_cmd, cmd_vel, dt);
             return true;
         }
     }
 
-    const double lateral_deviation =
-        computeLateralDeviation(target_pose);
-    computePurePursuitCommand(
-        target_pose,
-        lateral_deviation,
-        desired_cmd);
+    // 6. 先生成稳定PP命令，作为MPC失败时的无缝回退。
+    double lateral_deviation = 0.0;
+    geometry_msgs::Twist pp_cmd;
+    computePurePursuitCommand(target_pose, pp_cmd, lateral_deviation);
 
-    // 先得到稳定PP正常会发布的限速命令，再让安全盾只削减x。
-    geometry_msgs::Twist nominal_cmd;
-    limitCommandWithoutCommit(
-        desired_cmd,
-        nominal_cmd,
-        dt,
-        acc_lim_x_,
-        acc_lim_y_,
-        acc_lim_theta_);
+    bool used_mpc = false;
+    MpcSolveReport mpc_report;
 
-    SafetyCheckReport nominal_report;
-    SafetyCheckReport selected_report;
-    double selected_x_scale = 1.0;
-    bool unsafe_now = false;
-
-    if (pp_safety_enable_)
+    if (controller_mode_ == "mpc" && !mpc_locked_to_pp_)
     {
-        applyFixedXBrakeSafetyShield(
-            nominal_cmd,
-            cmd_vel,
-            nominal_report,
-            selected_report,
-            selected_x_scale,
-            unsafe_now);
+        if (computeMpcCommand(dt, desired_cmd, mpc_report))
+        {
+            used_mpc = true;
+            mpc_consecutive_failures_ = 0;
+        }
+        else
+        {
+            ++mpc_consecutive_failures_;
+
+            // C3中PP回退限制到最高路径合速度，防止单次QP失败突然跳回高速PP。
+            desired_cmd = pp_cmd;
+            desired_cmd.linear.x = clampValue(
+                desired_cmd.linear.x, 0.0, c2_max_reference_speed_);
+            desired_cmd.linear.y = clampValue(
+                desired_cmd.linear.y, mpc_min_vy_, mpc_max_vy_);
+            desired_cmd.angular.z = clampValue(
+                desired_cmd.angular.z, mpc_min_omega_, mpc_max_omega_);
+
+            ROS_WARN_THROTTLE(
+                0.5,
+                "C3.2 MPC本周期失败，回退稳定PP：status=%s，reason=%s，连续失败=%d。",
+                mpc_report.status.c_str(),
+                mpc_report.failure_reason.c_str(),
+                mpc_consecutive_failures_);
+
+            if (mpc_lock_to_pp_after_failures_
+                && mpc_consecutive_failures_ >= mpc_max_consecutive_failures_)
+            {
+                mpc_locked_to_pp_ = true;
+                ROS_ERROR("C3.2 MPC连续失败%d次，本条全局路径剩余过程锁定PP；收到新路径后恢复MPC。",
+                          mpc_consecutive_failures_);
+            }
+        }
     }
     else
     {
-        cmd_vel = nominal_cmd;
-        safety_mode_ = SAFETY_DISABLED;
-        pp_x_brake_unsafe_count_ = 0;
-        pp_x_brake_safe_count_ = 0;
+        desired_cmd = pp_cmd;
+        if (controller_mode_ == "mpc")
+        {
+            desired_cmd.linear.x = clampValue(
+                desired_cmd.linear.x, 0.0, c2_max_reference_speed_);
+        }
     }
 
-    // 简化安全盾绝不停车、绝不返回false、绝不主动请求重规划。
-    // 输出只可能是原PP命令，或linear.x固定乘pp_x_brake_scale_。
-    last_cmd_vel_ = cmd_vel;
+    // 与QP速度圆保持一致：即使回退PP或数值误差，也不允许vx/vy合速度超限。
+    if (controller_mode_ == "mpc")
+    {
+        const double translational_speed = std::hypot(
+            desired_cmd.linear.x, desired_cmd.linear.y);
+        if (translational_speed > mpc_max_translational_speed_ + 1e-9)
+        {
+            const double scale = mpc_max_translational_speed_ / translational_speed;
+            desired_cmd.linear.x *= scale;
+            desired_cmd.linear.y *= scale;
+        }
+    }
 
-    publishSafetyDebug(nominal_report, selected_report);
+    applyVelocityAndAccelerationLimits(desired_cmd, cmd_vel, dt);
 
     if (debug_log_)
     {
-        ROS_INFO_THROTTLE(
-            0.5,
-            "PP-C0.5稳定PP：target=(%.3f,%.3f) dist=%.3f alpha=%.3f "
-            "lateral=%.3f raw=(%.3f,%.3f,%.3f) "
-            "nominal=(%.3f,%.3f,%.3f) cmd=(%.3f,%.3f,%.3f) "
-            "shield=%s x_scale=%.2f trigger=%d count(unsafe=%d safe=%d) "
-            "margin(raw=%.3f actual=%.3f) outside(raw=%d actual=%d) index=%d。",
-            target_pose.pose.position.x,
-            target_pose.pose.position.y,
-            std::hypot(target_pose.pose.position.x,
-                       target_pose.pose.position.y),
-            std::atan2(target_pose.pose.position.y,
-                       target_pose.pose.position.x),
-            lateral_deviation,
-            desired_cmd.linear.x,
-            desired_cmd.linear.y,
-            desired_cmd.angular.z,
-            nominal_cmd.linear.x,
-            nominal_cmd.linear.y,
-            nominal_cmd.angular.z,
-            cmd_vel.linear.x,
-            cmd_vel.linear.y,
-            cmd_vel.angular.z,
-            safetyModeName(),
-            selected_x_scale,
-            unsafe_now ? 1 : 0,
-            pp_x_brake_unsafe_count_,
-            pp_x_brake_safe_count_,
-            nominal_report.min_margin,
-            selected_report.min_margin,
-            nominal_report.outside_count,
-            selected_report.outside_count,
-            target_index_);
+        if (used_mpc)
+        {
+            ROS_INFO_THROTTLE(
+                0.5,
+                "MPC-C3.2：ref0=(pos %.3f,%.3f; psi=%.3f chi=%.3f; "
+                "vpath=%.3f beta0=%.1fdeg betaMax=%.1fdeg planMax=%.1fdeg; "
+                "meas=(%.3f,%.3f,%.3f,%s age=%.3f) delay=(%.3f,%.3f,%.3f,%.3f); "
+                "omegaSeed=%.3f guard=%d; u=%.3f,%.3f,%.3f omegaState=%.3f)，"
+                "cmd=(%.3f,%.3f,%.3f)，k(track=%.3f preview=%.3f strength=%.2f)，"
+                "vlimit=%.3f，preview=%.3fm，resampled=%d，"
+                "solve=%.2fms total=%.2fms iter=%d status=%s，index=%d。",
+                mpc_report.first_reference.x,
+                mpc_report.first_reference.y,
+                mpc_report.first_reference.yaw,
+                mpc_report.first_reference.motion_yaw,
+                mpc_report.first_path_speed,
+                mpc_report.first_drift_beta * 180.0 / M_PI,
+                mpc_report.max_abs_drift_beta * 180.0 / M_PI,
+                mpc_report.max_abs_planned_beta * 180.0 / M_PI,
+                mpc_report.measured_vx,
+                mpc_report.measured_vy,
+                mpc_report.measured_omega,
+                mpc_report.using_odometry ? "odom" : "cmd",
+                mpc_report.odom_age,
+                mpc_report.delay_x,
+                mpc_report.delay_y,
+                mpc_report.delay_yaw,
+                mpc_report.delay_omega,
+                mpc_report.initial_omega_seed,
+                mpc_report.beta_speed_guard_steps,
+                mpc_report.first_reference.vx,
+                mpc_report.first_reference.vy,
+                mpc_report.first_reference.omega_cmd,
+                mpc_report.first_reference.omega,
+                cmd_vel.linear.x,
+                cmd_vel.linear.y,
+                cmd_vel.angular.z,
+                mpc_report.first_tracking_curvature,
+                mpc_report.preview_abs_curvature,
+                mpc_report.first_curve_strength,
+                mpc_report.first_speed_limit,
+                mpc_report.preview_distance,
+                mpc_report.resampled_points,
+                mpc_report.solve_ms,
+                mpc_report.total_ms,
+                mpc_report.iterations,
+                mpc_report.status.c_str(),
+                target_index_);
+        }
+        else
+        {
+            ROS_INFO_THROTTLE(
+                0.5,
+                "MPC-C3.2回退PP：target=(%.3f,%.3f)，lateral=%.3f，"
+                "desired=(%.3f,%.3f,%.3f)，cmd=(%.3f,%.3f,%.3f)，locked=%s，index=%d。",
+                target_pose.pose.position.x,
+                target_pose.pose.position.y,
+                lateral_deviation,
+                desired_cmd.linear.x,
+                desired_cmd.linear.y,
+                desired_cmd.angular.z,
+                cmd_vel.linear.x,
+                cmd_vel.linear.y,
+                cmd_vel.angular.z,
+                mpc_locked_to_pp_ ? "是" : "否",
+                target_index_);
+        }
     }
 
     return true;

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <std_msgs/UInt8MultiArray.h>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1195,9 +1196,17 @@ void process_recv(const unsigned char *buf, int len)
 				if(reader.parse(info,root))
 				{
 					angle = root["ivw"]["angle"].asFloat();
+					sign_angle = true;
 					cout << "awake_angle: "<< angle<<endl;
+					bool internal_task_recording = true;
+					ros::param::param<bool>(
+						"/speech_command/internal_task_recording",
+						internal_task_recording,
+						true
+					);
 					if (
-						!task_record_requested
+						internal_task_recording
+						&& !task_record_requested
 						&& !task_recording
 						&& !task_record_completed
 					)
@@ -1205,6 +1214,12 @@ void process_recv(const unsigned char *buf, int len)
 						task_record_requested = true;
 						cout
 							<< ">>>>>检测到唤醒词，直接从当前 PCM 流接录任务语音"
+							<< endl;
+					}
+					else if (!internal_task_recording)
+					{
+						cout
+							<< ">>>>>检测到唤醒词，PCM 将交给外部 VAD 录音节点"
 							<< endl;
 					}
 					if(result.length() > 10) {
@@ -1317,6 +1332,12 @@ void AIUITester::bind(TEST_CALLBACK callback)
 void AIUITester::test()
 {
 	clearOldTaskRecording();
+	ros::NodeHandle pcm_node_handle;
+	ros::Publisher pcm_publisher =
+		pcm_node_handle.advertise<std_msgs::UInt8MultiArray>(
+			"/mic/pcm/deno",
+			100
+		);
 
 	cout << ">>>>>创建AIUI代理Agent\n"<< endl;
 	createAgent();
@@ -1452,9 +1473,23 @@ void AIUITester::test()
 			exit(1);
 		}
 
+		const size_t pcm_bytes =
+			buffer_frames * frame_byte * AUDIO_CHANNEL_SET;
+		if (pcm_publisher.getNumSubscribers() > 0)
+		{
+			std_msgs::UInt8MultiArray pcm_message;
+			const uint8_t *pcm_begin =
+				reinterpret_cast<const uint8_t *>(buffer1);
+			pcm_message.data.assign(
+				pcm_begin,
+				pcm_begin + pcm_bytes
+			);
+			pcm_publisher.publish(pcm_message);
+		}
+
 		processTaskRecordingFrame(
 			buffer1,
-			buffer_frames * frame_byte * AUDIO_CHANNEL_SET
+			pcm_bytes
 		);
 
 		//

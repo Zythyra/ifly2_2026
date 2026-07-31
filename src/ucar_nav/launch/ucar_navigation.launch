@@ -3,7 +3,7 @@
   <!-- Run the map server -->
    
   <include file="$(find ucar_controller)/launch/base_driver.launch" > </include>
-
+  
   <include file="$(find ydlidar)/launch/ydlidar.launch" > </include>
   <arg name="map_file" default="$(find ucar_map)/maps/map2026.yaml"/>
   <!-- 起点坐标 -->
@@ -38,6 +38,7 @@
       <!-- <rosparam file="$(find ucar_nav)/launch/config/xys_1/costmap_converter_params.yaml" command="load" /> -->
 
     <!-- 地图参数配置 -->
+      <rosparam file="$(find ucar_nav)/launch/config/xys/move_base_params.yaml" command="load"/>
       <rosparam file="$(find ucar_nav)/launch/config/xys/costmap_common_params.yaml" command="load" ns="local_costmap" />
       <rosparam file="$(find ucar_nav)/launch/config/xys/base_global_planner_params.yaml" command="load" />
       <rosparam file="$(find ucar_nav)/launch/config/xys/local_costmap_params.yaml" command="load" />

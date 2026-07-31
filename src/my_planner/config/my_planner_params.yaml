@@ -1,25 +1,150 @@
 # =============================================================================
-# MyPlanner PP-C0.5：最早稳定PP + 固定半速X抑制器
-# 加载命名空间：/move_base/MyPlanner
-#
-# 控制主体完全使用最早稳定版治愈路径PP：
-#   vx = target.x * Kx
-#   vy = lateral * Ky
-#   wz = target.y * Kw
-#
-# 安全框不参与前视目标选择，也不生成框优化曲线。
-# 明确预测出框时，linear.x固定乘0.5；linear.y和angular.z保持原PP值。
+# MyPlanner MPC-C3.2：实测状态 + 输入延迟 + 一阶角速度响应 + 轻量MPCC进度奖励
 # =============================================================================
+# 高速档目标：直线0.75m/s，弯道速度保持默认档，优先解决：
+# 1. 出弯角速度过冲后的轻微晃动；
+# 2. 同一弯道不同方向受历史角速度影响而快慢不一致；
+# 3. 出弯后速度上限已经恢复，但车辆仍缓慢爬升。
+#
+# 成熟方案来源：
+# - TEB：使用真实初始速度约束起始加速度；
+# - Nav2 MPPI：真实状态与历史控制序列分离、路径跟随/对齐/自转评价分离；
+# - Autoware MPC：输入延迟、一阶执行器响应、Butterworth滤波、终端稳定权重；
+# - MPCC：轮廓误差之外增加路径进度奖励。
 
-# 最早稳定版全向PP
-lookahead_dist: 0.26
-path_linear_x_gain: 2.20
-path_linear_y_gain: 2.00
-path_angular_y_gain: 10.00
-lateral_search_points: 10
+controller_mode: "mpc"
 
-# 非累积路径治愈
-enable_path_healing: true
+# 建议与move_base/controller_frequency=20Hz一致。
+mpc_horizon_steps: 20
+mpc_dt: 0.05
+mpc_min_reference_length: 0.25
+mpc_reference_search_behind_points: 160
+mpc_reference_search_ahead_points: 1000
+
+# -----------------------------------------------------------------------------
+# C2保留：路径重采样、曲率估计、曲率速度上限
+# -----------------------------------------------------------------------------
+c2_duplicate_point_distance: 0.003
+c2_resample_distance: 0.020
+c2_tracking_curvature_distance: 0.080
+c2_speed_curvature_distance: 0.120
+c2_curvature_median_window: 5
+c2_curvature_preview_distance: 0.08
+c2_hold_speed_after_curve: 0.04
+
+c2_max_reference_speed: 1.00
+c2_min_curve_speed: 0.52
+c2_curve_lateral_acc_limit: 0.48
+c2_reference_acceleration: 1.50
+c2_reference_deceleration: 1.80
+
+# -----------------------------------------------------------------------------
+# C3主动漂移几何
+# -----------------------------------------------------------------------------
+c3_enable_active_drift: true
+c3_yaw_preview_distance: 0.12
+c3_yaw_preview_gain: 0.42
+c3_yaw_preview_curvature_deadband: 0.25
+c3_yaw_preview_full_curvature: 1.50
+
+c3_beta_max_low_speed_deg: 35.0
+c3_beta_max_mid_speed_deg: 28.0
+c3_beta_max_high_speed_deg: 22.0
+c3_beta_low_speed_threshold: 0.35
+c3_beta_high_speed_threshold: 0.60
+c3_beta_rate_limit_deg_per_s: 90.0
+
+# 曲率前馈与角速度参考的建立/制动/反向速率。
+c3_reference_omega_limit: 2.40
+c3_reference_omega_accel_rate: 8.0
+c3_reference_omega_decel_rate: 14.0
+c3_reference_omega_reverse_rate: 16.0
+c3_omega_curvature_feedforward_gain: 0.30
+
+# -----------------------------------------------------------------------------
+# TEB/MPPI/Autoware式真实状态、滤波、输入延迟和执行器响应
+# -----------------------------------------------------------------------------
+c3_use_odometry: true
+c3_odom_topic: "/odom"
+c3_odom_timeout: 0.20
+
+# 标准二阶Butterworth，仅滤波odom角速度；0表示关闭。
+c3_measured_omega_filter_cutoff_hz: 5.0
+
+# 初值为保守的一控制周期。后续应通过cmd_vel与odom/IMU阶跃测试标定。
+c3_input_delay: 0.05
+c3_translational_response_tau: 0.08
+c3_angular_response_tau: 0.12
+c3_delay_integration_dt: 0.01
+
+# -----------------------------------------------------------------------------
+# 状态、速度方向、进度和终端稳定代价
+# -----------------------------------------------------------------------------
+mpc_weight_longitudinal: 1.50
+mpc_weight_lateral: 110.0
+mpc_weight_yaw_straight: 12.0
+mpc_weight_yaw_curve: 8.0
+
+# 直道强烈消除残余角速度；弯道允许必要的快速旋转。
+mpc_weight_omega_state_straight: 8.0
+mpc_weight_omega_state_curve: 0.40
+
+mpc_terminal_position_weight_scale: 4.0
+mpc_terminal_yaw_weight_scale: 4.0
+mpc_terminal_omega_weight_scale: 8.0
+
+mpc_weight_tangent_velocity: 4.0
+mpc_weight_path_normal_velocity: 35.0
+
+# MPCC式路径进度奖励。过大可能提前冲向速度圆上限。
+mpc_weight_progress: 0.80
+
+# 控制命令正则。直道抑制无意义自转，弯道不压制甩尾。
+mpc_weight_vx: 0.20
+mpc_weight_vy: 0.20
+mpc_weight_omega_straight: 0.90
+mpc_weight_omega_curve: 0.15
+
+mpc_weight_delta_vx: 10.0
+mpc_weight_delta_vy: 12.0
+mpc_weight_delta_omega: 8.0
+
+# -----------------------------------------------------------------------------
+# 硬约束
+# -----------------------------------------------------------------------------
+mpc_min_vx_ratio: 0.0
+mpc_min_vx: 0.0
+mpc_max_vx: 1.00
+mpc_min_vy: -0.35
+mpc_max_vy: 0.35
+mpc_min_omega: -2.50
+mpc_max_omega: 2.50
+
+mpc_max_translational_speed: 1.00
+mpc_velocity_polygon_sides: 16
+
+mpc_max_accel_x: 2.00
+mpc_max_decel_x: 2.00
+mpc_max_accel_y: 2.00
+mpc_max_accel_theta: 8.00
+
+# -----------------------------------------------------------------------------
+# OSQP与回退
+# -----------------------------------------------------------------------------
+mpc_osqp_max_iterations: 180
+mpc_osqp_eps_abs: 0.001
+mpc_osqp_eps_rel: 0.001
+mpc_osqp_polish: false
+mpc_osqp_verbose: false
+mpc_max_total_time_ms: 30.0
+mpc_max_consecutive_failures: 5
+mpc_lock_to_pp_after_failures: true
+mpc_publish_debug_paths: true
+
+# -----------------------------------------------------------------------------
+# PP回退、碰撞检查、初始和终点控制
+# -----------------------------------------------------------------------------
+enable_path_healing: false
 path_healing_points_behind: 5
 path_healing_points_ahead: 60
 path_healing_iterations: 3
@@ -27,18 +152,21 @@ path_healing_max_step: 0.01
 path_healing_gradient_deadband: 4.0
 path_healing_gradient_scale: 20.0
 
-# 原稳定版前方路径碰撞检查
+lookahead_dist: 0.26
+path_linear_x_gain: 2.20
+path_linear_y_gain: 2.00
+lateral_search_points: 10
+path_angular_y_gain: 10.00
+
 collision_check_lookahead_points: 20
 collision_cost_threshold: 253
 
-# 初始姿态调整
 enable_initial_rotation: true
 initial_yaw_tolerance: 0.10
 initial_angular_gain: 8.00
 initial_min_angular_speed: 0.10
 initial_max_angular_speed: 1.40
 
-# 终点位姿调整
 goal_dist_threshold: 0.50
 goal_position_tolerance: 0.025
 goal_yaw_tolerance: 0.05
@@ -51,78 +179,11 @@ final_max_vel_x: 0.30
 final_max_vel_y: 0.20
 final_max_vel_theta: 0.90
 
-# 原稳定版速度与加速度上限
-max_vel_x: 0.80
-max_vel_y: 0.55
-max_vel_theta: 4.00
-acc_lim_x: 8.00
-acc_lim_y: 8.00
-acc_lim_theta: 15.00
+max_vel_x: 1.00
+max_vel_y: 0.35
+max_vel_theta: 2.50
+acc_lim_x: 2.00
+acc_lim_y: 2.00
+acc_lim_theta: 8.00
 
-# -----------------------------------------------------------------------------
-# 简化固定倍率X抑制器
-# -----------------------------------------------------------------------------
-pp_safety_enable: true
-
-# 安全框快照超过该时间后不介入，原稳定PP直接通过。
-pp_safety_snapshot_max_age: 0.80
-
-# 只预测未来0.20s：0.05s一步，共4步，避免远期姿态误报。
-pp_safety_prediction_dt: 0.05
-pp_safety_prediction_horizon: 0.20
-
-# 只有margin小于-1cm，并且至少2个预测步越界，才视为明确出框。
-pp_x_brake_margin_threshold: -0.010
-pp_x_brake_min_outside_steps: 2
-pp_safety_footprint_margin: 0.005
-
-# 明确出框后固定将linear.x乘0.5。
-# 代码强制该参数不得小于0.5，linear.y和angular.z始终保持原PP值。
-pp_x_brake_scale: 0.50
-
-# 连续2周期明确出框才进入减速；连续3周期安全才解除，防止边界抖动。
-pp_x_brake_enter_cycles: 2
-pp_x_brake_exit_cycles: 3
-
-# -----------------------------------------------------------------------------
-# 异步安全框：只用于安全盾和RViz，不参与PP目标选择
-# -----------------------------------------------------------------------------
-enable_corridor_visualization: true
-corridor_update_frequency: 2.0
-
-local_path_behind_distance: 0.10
-local_path_horizon_distance: 1.10
-local_path_resample_distance: 0.03
-
-corridor_skeleton_corner_angle_deg: 20.0
-corridor_skeleton_corner_window: 0.06
-corridor_skeleton_max_segment_length: 0.15
-corridor_skeleton_min_segment_length: 0.06
-
-corridor_initial_half_width: 0.35
-corridor_longitudinal_extension: 0.12
-corridor_post_shrink_longitudinal_reserve: 0.08
-corridor_map_boundary_margin: 0.01
-
-corridor_hard_cost_threshold: 254
-corridor_treat_unknown_as_obstacle: true
-corridor_obstacle_padding: 0.0
-corridor_max_obstacle_cuts: 120
-corridor_min_polygon_area: 0.0005
-
-corridor_use_costmap_footprint: true
-corridor_robot_half_length: 0.17
-corridor_robot_half_width: 0.13
-corridor_extra_margin: 0.015
-
-# 本版用clipped_polygon并集检查实际footprint，不要求中心走廊有效。
-corridor_min_overlap_area: 0.0025
-corridor_reference_validation_step: 0.01
-corridor_min_usable_chain_length: 0.35
-corridor_preferred_chain_length: 0.75
-corridor_terminal_ignore_distance: 0.10
-corridor_projection_search_behind_points: 120
-corridor_projection_search_ahead_points: 500
-
-corridor_debug_log: true
 debug_log: true

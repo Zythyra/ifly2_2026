@@ -156,9 +156,7 @@ include_directories(
 ## Declare a C++ library
 add_library(my_planner
   src/my_planner.cpp
-  src/corridor_visualization.cpp
-
-  src/pp_x_brake_shield.cpp
+  src/mpc_controller.cpp
 )
 
 find_package(Threads REQUIRED)

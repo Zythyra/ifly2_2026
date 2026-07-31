@@ -24,8 +24,8 @@ planner_patience: 5.0
 oscillation_timeout: 8.0
 oscillation_distance: 0.15
 
-recovery_behavior_enabled: true
-clearing_rotation_allowed: true
+recovery_behavior_enabled: false
+clearing_rotation_allowed: false
 
 #base_local_planner: "dwa_local_planner/DWAPlannerROS"
 #base_global_planner: "astar_planner/AstarPlannerRos"
