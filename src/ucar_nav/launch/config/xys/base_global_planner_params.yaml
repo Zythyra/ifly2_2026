@@ -31,9 +31,9 @@ GlobalPlanner:
   use_grid_path: false
   old_navfn_behavior: false
 
-  lethal_cost: 255     #255
-  neutral_cost: 35     #73
-  cost_factor: 1.049   #1.049
+  lethal_cost: 253     #255
+  neutral_cost: 90     #73
+  cost_factor: 0.9   #1.049
   publish_potential: true
   orientation_mode: 1
   orientation_window_size: 1

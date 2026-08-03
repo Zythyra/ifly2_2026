@@ -2,9 +2,9 @@
   "success": true,
   "backend": "energy",
   "reason": "检测到连续静音",
-  "duration_seconds": 6.38,
+  "duration_seconds": 6.78,
   "speech_started": true,
-  "speech_frame_count": 241,
+  "speech_frame_count": 304,
   "output": "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav",
-  "wall_seconds": 6.92
+  "wall_seconds": 7.27
 }

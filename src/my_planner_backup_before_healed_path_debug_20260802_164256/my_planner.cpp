@@ -1,9 +1,7 @@
-// 交付构建标识：MYPLANNER_MPC_C4_0_4_ORIGINAL_FINAL_POSE_CONTROL_20260802
-// C4.0.4：保留条件式初始对准和C4路径跟踪，恢复C3.2原始终点位姿调整。
+// 交付构建标识：MYPLANNER_MPC_C3_2_MEASURED_STATE_DELAY_PROGRESS_20260731
 #include "my_planner.h"
 
 #include <pluginlib/class_list_macros.h>
-#include <costmap_2d/cost_values.h>
 #include <boost/thread/locks.hpp>
 #include <tf/tf.h>
 #include <tf/transform_datatypes.h>
@@ -11,7 +9,6 @@
 #include <algorithm>
 #include <clocale>
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 
 PLUGINLIB_EXPORT_CLASS(my_planner::MyPlanner, nav_core::BaseLocalPlanner)
@@ -25,8 +22,9 @@ MyPlanner::MyPlanner()
       costmap_ros_(NULL),
       has_goal_(false),
       target_index_(0),
+      pose_adjusting_(false),
       goal_reached_(false),
-      control_state_(ControlState::WAITING_FOR_PLAN),
+      initial_rotation_done_(false),
       mpc_consecutive_failures_(0),
       mpc_locked_to_pp_(false),
       odom_received_(false)
@@ -302,10 +300,6 @@ void MyPlanner::initialize(std::string name,
                      path_healing_gradient_deadband_, 4.0);
     private_nh.param("path_healing_gradient_scale",
                      path_healing_gradient_scale_, 20.0);
-    private_nh.param("publish_path_healing_debug",
-                     publish_path_healing_debug_, true);
-    private_nh.param("path_healing_debug_publish_rate",
-                     path_healing_debug_publish_rate_, 5.0);
 
     // -------------------------------------------------------------------------
     // 保留前方全局路径碰撞检查；命中障碍后返回 false 触发全局重规划
@@ -322,18 +316,12 @@ void MyPlanner::initialize(std::string name,
         static_cast<unsigned char>(collision_cost_threshold);
 
     // -------------------------------------------------------------------------
-    // 条件式初始姿态对准。阈值使用路径切线与车头的夹角，并带滞回。
+    // 初始姿态调整
     // -------------------------------------------------------------------------
     private_nh.param("enable_initial_rotation",
                      enable_initial_rotation_, true);
-    double initial_align_enter_angle_deg = 30.0;
-    double initial_align_exit_angle_deg = 22.0;
-    private_nh.param("initial_align_enter_angle_deg",
-                     initial_align_enter_angle_deg, 30.0);
-    private_nh.param("initial_align_exit_angle_deg",
-                     initial_align_exit_angle_deg, 22.0);
-    private_nh.param("initial_path_tangent_lookahead",
-                     initial_path_tangent_lookahead_, 0.16);
+    private_nh.param("initial_yaw_tolerance",
+                     initial_yaw_tolerance_, 0.10);
     private_nh.param("initial_angular_gain",
                      initial_angular_gain_, 2.00);
     private_nh.param("initial_min_angular_speed",
@@ -342,7 +330,7 @@ void MyPlanner::initialize(std::string name,
                      initial_max_angular_speed_, 0.30);
 
     // -------------------------------------------------------------------------
-    // C3.2原始终点位姿调整：进入阈值后立即由独立XYZ比例控制接管。
+    // 终点位姿调整
     // -------------------------------------------------------------------------
     private_nh.param("goal_dist_threshold",
                      goal_dist_threshold_, 0.15);
@@ -386,14 +374,7 @@ void MyPlanner::initialize(std::string name,
     private_nh.param("controller_mode", controller_mode_, std::string("mpc"));
     private_nh.param("mpc_horizon_steps", mpc_horizon_steps_, 20);
     private_nh.param("mpc_dt", mpc_dt_, 0.05);
-    private_nh.param("mpc_terminal_stop_enabled",
-                     mpc_terminal_stop_enabled_, false);
-    private_nh.param("mpc_terminal_yaw_blend_distance",
-                     mpc_terminal_yaw_blend_distance_, 0.25);
-    private_nh.param("mpc_terminal_progress_fade_distance",
-                     mpc_terminal_progress_fade_distance_, 0.30);
-    private_nh.param("mpc_terminal_fallback_stop_distance",
-                     mpc_terminal_fallback_stop_distance_, 0.20);
+    private_nh.param("mpc_min_reference_length", mpc_min_reference_length_, 0.25);
     private_nh.param("mpc_reference_search_behind_points", mpc_reference_search_behind_points_, 160);
     private_nh.param("mpc_reference_search_ahead_points", mpc_reference_search_ahead_points_, 1000);
 
@@ -451,8 +432,6 @@ void MyPlanner::initialize(std::string name,
     c3_beta_max_mid_speed_ = c3_beta_max_mid_speed_deg * deg_to_rad;
     c3_beta_max_high_speed_ = c3_beta_max_high_speed_deg * deg_to_rad;
     c3_beta_rate_limit_ = c3_beta_rate_limit_deg_per_s * deg_to_rad;
-    initial_align_enter_angle_ = initial_align_enter_angle_deg * deg_to_rad;
-    initial_align_exit_angle_ = initial_align_exit_angle_deg * deg_to_rad;
 
     private_nh.param("mpc_weight_longitudinal", mpc_weight_longitudinal_, 3.0);
     private_nh.param("mpc_weight_lateral", mpc_weight_lateral_, 110.0);
@@ -518,8 +497,6 @@ void MyPlanner::initialize(std::string name,
         std::max(0, path_healing_iterations_);
     path_healing_gradient_scale_ =
         std::max(1e-6, path_healing_gradient_scale_);
-    path_healing_debug_publish_rate_ = clampValue(
-        path_healing_debug_publish_rate_, 0.2, 30.0);
     collision_check_lookahead_points_ =
         std::max(1, collision_check_lookahead_points_);
     lateral_search_points_ = std::max(0, lateral_search_points_);
@@ -532,12 +509,7 @@ void MyPlanner::initialize(std::string name,
 
     mpc_horizon_steps_ = std::max(5, mpc_horizon_steps_);
     mpc_dt_ = clampValue(mpc_dt_, 0.02, 0.20);
-    mpc_terminal_yaw_blend_distance_ = std::max(
-        c2_resample_distance_, mpc_terminal_yaw_blend_distance_);
-    mpc_terminal_progress_fade_distance_ = std::max(
-        c2_resample_distance_, mpc_terminal_progress_fade_distance_);
-    mpc_terminal_fallback_stop_distance_ = std::max(
-        0.0, mpc_terminal_fallback_stop_distance_);
+    mpc_min_reference_length_ = std::max(0.05, mpc_min_reference_length_);
     mpc_reference_search_behind_points_ = std::max(1, mpc_reference_search_behind_points_);
     mpc_reference_search_ahead_points_ = std::max(20, mpc_reference_search_ahead_points_);
 
@@ -617,19 +589,11 @@ void MyPlanner::initialize(std::string name,
     mpc_max_total_time_ms_ = std::max(1.0, mpc_max_total_time_ms_);
     mpc_max_consecutive_failures_ = std::max(1, mpc_max_consecutive_failures_);
 
-    initial_align_enter_angle_ = clampValue(
-        initial_align_enter_angle_, 0.05, M_PI);
-    initial_align_exit_angle_ = clampValue(
-        initial_align_exit_angle_, 0.02, initial_align_enter_angle_);
-    initial_path_tangent_lookahead_ = std::max(
-        0.02, initial_path_tangent_lookahead_);
-    goal_dist_threshold_ = std::max(
-        goal_position_tolerance_, goal_dist_threshold_);
-
 
     target_index_ = 0;
+    pose_adjusting_ = false;
     goal_reached_ = false;
-    control_state_ = ControlState::WAITING_FOR_PLAN;
+    initial_rotation_done_ = !enable_initial_rotation_;
     last_cmd_vel_ = geometry_msgs::Twist();
     measured_body_twist_ = geometry_msgs::Twist();
     last_odom_stamp_ = ros::Time(0);
@@ -649,27 +613,13 @@ void MyPlanner::initialize(std::string name,
     mpc_predicted_path_pub_ =
         private_nh.advertise<nav_msgs::Path>("mpc_predicted_path", 1, false);
 
-    raw_global_path_pub_ =
-        private_nh.advertise<nav_msgs::Path>("raw_global_path", 1, true);
-    healed_global_path_pub_ =
-        private_nh.advertise<nav_msgs::Path>("healed_global_path", 1, true);
-    healed_window_path_pub_ =
-        private_nh.advertise<nav_msgs::Path>("healed_window_path", 1, true);
-
-    ROS_INFO("路径治愈可视化：%s，发布频率=%.1fHz；"
-             "话题为 raw_global_path / healed_global_path / healed_window_path。",
-             publish_path_healing_debug_ ? "开启" : "关闭",
-             path_healing_debug_publish_rate_);
-
     initialized_ = true;
 
-    ROS_WARN("MyPlanner MPC-C4.0.4 ORIGINAL-FINAL-POSE-CONTROL 启动："
+    ROS_WARN("MyPlanner MPC-C3.2 MEASURED-STATE-DELAY-PROGRESS 启动："
              "mode=%s，路径合速度=%.2f~%.2fm/s，N=%d，dt=%.3fs；"
              "odom=%s topic=%s timeout=%.2fs，input_delay=%.3fs，tau(v/w)=%.3f/%.3fs；"
              "omegaRate(acc/dec/rev)=%.1f/%.1f/%.1f，curvatureFF=%.2f，"
-             "progressWeight=%.2f，速度圆=%.2fm/s(%d边)；"
-             "初始对准=%.1f/%.1fdeg，原始终点接管距离=%.3fm。"
-             "base=%s，costmap=%s。",
+             "progressWeight=%.2f，速度圆=%.2fm/s(%d边)。base=%s，costmap=%s。",
              controller_mode_.c_str(), c2_min_curve_speed_, c2_max_reference_speed_,
              mpc_horizon_steps_, mpc_dt_,
              c3_use_odometry_ ? "启用" : "关闭", c3_odom_topic_.c_str(),
@@ -679,9 +629,6 @@ void MyPlanner::initialize(std::string name,
              c3_reference_omega_reverse_rate_,
              c3_omega_curvature_feedforward_gain_, mpc_weight_progress_,
              mpc_max_translational_speed_, mpc_velocity_polygon_sides_,
-             initial_align_enter_angle_ * 180.0 / M_PI,
-             initial_align_exit_angle_ * 180.0 / M_PI,
-             goal_dist_threshold_,
              base_frame_.c_str(), costmap_frame_.c_str());
 }
 
@@ -723,171 +670,14 @@ bool MyPlanner::isNewGoal(const geometry_msgs::PoseStamped& goal) const
     return position_change > 0.05 || yaw_change > 0.12;
 }
 
-const char* MyPlanner::controlStateName(ControlState state)
-{
-    switch (state)
-    {
-        case ControlState::WAITING_FOR_PLAN:
-            return "WAITING_FOR_PLAN";
-        case ControlState::INITIAL_ALIGN:
-            return "INITIAL_ALIGN";
-        case ControlState::PATH_TRACKING:
-            return "PATH_TRACKING";
-        case ControlState::FINAL_SETTLING:
-            return "FINAL_SETTLING";
-        case ControlState::GOAL_HOLD:
-            return "GOAL_HOLD";
-        case ControlState::FAILURE_STOP:
-            return "FAILURE_STOP";
-        default:
-            return "UNKNOWN";
-    }
-}
-
-void MyPlanner::transitionTo(
-    ControlState next_state,
-    const std::string& reason)
-{
-    if (control_state_ == next_state)
-        return;
-
-    const ControlState previous = control_state_;
-    control_state_ = next_state;
-
-    if (next_state != ControlState::GOAL_HOLD)
-        goal_reached_ = false;
-
-    ROS_INFO("控制状态：%s -> %s；%s",
-             controlStateName(previous),
-             controlStateName(next_state),
-             reason.c_str());
-}
-
-bool MyPlanner::computeInitialPathTangentError(double& angle_error)
-{
-    angle_error = 0.0;
-    if (global_plan_.size() < 2)
-        return false;
-
-    const int path_size = static_cast<int>(global_plan_.size());
-    const int search_end = std::min(
-        path_size - 1, std::max(20, mpc_reference_search_ahead_points_));
-
-    std::string plan_frame = global_plan_.front().header.frame_id;
-    if (plan_frame.empty())
-        plan_frame = costmap_frame_;
-
-    tf::StampedTransform plan_to_base;
-    try
-    {
-        if (plan_frame == base_frame_)
-            plan_to_base.setIdentity();
-        else
-            tf_listener_->lookupTransform(
-                base_frame_, plan_frame, ros::Time(0), plan_to_base);
-    }
-    catch (const tf::TransformException& ex)
-    {
-        ROS_WARN_THROTTLE(1.0, "初始路径切线TF查询失败：%s", ex.what());
-        return false;
-    }
-
-    std::vector<PathPoint2D> local_points;
-    local_points.reserve(static_cast<std::size_t>(search_end + 1));
-
-    for (int index = 0; index <= search_end; ++index)
-    {
-        const geometry_msgs::PoseStamped& source =
-            global_plan_[static_cast<std::size_t>(index)];
-        const std::string source_frame = source.header.frame_id.empty()
-            ? plan_frame : source.header.frame_id;
-
-        PathPoint2D point;
-        if (source_frame == plan_frame)
-        {
-            const tf::Vector3 input(
-                source.pose.position.x, source.pose.position.y, 0.0);
-            const tf::Vector3 output = plan_to_base * input;
-            point.x = output.x();
-            point.y = output.y();
-        }
-        else
-        {
-            geometry_msgs::PoseStamped local_pose;
-            if (!transformPose(base_frame_, source, local_pose))
-                continue;
-            point.x = local_pose.pose.position.x;
-            point.y = local_pose.pose.position.y;
-        }
-        point.source_index = index;
-
-        if (!local_points.empty()
-            && std::hypot(
-                   point.x - local_points.back().x,
-                   point.y - local_points.back().y)
-               < c2_duplicate_point_distance_)
-        {
-            continue;
-        }
-        local_points.push_back(point);
-    }
-
-    if (local_points.size() < 2)
-        return false;
-
-    std::size_t closest = 0;
-    double closest_distance = std::numeric_limits<double>::max();
-    for (std::size_t i = 0; i < local_points.size(); ++i)
-    {
-        const double distance = std::hypot(
-            local_points[i].x,
-            local_points[i].y);
-        if (distance < closest_distance)
-        {
-            closest_distance = distance;
-            closest = i;
-        }
-    }
-
-    std::size_t ahead = closest;
-    double accumulated = 0.0;
-    while (ahead + 1 < local_points.size()
-           && accumulated < initial_path_tangent_lookahead_)
-    {
-        accumulated += std::hypot(
-            local_points[ahead + 1].x - local_points[ahead].x,
-            local_points[ahead + 1].y - local_points[ahead].y);
-        ++ahead;
-    }
-
-    if (ahead == closest)
-        return false;
-
-    const double dx = local_points[ahead].x - local_points[closest].x;
-    const double dy = local_points[ahead].y - local_points[closest].y;
-    if (std::hypot(dx, dy) < 1.0e-4)
-        return false;
-
-    angle_error = normalizeAngle(std::atan2(dy, dx));
-    target_index_ = std::max(
-        target_index_, local_points[closest].source_index);
-    return true;
-}
-
-bool MyPlanner::shouldEnterInitialAlign(double angle_error) const
-{
-    return enable_initial_rotation_
-        && std::abs(angle_error) > initial_align_enter_angle_;
-}
-
 void MyPlanner::resetForNewGoal()
 {
     target_index_ = 0;
+    pose_adjusting_ = false;
     goal_reached_ = false;
-    control_state_ = ControlState::WAITING_FOR_PLAN;
+    initial_rotation_done_ = !enable_initial_rotation_;
+    last_cmd_vel_ = geometry_msgs::Twist();
     last_control_time_ = ros::Time(0);
-    // 新目标到来时底盘并不会瞬间静止，必须保留上一命令和延迟历史，
-    // 否则外层加速度限制与C3.2输入延迟预测会把运动中的车辆误认为零速。
     resetMpcState();
 }
 
@@ -914,8 +704,11 @@ bool MyPlanner::setPlan(
     goal_pose_ = plan.back();
     has_goal_ = true;
 
-    // 新路径的点索引从头建立；同目标重规划不重置控制阶段。
+    // 全局规划器每次更新路径后，从新路径起点重新搜索前视点。
     target_index_ = 0;
+    pose_adjusting_ = false;
+    goal_reached_ = false;
+    resetMpcState();
 
     if (new_goal)
     {
@@ -924,9 +717,6 @@ bool MyPlanner::setPlan(
     }
     else
     {
-        if (control_state_ == ControlState::FAILURE_STOP)
-            transitionTo(ControlState::PATH_TRACKING, "收到同目标的新全局路径");
-        resetMpcState();
         ROS_INFO("同一目标的全局路径已更新；路径点数：%zu。", plan.size());
     }
 
@@ -941,6 +731,13 @@ void MyPlanner::updateHealedPath()
     // 每个控制周期从原始路径重新开始，避免路径点累计漂移。
     global_plan_ = raw_plan_;
 
+    if (!enable_path_healing_ || path_healing_iterations_ <= 0)
+        return;
+
+    costmap_2d::Costmap2D* costmap = costmap_ros_->getCostmap();
+    if (costmap == NULL)
+        return;
+
     target_index_ = std::max(
         0,
         std::min(target_index_,
@@ -951,19 +748,6 @@ void MyPlanner::updateHealedPath()
     const int heal_end =
         std::min(static_cast<int>(global_plan_.size()),
                  target_index_ + path_healing_points_ahead_);
-
-    if (!enable_path_healing_ || path_healing_iterations_ <= 0)
-    {
-        publishPathHealingDebug(heal_start, heal_start);
-        return;
-    }
-
-    costmap_2d::Costmap2D* costmap = costmap_ros_->getCostmap();
-    if (costmap == NULL)
-    {
-        publishPathHealingDebug(heal_start, heal_start);
-        return;
-    }
 
     const double resolution = costmap->getResolution();
     const double max_step =
@@ -1069,100 +853,6 @@ void MyPlanner::updateHealedPath()
             global_plan_[i] = healed_point;
         }
     }
-
-    publishPathHealingDebug(heal_start, heal_end);
-}
-
-void MyPlanner::publishPathDebug(
-    const std::vector<geometry_msgs::PoseStamped>& source_path,
-    ros::Publisher& publisher,
-    int start_index,
-    int end_index,
-    double z_offset)
-{
-    if (source_path.empty() || publisher.getNumSubscribers() == 0)
-        return;
-
-    const int point_count = static_cast<int>(source_path.size());
-    const int begin = std::max(0, std::min(start_index, point_count));
-    const int end = std::max(begin, std::min(end_index, point_count));
-    if (begin >= end)
-        return;
-
-    std::string path_frame = source_path[begin].header.frame_id;
-    if (path_frame.empty())
-        path_frame = costmap_frame_;
-
-    nav_msgs::Path debug_path;
-    debug_path.header.frame_id = path_frame;
-    debug_path.header.stamp = ros::Time::now();
-    debug_path.poses.reserve(end - begin);
-
-    for (int i = begin; i < end; ++i)
-    {
-        geometry_msgs::PoseStamped pose = source_path[i];
-
-        if (pose.header.frame_id.empty())
-        {
-            pose.header.frame_id = path_frame;
-        }
-        else if (pose.header.frame_id != path_frame)
-        {
-            geometry_msgs::PoseStamped transformed_pose;
-            if (!transformPose(path_frame, pose, transformed_pose))
-                continue;
-            pose = transformed_pose;
-        }
-
-        pose.header.stamp = debug_path.header.stamp;
-        pose.pose.position.z += z_offset;
-        debug_path.poses.push_back(pose);
-    }
-
-    if (!debug_path.poses.empty())
-        publisher.publish(debug_path);
-}
-
-void MyPlanner::publishPathHealingDebug(int heal_start, int heal_end)
-{
-    if (!publish_path_healing_debug_)
-        return;
-
-    if (raw_global_path_pub_.getNumSubscribers() == 0
-        && healed_global_path_pub_.getNumSubscribers() == 0
-        && healed_window_path_pub_.getNumSubscribers() == 0)
-    {
-        return;
-    }
-
-    const ros::Time now = ros::Time::now();
-    const double minimum_interval =
-        1.0 / path_healing_debug_publish_rate_;
-
-    if (!last_path_healing_debug_publish_time_.isZero()
-        && (now - last_path_healing_debug_publish_time_).toSec()
-               < minimum_interval)
-    {
-        return;
-    }
-
-    last_path_healing_debug_publish_time_ = now;
-
-    publishPathDebug(raw_plan_,
-                     raw_global_path_pub_,
-                     0,
-                     static_cast<int>(raw_plan_.size()),
-                     0.03);
-    publishPathDebug(global_plan_,
-                     healed_global_path_pub_,
-                     0,
-                     static_cast<int>(global_plan_.size()),
-                     0.06);
-    publishPathDebug(global_plan_,
-                     healed_window_path_pub_,
-                     heal_start,
-                     heal_end,
-                     0.09);
 }
 
 bool MyPlanner::checkPathCollision()
@@ -1301,24 +991,30 @@ double MyPlanner::computeLateralDeviation(
 }
 
 bool MyPlanner::computeInitialRotationCommand(
-    double angle_error,
+    const geometry_msgs::PoseStamped& target_pose,
     geometry_msgs::Twist& desired_cmd)
 {
     desired_cmd = geometry_msgs::Twist();
 
     if (!enable_initial_rotation_)
-        return false;
-
-    if (std::abs(angle_error) <= initial_align_exit_angle_)
     {
-        transitionTo(
-            ControlState::PATH_TRACKING,
-            "车头已进入MPC可实现漂移角范围");
+        initial_rotation_done_ = true;
+        return false;
+    }
+
+    const double angle_to_target =
+        std::atan2(target_pose.pose.position.y,
+                   target_pose.pose.position.x);
+
+    if (std::abs(angle_to_target) < initial_yaw_tolerance_)
+    {
+        initial_rotation_done_ = true;
+        ROS_INFO("初始姿态已对准前视点，开始基础 PP 跟踪。");
         return false;
     }
 
     double angular_speed =
-        std::abs(angle_error) * initial_angular_gain_;
+        std::abs(angle_to_target) * initial_angular_gain_;
 
     angular_speed =
         clampValue(angular_speed,
@@ -1326,7 +1022,7 @@ bool MyPlanner::computeInitialRotationCommand(
                    initial_max_angular_speed_);
 
     desired_cmd.angular.z =
-        std::copysign(angular_speed, angle_error);
+        std::copysign(angular_speed, angle_to_target);
 
     return true;
 }
@@ -1347,9 +1043,6 @@ bool MyPlanner::computeFinalPoseCommand(
         && std::abs(yaw_error) <= goal_yaw_tolerance_)
     {
         goal_reached_ = true;
-        transitionTo(
-            ControlState::GOAL_HOLD,
-            "C3.2原始终点位姿调整达到位姿阈值");
 
         ROS_WARN("到达终点：位置误差=%.3fm，角度误差=%.3frad。",
                  distance_error,
@@ -1453,28 +1146,28 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
     {
         ROS_WARN_THROTTLE(
             2.0,
-            "C4.0实际控制周期%.3fs与mpc_dt=%.3fs差异较大；"
+            "C3.2实际控制周期%.3fs与mpc_dt=%.3fs差异较大；"
             "建议controller_frequency与mpc_dt匹配。",
             dt, mpc_dt_);
     }
 
-    // 1. 路径预处理保持独立。C4.0参数默认关闭路径治愈。
+    // 1. 每周期从原始路径重新生成非累积治愈路径。
     updateHealedPath();
 
-    // 2. 前方路径碰撞仍由全局重规划处理，任何失败周期都明确写零速度。
+    // 2. 前方路径有障碍时停车并返回 false，保留全局重规划机制。
     if (!checkPathCollision())
     {
-        transitionTo(ControlState::FAILURE_STOP, "前方全局路径碰撞");
         stopImmediately(cmd_vel);
         return false;
     }
 
+    // 3. 终点附近进入独立位姿调整。
     geometry_msgs::PoseStamped final_pose;
+
     if (!transformPose(base_frame_,
-                       goal_pose_,
+                       global_plan_.back(),
                        final_pose))
     {
-        transitionTo(ControlState::FAILURE_STOP, "终点位姿TF失败");
         stopImmediately(cmd_vel);
         return false;
     }
@@ -1482,28 +1175,19 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
     const double final_distance =
         std::hypot(final_pose.pose.position.x,
                    final_pose.pose.position.y);
-    if (control_state_ == ControlState::GOAL_HOLD)
-    {
-        stopImmediately(cmd_vel);
-        return true;
-    }
 
-    geometry_msgs::Twist desired_cmd;
-
-    // 3. 恢复C3.2原始终点逻辑：距离小于阈值立即退出MPC，
-    // 由独立XYZ比例控制持续调整到位姿阈值，不等待速度条件，
-    // 不执行C4.0的厘米级轨迹安全检查和静止保持计时。
-    if (control_state_ != ControlState::FINAL_SETTLING
+    if (!pose_adjusting_
         && final_distance < goal_dist_threshold_)
     {
-        transitionTo(
-            ControlState::FINAL_SETTLING,
-            "进入C3.2原始终点位姿调整");
+        pose_adjusting_ = true;
+
         ROS_INFO("距离目标 %.3fm，进入终点位姿调整。",
                  final_distance);
     }
 
-    if (control_state_ == ControlState::FINAL_SETTLING)
+    geometry_msgs::Twist desired_cmd;
+
+    if (pose_adjusting_)
     {
         if (computeFinalPoseCommand(final_pose, desired_cmd))
         {
@@ -1516,42 +1200,19 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         return true;
     }
 
-    // 4. 新目标只在确有必要时进入初始对准；依据路径切线而非前视点方位。
-    if (control_state_ == ControlState::WAITING_FOR_PLAN)
-    {
-        double tangent_error = 0.0;
-        if (!computeInitialPathTangentError(tangent_error))
-        {
-            transitionTo(ControlState::FAILURE_STOP, "无法计算初始路径切线");
-            stopImmediately(cmd_vel);
-            return false;
-        }
+    // 4. 选择第一个距离车体超过 lookahead_dist 的路径点。
+    geometry_msgs::PoseStamped target_pose;
 
-        if (shouldEnterInitialAlign(tangent_error))
-        {
-            transitionTo(
-                ControlState::INITIAL_ALIGN,
-                "初始车头与路径切线夹角超出MPC可接管范围");
-        }
-        else
-        {
-            transitionTo(
-                ControlState::PATH_TRACKING,
-                "初始姿态处于MPC可实现漂移角范围");
-        }
+    if (!selectTrackingTarget(target_pose))
+    {
+        stopImmediately(cmd_vel);
+        return false;
     }
 
-    if (control_state_ == ControlState::INITIAL_ALIGN)
+    // 5. 新目标开始时，保留现有的初始姿态调整层。
+    if (!initial_rotation_done_)
     {
-        double tangent_error = 0.0;
-        if (!computeInitialPathTangentError(tangent_error))
-        {
-            transitionTo(ControlState::FAILURE_STOP, "初始对准期间路径切线不可用");
-            stopImmediately(cmd_vel);
-            return false;
-        }
-
-        if (computeInitialRotationCommand(tangent_error, desired_cmd))
+        if (computeInitialRotationCommand(target_pose, desired_cmd))
         {
             applyVelocityAndAccelerationLimits(
                 desired_cmd, cmd_vel, dt);
@@ -1559,14 +1220,7 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         }
     }
 
-    if (control_state_ == ControlState::FAILURE_STOP)
-        transitionTo(ControlState::PATH_TRACKING, "故障条件已消失，恢复路径跟踪");
-
-    // 5. 路径跟踪仍完整保留C4.0.3的MPC与PP回退。
-    geometry_msgs::PoseStamped target_pose;
-    if (!selectTrackingTarget(target_pose))
-        target_pose = final_pose;
-
+    // 6. 先生成稳定PP命令，作为MPC失败时的无缝回退。
     double lateral_deviation = 0.0;
     geometry_msgs::Twist pp_cmd;
     computePurePursuitCommand(target_pose, pp_cmd, lateral_deviation);
@@ -1585,38 +1239,27 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         {
             ++mpc_consecutive_failures_;
 
-            const bool terminal_braking_fallback =
-                mpc_terminal_stop_enabled_
-                && final_distance <= mpc_terminal_fallback_stop_distance_;
-            if (terminal_braking_fallback)
-            {
-                desired_cmd = geometry_msgs::Twist();
-            }
-            else
-            {
-                desired_cmd = pp_cmd;
-                desired_cmd.linear.x = clampValue(
-                    desired_cmd.linear.x, 0.0, c2_max_reference_speed_);
-                desired_cmd.linear.y = clampValue(
-                    desired_cmd.linear.y, mpc_min_vy_, mpc_max_vy_);
-                desired_cmd.angular.z = clampValue(
-                    desired_cmd.angular.z, mpc_min_omega_, mpc_max_omega_);
-            }
+            // C3中PP回退限制到最高路径合速度，防止单次QP失败突然跳回高速PP。
+            desired_cmd = pp_cmd;
+            desired_cmd.linear.x = clampValue(
+                desired_cmd.linear.x, 0.0, c2_max_reference_speed_);
+            desired_cmd.linear.y = clampValue(
+                desired_cmd.linear.y, mpc_min_vy_, mpc_max_vy_);
+            desired_cmd.angular.z = clampValue(
+                desired_cmd.angular.z, mpc_min_omega_, mpc_max_omega_);
 
             ROS_WARN_THROTTLE(
                 0.5,
-                "C4.0 MPC本周期失败，%s：status=%s，reason=%s，连续失败=%d。",
-                terminal_braking_fallback ? "终点区受控刹车" : "回退稳定PP",
+                "C3.2 MPC本周期失败，回退稳定PP：status=%s，reason=%s，连续失败=%d。",
                 mpc_report.status.c_str(),
                 mpc_report.failure_reason.c_str(),
                 mpc_consecutive_failures_);
 
-            if (!terminal_braking_fallback
-                && mpc_lock_to_pp_after_failures_
+            if (mpc_lock_to_pp_after_failures_
                 && mpc_consecutive_failures_ >= mpc_max_consecutive_failures_)
             {
                 mpc_locked_to_pp_ = true;
-                ROS_ERROR("C4.0 MPC连续失败%d次，本条全局路径普通段锁定PP；收到新路径后恢复MPC。",
+                ROS_ERROR("C3.2 MPC连续失败%d次，本条全局路径剩余过程锁定PP；收到新路径后恢复MPC。",
                           mpc_consecutive_failures_);
             }
         }
@@ -1652,14 +1295,13 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         {
             ROS_INFO_THROTTLE(
                 0.5,
-                "MPC-C4.0[%s]：ref0=(pos %.3f,%.3f; psi=%.3f chi=%.3f; "
+                "MPC-C3.2：ref0=(pos %.3f,%.3f; psi=%.3f chi=%.3f; "
                 "vpath=%.3f beta0=%.1fdeg betaMax=%.1fdeg planMax=%.1fdeg; "
                 "meas=(%.3f,%.3f,%.3f,%s age=%.3f) delay=(%.3f,%.3f,%.3f,%.3f); "
                 "omegaSeed=%.3f guard=%d; u=%.3f,%.3f,%.3f omegaState=%.3f)，"
                 "cmd=(%.3f,%.3f,%.3f)，k(track=%.3f preview=%.3f strength=%.2f)，"
                 "vlimit=%.3f，preview=%.3fm，resampled=%d，"
                 "solve=%.2fms total=%.2fms iter=%d status=%s，index=%d。",
-                controlStateName(control_state_),
                 mpc_report.first_reference.x,
                 mpc_report.first_reference.y,
                 mpc_report.first_reference.yaw,
@@ -1702,9 +1344,8 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         {
             ROS_INFO_THROTTLE(
                 0.5,
-                "MPC-C4.0[%s]回退/刹车：target=(%.3f,%.3f)，lateral=%.3f，"
+                "MPC-C3.2回退PP：target=(%.3f,%.3f)，lateral=%.3f，"
                 "desired=(%.3f,%.3f,%.3f)，cmd=(%.3f,%.3f,%.3f)，locked=%s，index=%d。",
-                controlStateName(control_state_),
                 target_pose.pose.position.x,
                 target_pose.pose.position.y,
                 lateral_deviation,

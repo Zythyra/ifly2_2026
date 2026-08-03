@@ -1,4 +1,4 @@
-// 交付构建标识：MYPLANNER_MPC_C3_2_MEASURED_STATE_DELAY_PROGRESS_20260731
+// 交付构建标识：MYPLANNER_MPC_C4_0_EXPLICIT_STATE_TERMINAL_MPC_20260802
 #include "my_planner.h"
 
 #include <OsqpEigen/OsqpEigen.h>
@@ -160,6 +160,16 @@ bool MyPlanner::buildMpcReferenceTrajectory(
         return false;
     }
 
+    geometry_msgs::PoseStamped terminal_goal_pose;
+    if (!transformPose(base_frame_, goal_pose_, terminal_goal_pose))
+    {
+        report.status = "TERMINAL_GOAL_TF_FAILED";
+        report.failure_reason = "MPC无法将最终目标位姿转换到base_link";
+        return false;
+    }
+    const double terminal_goal_yaw = normalizeAngle(
+        tf::getYaw(terminal_goal_pose.pose.orientation));
+
     // 1. 转到base_link并删除空间重复点。只删点，不平滑XY，避免窄路内切。
     std::vector<PathPoint2D> local_path;
     local_path.reserve(static_cast<std::size_t>(search_end - search_start + 1));
@@ -250,16 +260,6 @@ bool MyPlanner::buildMpcReferenceTrajectory(
         0.0, local_path.back().s - projection_s);
     report.projection_s = projection_s;
     report.remaining_length = remaining_length;
-
-    if (remaining_length < mpc_min_reference_length_)
-    {
-        std::ostringstream stream;
-        stream << "MPC参考剩余长度不足："
-               << remaining_length << " < " << mpc_min_reference_length_;
-        report.status = "REFERENCE_TOO_SHORT";
-        report.failure_reason = stream.str();
-        return false;
-    }
 
     const auto interpolatePath =
         [&](const std::vector<PathPoint2D>& path,
@@ -478,6 +478,10 @@ bool MyPlanner::buildMpcReferenceTrajectory(
             c2_max_reference_speed_);
     }
 
+    // C4.0：最终路径点速度严格为零，再通过空间域反向传播形成连续刹车曲线。
+    if (mpc_terminal_stop_enabled_ && !resampled.empty())
+        resampled.back().speed_limit = 0.0;
+
     // 8. 空间域双向传播：弯前允许较快减速，出弯较慢恢复速度。
     for (int i = static_cast<int>(resampled.size()) - 2; i >= 0; --i)
     {
@@ -578,15 +582,6 @@ bool MyPlanner::buildMpcReferenceTrajectory(
         return false;
     }
 
-    const double delayed_remaining_length = std::max(
-        0.0, resampled.back().s - delayed_projection_s);
-    if (delayed_remaining_length < mpc_min_reference_length_)
-    {
-        report.status = "REFERENCE_TOO_SHORT_AFTER_DELAY";
-        report.failure_reason =
-            "输入延迟补偿后MPC参考剩余长度不足";
-        return false;
-    }
     report.first_speed_limit = delayed_projection_point.speed_limit;
 
     double reference_path_speed = moveToward(
@@ -625,6 +620,31 @@ bool MyPlanner::buildMpcReferenceTrajectory(
             report.reference_path.clear();
             return false;
         }
+
+        const double remaining_at_query = std::max(
+            0.0, resampled.back().s - query_s);
+        const bool terminal_hold = mpc_terminal_stop_enabled_
+            && remaining_at_query <= 1.0e-5;
+        if (terminal_hold)
+        {
+            point.x = terminal_goal_pose.pose.position.x;
+            point.y = terminal_goal_pose.pose.position.y;
+            point.speed_limit = 0.0;
+            point.curvature_track = 0.0;
+            point.curvature_speed = 0.0;
+            preview_point = point;
+        }
+
+        const double terminal_weight_scale = mpc_terminal_stop_enabled_
+            ? 1.0 - clampValue(
+                remaining_at_query / mpc_terminal_yaw_blend_distance_,
+                0.0, 1.0)
+            : 0.0;
+        const double progress_weight_scale = mpc_terminal_stop_enabled_
+            ? clampValue(
+                remaining_at_query / mpc_terminal_progress_fade_distance_,
+                0.0, 1.0)
+            : 1.0;
 
         if (step > 0)
         {
@@ -682,6 +702,7 @@ bool MyPlanner::buildMpcReferenceTrajectory(
             desired_beta = clampValue(
                 -yaw_lead, -beta_limit, beta_limit);
         }
+        desired_beta *= (1.0 - terminal_weight_scale);
 
         const double beta_dt = step == 0 ? first_dt : mpc_dt_;
         const double max_beta_delta = c3_beta_rate_limit_ * beta_dt;
@@ -703,10 +724,15 @@ bool MyPlanner::buildMpcReferenceTrajectory(
         ref.drift_beta = desired_beta;
         ref.beta_limit = beta_limit;
         ref.curve_strength = curve_strength;
+        ref.terminal_weight_scale = terminal_weight_scale;
+        ref.progress_weight_scale = progress_weight_scale;
         report.max_abs_planned_beta = std::max(
             report.max_abs_planned_beta, std::abs(desired_beta));
-        desired_body_yaw[static_cast<std::size_t>(step)] =
-            point.yaw - desired_beta;
+        const double path_body_yaw = point.yaw - desired_beta;
+        desired_body_yaw[static_cast<std::size_t>(step)] = normalizeAngle(
+            path_body_yaw
+            + terminal_weight_scale
+              * normalizeAngle(terminal_goal_yaw - path_body_yaw));
 
         if (step < mpc_horizon_steps_)
         {
@@ -966,12 +992,14 @@ bool MyPlanner::solveLtvMpcQp(
         const MpcReferencePoint& point =
             reference[static_cast<std::size_t>(step)];
         const bool terminal = step == horizon;
-        const double position_scale = terminal
-            ? mpc_terminal_position_weight_scale_ : 1.0;
-        const double yaw_scale = terminal
-            ? mpc_terminal_yaw_weight_scale_ : 1.0;
-        const double omega_scale = terminal
-            ? mpc_terminal_omega_weight_scale_ : 1.0;
+        const double terminal_scale = std::max(
+            point.terminal_weight_scale, terminal ? 1.0 : 0.0);
+        const double position_scale = 1.0 + terminal_scale
+            * (mpc_terminal_position_weight_scale_ - 1.0);
+        const double yaw_scale = 1.0 + terminal_scale
+            * (mpc_terminal_yaw_weight_scale_ - 1.0);
+        const double omega_scale = 1.0 + terminal_scale
+            * (mpc_terminal_omega_weight_scale_ - 1.0);
 
         const double c = std::cos(point.motion_yaw);
         const double ss = std::sin(point.motion_yaw);
@@ -1046,8 +1074,10 @@ bool MyPlanner::solveLtvMpcQp(
 
         // 轻量MPCC式进度奖励：奖励路径切向速度，但仍受曲率速度圆、
         // 输入边界、加速度和轮廓误差共同约束。
-        gradient(ivx) -= mpc_weight_progress_ * cb;
-        gradient(ivy) -= mpc_weight_progress_ * sb;
+        gradient(ivx) -= mpc_weight_progress_
+            * ref.progress_weight_scale * cb;
+        gradient(ivy) -= mpc_weight_progress_
+            * ref.progress_weight_scale * sb;
 
         const double omega_control_weight =
             mpc_weight_omega_straight_
@@ -1283,7 +1313,7 @@ bool MyPlanner::solveLtvMpcQp(
         // C2曲率速度上限，因此速度圆使用speed_limit而不是path_speed。
         double translational_limit = std::min(
             mpc_max_translational_speed_,
-            std::max(0.02, ref.speed_limit));
+            std::max(0.0, std::max(ref.speed_limit, ref.path_speed)));
         if (step == 0)
         {
             const double previous_trans_speed = std::hypot(

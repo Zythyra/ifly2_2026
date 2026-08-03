@@ -335,3 +335,16 @@ add_dependencies(target_patrol_docking
 target_link_libraries(target_patrol_docking
   ${catkin_LIBRARIES}
 )
+
+
+add_executable(back_and_forth_nav
+  src/back_and_forth.cpp
+)
+
+target_link_libraries(back_and_forth_nav
+  ${catkin_LIBRARIES}
+)
+
+add_dependencies(back_and_forth_nav
+  ${catkin_EXPORTED_TARGETS}
+)

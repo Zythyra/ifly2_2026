@@ -1,10 +1,8 @@
 # =============================================================================
-# MyPlanner MPC-C3.2：实测状态 + 输入延迟 + 一阶角速度响应 + 轻量MPCC进度奖励
+# MyPlanner MPC-C4.0.4：条件式初始对准 + C4路径跟踪 + C3.2原始终点调整
 # =============================================================================
-# 高速档目标：直线0.75m/s，弯道速度保持默认档，优先解决：
-# 1. 出弯角速度过冲后的轻微晃动；
-# 2. 同一弯道不同方向受历史角速度影响而快慢不一致；
-# 3. 出弯后速度上限已经恢复，但车辆仍缓慢爬升。
+# 保留C3.2的实测状态、输入延迟、一阶响应、主动漂移和PP回退。
+# 当前初始姿态调整和路径跟踪保持不变，仅恢复C3.2原始最终姿态调整。
 #
 # 成熟方案来源：
 # - TEB：使用真实初始速度约束起始加速度；
@@ -17,9 +15,16 @@ controller_mode: "mpc"
 # 建议与move_base/controller_frequency=20Hz一致。
 mpc_horizon_steps: 20
 mpc_dt: 0.05
-mpc_min_reference_length: 0.25
 mpc_reference_search_behind_points: 160
 mpc_reference_search_ahead_points: 1000
+
+# 原始终点控制会在0.50m处直接接管，因此关闭C4的MPC终点制动参考。
+mpc_terminal_stop_enabled: false
+mpc_terminal_yaw_blend_distance: 0.25
+mpc_terminal_progress_fade_distance: 0.30
+
+# 兼容保留；原始终点控制接管后不会进入该回退分支。
+mpc_terminal_fallback_stop_distance: 0.20
 
 # -----------------------------------------------------------------------------
 # C2保留：路径重采样、曲率估计、曲率速度上限
@@ -33,9 +38,9 @@ c2_curvature_preview_distance: 0.08
 c2_hold_speed_after_curve: 0.04
 
 c2_max_reference_speed: 1.00
-c2_min_curve_speed: 0.52
-c2_curve_lateral_acc_limit: 0.48
-c2_reference_acceleration: 1.50
+c2_min_curve_speed: 0.50
+c2_curve_lateral_acc_limit: 0.47
+c2_reference_acceleration: 1.25
 c2_reference_deceleration: 1.80
 
 # -----------------------------------------------------------------------------
@@ -142,8 +147,9 @@ mpc_lock_to_pp_after_failures: true
 mpc_publish_debug_paths: true
 
 # -----------------------------------------------------------------------------
-# PP回退、碰撞检查、初始和终点控制
+# PP回退、碰撞检查、条件式初始对准与C3.2原始终点控制
 # -----------------------------------------------------------------------------
+# C4.0暂不研究路径移动，默认关闭；保留实现与RViz话题供后续继续开发。
 enable_path_healing: false
 path_healing_points_behind: 5
 path_healing_points_ahead: 60
@@ -151,6 +157,10 @@ path_healing_iterations: 3
 path_healing_max_step: 0.01
 path_healing_gradient_deadband: 4.0
 path_healing_gradient_scale: 20.0
+
+# RViz路径治愈调试。只在话题存在订阅者时按限频发布。
+publish_path_healing_debug: true
+path_healing_debug_publish_rate: 5.0
 
 lookahead_dist: 0.26
 path_linear_x_gain: 2.20
@@ -162,14 +172,20 @@ collision_check_lookahead_points: 20
 collision_cost_threshold: 253
 
 enable_initial_rotation: true
-initial_yaw_tolerance: 0.10
+
+# 仅当车头与起始路径切线夹角>30deg时旋转；进入22deg后交给MPC，形成滞回。
+initial_align_enter_angle_deg: 30.0
+initial_align_exit_angle_deg: 22.0
+initial_path_tangent_lookahead: 0.16
 initial_angular_gain: 8.00
 initial_min_angular_speed: 0.10
 initial_max_angular_speed: 1.40
 
+# 距离目标小于0.50m时立即退出MPC，恢复C3.2独立XYZ比例控制。
 goal_dist_threshold: 0.50
 goal_position_tolerance: 0.025
 goal_yaw_tolerance: 0.05
+
 final_linear_x_gain: 1.60
 final_linear_y_gain: 1.20
 final_angular_gain: 6.50
@@ -186,4 +202,4 @@ acc_lim_x: 2.00
 acc_lim_y: 2.00
 acc_lim_theta: 8.00
 
-debug_log: true
+debug_log: false

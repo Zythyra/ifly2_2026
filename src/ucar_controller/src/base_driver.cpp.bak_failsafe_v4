@@ -44,7 +44,7 @@ ros::WallTime g_last_tx_wall_time;
 ros::Publisher g_applied_cmd_pub;
 ros::Publisher g_tx_diag_pub;
 
-// ==================== BASE-FAILSAFE V4.1 ====================
+// ==================== BASE-FAILSAFE V4 ====================
 // Software-only fail-safe for the observed RK3588 -> MCU stale/delayed command
 // fault.  NORMAL control is unchanged.  V4 estimates the effective command ->
 // odometry delay from recent trajectories instead of requiring odom to freeze.
@@ -75,16 +75,16 @@ double g_fs_odom_max_age_ms = 120.0;
 // Channel A: strong persistent angular sign mismatch.
 double g_fs_reverse_cmd_w_min = 1.0;
 double g_fs_reverse_odom_w_min = 0.8;
-int g_fs_reverse_confirm_cycles = 5;  // roughly 250 ms at 20 Hz
+int g_fs_reverse_confirm_cycles = 6;  // roughly 300 ms at 20 Hz
 
 // Channel B: rolling trajectory delay estimator.
 double g_fs_history_keep_ms = 1400.0;
-double g_fs_delay_eval_window_ms = 220.0;
+double g_fs_delay_eval_window_ms = 300.0;
 double g_fs_delay_min_ms = 0.0;
 double g_fs_delay_max_ms = 650.0;
 double g_fs_delay_step_ms = 50.0;
 double g_fs_delay_normal_max_ms = 200.0;
-double g_fs_delay_fault_min_ms = 250.0;
+double g_fs_delay_fault_min_ms = 300.0;
 double g_fs_delay_match_tolerance_ms = 32.0;
 int g_fs_delay_min_eval_odom_samples = 5;
 int g_fs_delay_confirm_odom_frames = 2;
@@ -109,19 +109,8 @@ double g_fs_delay_score_angular_scale = 0.55;
 // A large delay must fit the measured trajectory well AND substantially better
 // than every candidate in the normal-delay region.
 double g_fs_delay_fault_score_max = 2.20;
-double g_fs_delay_vs_normal_ratio_max = 0.85;
-double g_fs_delay_improvement_min = 0.25;
-
-// Channel C: FAST high-confidence abnormal-delay trigger.
-// Unlike the regular delay detector, this channel needs only one FRESH odom
-// frame, but it also requires a large current cmd/odom mismatch.
-bool g_fs_fast_delay_enable = true;
-double g_fs_fast_delay_min_ms = 300.0;
-double g_fs_fast_delay_score_max = 2.20;
-double g_fs_fast_delay_ratio_max = 0.82;
-double g_fs_fast_delay_improvement_min = 0.30;
-double g_fs_fast_mismatch_linear = 0.30;
-double g_fs_fast_mismatch_angular = 1.00;
+double g_fs_delay_vs_normal_ratio_max = 0.72;
+double g_fs_delay_improvement_min = 0.45;
 
 // Brake/recovery state machine.
 double g_fs_min_brake_ms = 200.0;
@@ -229,22 +218,22 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   pravite_nh.param("diag_nonzero_linear_eps", g_diag_nonzero_linear_eps, 0.01);
   pravite_nh.param("diag_nonzero_angular_eps", g_diag_nonzero_angular_eps, 0.02);
 
-  // ==================== BASE-FAILSAFE V4.1 parameters ====================
+  // ==================== BASE-FAILSAFE V4 parameters ====================
   pravite_nh.param("failsafe_enable", g_fs_enable, true);
   pravite_nh.param("failsafe_zero_rate_hz", g_fs_zero_rate_hz, 100.0);
   pravite_nh.param("failsafe_odom_max_age_ms", g_fs_odom_max_age_ms, 120.0);
 
   pravite_nh.param("failsafe_reverse_cmd_w_min", g_fs_reverse_cmd_w_min, 1.0);
   pravite_nh.param("failsafe_reverse_odom_w_min", g_fs_reverse_odom_w_min, 0.8);
-  pravite_nh.param("failsafe_reverse_confirm_cycles", g_fs_reverse_confirm_cycles, 5);
+  pravite_nh.param("failsafe_reverse_confirm_cycles", g_fs_reverse_confirm_cycles, 6);
 
   pravite_nh.param("failsafe_history_keep_ms", g_fs_history_keep_ms, 1400.0);
-  pravite_nh.param("failsafe_delay_eval_window_ms", g_fs_delay_eval_window_ms, 220.0);
+  pravite_nh.param("failsafe_delay_eval_window_ms", g_fs_delay_eval_window_ms, 300.0);
   pravite_nh.param("failsafe_delay_min_ms", g_fs_delay_min_ms, 0.0);
   pravite_nh.param("failsafe_delay_max_ms", g_fs_delay_max_ms, 650.0);
   pravite_nh.param("failsafe_delay_step_ms", g_fs_delay_step_ms, 50.0);
   pravite_nh.param("failsafe_delay_normal_max_ms", g_fs_delay_normal_max_ms, 200.0);
-  pravite_nh.param("failsafe_delay_fault_min_ms", g_fs_delay_fault_min_ms, 250.0);
+  pravite_nh.param("failsafe_delay_fault_min_ms", g_fs_delay_fault_min_ms, 300.0);
   pravite_nh.param("failsafe_delay_match_tolerance_ms", g_fs_delay_match_tolerance_ms, 32.0);
   pravite_nh.param("failsafe_delay_min_eval_odom_samples", g_fs_delay_min_eval_odom_samples, 5);
   pravite_nh.param("failsafe_delay_confirm_odom_frames", g_fs_delay_confirm_odom_frames, 2);
@@ -260,17 +249,8 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   pravite_nh.param("failsafe_delay_score_linear_scale", g_fs_delay_score_linear_scale, 0.22);
   pravite_nh.param("failsafe_delay_score_angular_scale", g_fs_delay_score_angular_scale, 0.55);
   pravite_nh.param("failsafe_delay_fault_score_max", g_fs_delay_fault_score_max, 2.20);
-  pravite_nh.param("failsafe_delay_vs_normal_ratio_max", g_fs_delay_vs_normal_ratio_max, 0.85);
-  pravite_nh.param("failsafe_delay_improvement_min", g_fs_delay_improvement_min, 0.25);
-
-  // FAST_DELAY: high-confidence single-fresh-odom trigger.
-  pravite_nh.param("failsafe_fast_delay_enable", g_fs_fast_delay_enable, true);
-  pravite_nh.param("failsafe_fast_delay_min_ms", g_fs_fast_delay_min_ms, 300.0);
-  pravite_nh.param("failsafe_fast_delay_score_max", g_fs_fast_delay_score_max, 2.20);
-  pravite_nh.param("failsafe_fast_delay_ratio_max", g_fs_fast_delay_ratio_max, 0.82);
-  pravite_nh.param("failsafe_fast_delay_improvement_min", g_fs_fast_delay_improvement_min, 0.30);
-  pravite_nh.param("failsafe_fast_mismatch_linear", g_fs_fast_mismatch_linear, 0.30);
-  pravite_nh.param("failsafe_fast_mismatch_angular", g_fs_fast_mismatch_angular, 1.00);
+  pravite_nh.param("failsafe_delay_vs_normal_ratio_max", g_fs_delay_vs_normal_ratio_max, 0.72);
+  pravite_nh.param("failsafe_delay_improvement_min", g_fs_delay_improvement_min, 0.45);
 
   pravite_nh.param("failsafe_min_brake_ms", g_fs_min_brake_ms, 200.0);
   pravite_nh.param("failsafe_hold_ms", g_fs_hold_ms, 300.0);
@@ -568,7 +548,7 @@ void baseBringup::writeLoop()
       else if(angular_z < -angular_speed_max_)
         angular_z = -angular_speed_max_;
 
-      // ==================== BASE-FAILSAFE V4.1 ====================
+      // ==================== BASE-FAILSAFE V4 ====================
       // Snapshot the newest wheel-odometry body velocity reported by the MCU.
       nav_msgs::Odometry fs_odom;
       lock.lock();
@@ -610,7 +590,6 @@ void baseBringup::writeLoop()
       double fs_delay_improvement = -1.0;
       int fs_eval_sample_count = 0;
       bool fs_delay_fault_candidate = false;
-      bool fs_fast_delay_candidate = false;
       double fs_current_mismatch_linear = -1.0;
       double fs_current_mismatch_angular = -1.0;
 
@@ -819,42 +798,21 @@ void baseBringup::writeLoop()
                     best_score <= g_fs_delay_fault_score_max &&
                     best_score <= best_normal_score * g_fs_delay_vs_normal_ratio_max &&
                     fs_delay_improvement >= g_fs_delay_improvement_min;
-
-                // FAST_DELAY is stricter about instantaneous mismatch, but does
-                // not wait for a second odom confirmation.
-                fs_fast_delay_candidate =
-                    g_fs_fast_delay_enable &&
-                    best_delay >= g_fs_fast_delay_min_ms &&
-                    best_score <= g_fs_fast_delay_score_max &&
-                    best_score <= best_normal_score * g_fs_fast_delay_ratio_max &&
-                    fs_delay_improvement >= g_fs_fast_delay_improvement_min &&
-                    (fs_current_mismatch_linear >= g_fs_fast_mismatch_linear ||
-                     fs_current_mismatch_angular >= g_fs_fast_mismatch_angular);
               }
             }
           }
         }
 
         // Delay fault confirmation counts only NEW odom frames.
-        bool fs_new_detection_odom = false;
         if (fs_odom.header.stamp != g_fs_last_detection_odom_stamp)
         {
-          fs_new_detection_odom = true;
           g_fs_last_detection_odom_stamp = fs_odom.header.stamp;
-
           if (fs_delay_fault_candidate)
             ++g_fs_delay_confirm_count;
           else
             g_fs_delay_confirm_count = 0;
         }
 
-        // High-confidence path: one fresh odom frame is enough.
-        if (fs_trigger_reason == NULL &&
-            fs_new_detection_odom &&
-            fs_fast_delay_candidate)
-          fs_trigger_reason = "FAST_ABNORMAL_COMMAND_TO_ODOM_DELAY";
-
-        // Medium-confidence path: retain two-frame confirmation.
         if (fs_trigger_reason == NULL &&
             g_fs_delay_confirm_count >= g_fs_delay_confirm_odom_frames)
           fs_trigger_reason = "ABNORMAL_COMMAND_TO_ODOM_DELAY";
@@ -876,7 +834,7 @@ void baseBringup::writeLoop()
         ++g_fs_trigger_count;
         publishFailsafeState(true);
 
-        ROS_ERROR("[BASE-FAILSAFE][TRIGGER] reason=%s count=%llu cmd=(%.3f,%.3f,%.3f) odom=(%.3f,%.3f,%.3f) odom_age_ms=%.2f reverse_count=%d delay_count=%d fast_delay=%d best_delay_ms=%.1f best_score=%.3f normal_delay_ms=%.1f normal_score=%.3f improvement=%.3f mismatch=(%.3f,%.3f) eval_n=%d cmd_span=(%.3f,%.3f)",
+        ROS_ERROR("[BASE-FAILSAFE][TRIGGER] reason=%s count=%llu cmd=(%.3f,%.3f,%.3f) odom=(%.3f,%.3f,%.3f) odom_age_ms=%.2f reverse_count=%d delay_count=%d best_delay_ms=%.1f best_score=%.3f normal_delay_ms=%.1f normal_score=%.3f improvement=%.3f eval_n=%d cmd_span=(%.3f,%.3f)",
                   fs_trigger_reason,
                   static_cast<unsigned long long>(g_fs_trigger_count),
                   linear_x, linear_y, angular_z,
@@ -884,14 +842,11 @@ void baseBringup::writeLoop()
                   fs_odom_age_ms,
                   g_fs_reverse_count,
                   g_fs_delay_confirm_count,
-                  fs_fast_delay_candidate ? 1 : 0,
                   fs_best_delay_ms,
                   fs_best_delay_score,
                   fs_best_normal_delay_ms,
                   fs_best_normal_score,
                   fs_delay_improvement,
-                  fs_current_mismatch_linear,
-                  fs_current_mismatch_angular,
                   fs_eval_sample_count,
                   fs_cmd_span_linear,
                   fs_cmd_span_angular);
@@ -1170,9 +1125,8 @@ void baseBringup::writeLoop()
         // [39] current_linear_mismatch_mps
         // [40] current_angular_mismatch_radps
         // [41] normal_score_minus_best_score
-        // [42] fast_delay_candidate
         std_msgs::Float64MultiArray diag_msg;
-        diag_msg.data.resize(43);
+        diag_msg.data.resize(42);
         diag_msg.data[0]  = static_cast<double>(rx_seq_at_write);
         diag_msg.data[1]  = static_cast<double>(tx_selected_seq);
         diag_msg.data[2]  = cmd_age_ms;
@@ -1215,7 +1169,6 @@ void baseBringup::writeLoop()
         diag_msg.data[39] = fs_current_mismatch_linear;
         diag_msg.data[40] = fs_current_mismatch_angular;
         diag_msg.data[41] = fs_delay_improvement;
-        diag_msg.data[42] = fs_fast_delay_candidate ? 1.0 : 0.0;
         g_tx_diag_pub.publish(diag_msg);
 
         if (pack_write_s != WRITE_MSG_LONGTH)
@@ -1329,7 +1282,7 @@ void baseBringup::writeLoop()
         else
         {
           ROS_INFO_THROTTLE(1.0,
-                            "[BASE-DIAG][SUMMARY] latest_rx=%llu selected_rx=%llu age_ms=%.2f repeat_total=%llu repeat_streak=%llu max_repeat=%llu skipped_total=%llu skip_events=%llu stale=%llu short_write=%llu nonzero_timeout=%llu write_ms=%.2f tx_gap_ms=%.2f rx_lock_wait_ms=%.3f rx_interval_ms=%.2f fs_state=%d fs_triggers=%llu fs_rev=%d fs_delay=%d delay_fault=%d fast_delay=%d eval_ms=%.1f cmd_span=(%.2f,%.2f) best_delay_ms=%.1f best_score=%.2f normal_delay_ms=%.1f normal_score=%.2f improve=%.2f mismatch=(%.2f,%.2f) eval_n=%d odom_age_ms=%.1f",
+                            "[BASE-DIAG][SUMMARY] latest_rx=%llu selected_rx=%llu age_ms=%.2f repeat_total=%llu repeat_streak=%llu max_repeat=%llu skipped_total=%llu skip_events=%llu stale=%llu short_write=%llu nonzero_timeout=%llu write_ms=%.2f tx_gap_ms=%.2f rx_lock_wait_ms=%.3f rx_interval_ms=%.2f fs_state=%d fs_triggers=%llu fs_rev=%d fs_delay=%d delay_fault=%d eval_ms=%.1f cmd_span=(%.2f,%.2f) best_delay_ms=%.1f best_score=%.2f normal_delay_ms=%.1f normal_score=%.2f improve=%.2f eval_n=%d odom_age_ms=%.1f",
                             static_cast<unsigned long long>(rx_seq_at_write),
                             static_cast<unsigned long long>(tx_selected_seq),
                             cmd_age_ms,
@@ -1350,7 +1303,6 @@ void baseBringup::writeLoop()
                             g_fs_reverse_count,
                             g_fs_delay_confirm_count,
                             fs_delay_fault_candidate ? 1 : 0,
-                            fs_fast_delay_candidate ? 1 : 0,
                             fs_eval_span_ms,
                             fs_cmd_span_linear,
                             fs_cmd_span_angular,
@@ -1359,8 +1311,6 @@ void baseBringup::writeLoop()
                             fs_best_normal_delay_ms,
                             fs_best_normal_score,
                             fs_delay_improvement,
-                            fs_current_mismatch_linear,
-                            fs_current_mismatch_angular,
                             fs_eval_sample_count,
                             fs_odom_age_ms);
         }

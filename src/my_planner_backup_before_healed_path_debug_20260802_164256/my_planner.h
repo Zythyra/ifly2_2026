@@ -70,28 +70,15 @@ private:
         double planned_beta;    // 经过速度相关限幅与变化率限制的计划beta
         double beta_limit;      // 当前速度对应的beta上限
         double curve_strength;
-        double terminal_weight_scale;  // C4路径跟踪保留字段；原始终点控制接管后不再使用
-        double progress_weight_scale;  // C4路径跟踪保留字段；原始终点控制接管后不再使用
 
         MpcReferencePoint()
             : x(0.0), y(0.0), yaw(0.0), motion_yaw(0.0),
               vx(0.0), vy(0.0), omega(0.0), omega_cmd(0.0),
               curvature(0.0), speed_limit(0.0),
               path_speed(0.0), drift_beta(0.0), planned_beta(0.0),
-              beta_limit(0.0), curve_strength(0.0),
-              terminal_weight_scale(0.0), progress_weight_scale(1.0)
+              beta_limit(0.0), curve_strength(0.0)
         {
         }
-    };
-
-    enum class ControlState
-    {
-        WAITING_FOR_PLAN,
-        INITIAL_ALIGN,
-        PATH_TRACKING,
-        FINAL_SETTLING,
-        GOAL_HOLD,
-        FAILURE_STOP
     };
 
     struct MpcSolveReport
@@ -228,26 +215,15 @@ private:
     bool isNewGoal(const geometry_msgs::PoseStamped& goal) const;
     void resetForNewGoal();
     void stopImmediately(geometry_msgs::Twist& cmd_vel);
-    static const char* controlStateName(ControlState state);
-    void transitionTo(ControlState next_state, const std::string& reason);
-    bool computeInitialPathTangentError(double& angle_error);
-    bool shouldEnterInitialAlign(double angle_error) const;
 
     // 原稳定PP外围机制与失败回退。
     void updateHealedPath();
-    void publishPathDebug(
-        const std::vector<geometry_msgs::PoseStamped>& source_path,
-        ros::Publisher& publisher,
-        int start_index,
-        int end_index,
-        double z_offset);
-    void publishPathHealingDebug(int heal_start, int heal_end);
     bool checkPathCollision();
     bool selectTrackingTarget(geometry_msgs::PoseStamped& target_pose);
     double computeLateralDeviation(
         const geometry_msgs::PoseStamped& target_pose);
     bool computeInitialRotationCommand(
-        double angle_error,
+        const geometry_msgs::PoseStamped& target_pose,
         geometry_msgs::Twist& desired_cmd);
     bool computeFinalPoseCommand(
         const geometry_msgs::PoseStamped& final_pose,
@@ -292,8 +268,9 @@ private:
     bool has_goal_;
 
     int target_index_;
+    bool pose_adjusting_;
     bool goal_reached_;
-    ControlState control_state_;
+    bool initial_rotation_done_;
 
     // 稳定PP参数。
     double lookahead_dist_;
@@ -306,10 +283,7 @@ private:
     std::string controller_mode_;
     int mpc_horizon_steps_;
     double mpc_dt_;
-    bool mpc_terminal_stop_enabled_;
-    double mpc_terminal_yaw_blend_distance_;
-    double mpc_terminal_progress_fade_distance_;
-    double mpc_terminal_fallback_stop_distance_;
+    double mpc_min_reference_length_;
 
     // C2保留：等距线性重采样、双曲率通道与速度传播。
     double c2_resample_distance_;
@@ -431,21 +405,11 @@ private:
     double path_healing_gradient_deadband_;
     double path_healing_gradient_scale_;
 
-    // RViz调试：原始路径、完整治愈路径和当前治愈窗口。
-    bool publish_path_healing_debug_;
-    double path_healing_debug_publish_rate_;
-    ros::Time last_path_healing_debug_publish_time_;
-    ros::Publisher raw_global_path_pub_;
-    ros::Publisher healed_global_path_pub_;
-    ros::Publisher healed_window_path_pub_;
-
     int collision_check_lookahead_points_;
     unsigned char collision_cost_threshold_;
 
     bool enable_initial_rotation_;
-    double initial_align_enter_angle_;
-    double initial_align_exit_angle_;
-    double initial_path_tangent_lookahead_;
+    double initial_yaw_tolerance_;
     double initial_angular_gain_;
     double initial_min_angular_speed_;
     double initial_max_angular_speed_;

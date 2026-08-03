@@ -14,3 +14,55 @@ linear_speed_max:  3.0
 angular_speed_max: 3.14
 Mileage_file_name:  car_Mileage_info.txt
 debug_log:  false
+
+
+
+
+# ==================== BASE-FAILSAFE V4 ====================
+# Merge these into the private parameters loaded by base_driver.
+
+failsafe_enable: true
+failsafe_zero_rate_hz: 100.0
+failsafe_odom_max_age_ms: 120.0
+
+# High-confidence angular reverse detector.
+failsafe_reverse_cmd_w_min: 1.0
+failsafe_reverse_odom_w_min: 0.8
+failsafe_reverse_confirm_cycles: 6
+
+# Rolling command->odom trajectory delay estimator.
+failsafe_history_keep_ms: 1400.0
+failsafe_delay_eval_window_ms: 300.0
+failsafe_delay_min_ms: 0.0
+failsafe_delay_max_ms: 650.0
+failsafe_delay_step_ms: 50.0
+failsafe_delay_normal_max_ms: 200.0
+failsafe_delay_fault_min_ms: 300.0
+failsafe_delay_match_tolerance_ms: 32.0
+failsafe_delay_min_eval_odom_samples: 5
+failsafe_delay_confirm_odom_frames: 2
+
+# Require enough command variation so delay is actually observable.
+failsafe_delay_cmd_span_linear_min: 0.25
+failsafe_delay_cmd_span_angular_min: 0.90
+
+# Ignore tiny near-stop / ordinary tracking mismatch.
+failsafe_detection_min_linear: 0.15
+failsafe_detection_min_angular: 0.50
+failsafe_current_mismatch_linear: 0.25
+failsafe_current_mismatch_angular: 0.80
+
+# Trajectory fitting scales and fault confidence.
+failsafe_delay_score_linear_scale: 0.22
+failsafe_delay_score_angular_scale: 0.55
+failsafe_delay_fault_score_max: 2.20
+failsafe_delay_vs_normal_ratio_max: 0.72
+failsafe_delay_improvement_min: 0.45
+
+# Proven emergency-brake behavior.
+failsafe_min_brake_ms: 200.0
+failsafe_hold_ms: 300.0
+failsafe_stop_linear: 0.05
+failsafe_stop_angular: 0.12
+failsafe_stop_confirm_odom_frames: 3
+failsafe_recovery_grace_ms: 500.0

@@ -1,38 +1,25 @@
 #include <ucar_controller/base_driver.h>
 #include <Eigen/Eigen>
 #include <cstdint>
-#include <deque>
-#include <std_msgs/Bool.h>
 
 namespace ucarController
 {
 namespace
 {
-// ==================== BASE-DIAG V2 ====================
-// Diagnostics only. These variables do not participate in control decisions.
+// ==================== base_driver 速度链路诊断状态 ====================
+// 这些变量只用于观测，不参与控制计算。
 bool g_diag_enable = true;
 bool g_diag_verbose = false;
-
 double g_diag_lock_wait_warn_ms = 2.0;
-double g_diag_cmd_gap_warn_ms = 90.0;
+double g_diag_cmd_gap_warn_ms = 70.0;
 double g_diag_write_warn_ms = 3.0;
 double g_diag_tx_gap_warn_ms = 75.0;
-int g_diag_repeat_warn_streak = 2;    // 2 extra repeats => same RX sent 3 TX cycles total
-int g_diag_repeat_error_streak = 3;   // 3 extra repeats => same RX sent 4 TX cycles total
-int g_diag_skip_warn_count = 2;       // warn only when >=2 RX commands are skipped at once
 
-double g_diag_nonzero_linear_eps = 0.01;
-double g_diag_nonzero_angular_eps = 0.02;
-
-uint64_t g_cmd_rx_seq = 0;
-uint64_t g_last_tx_selected_seq = 0;
+uint64_t g_cmd_rx_seq = 0;              // velCallback真正写入缓存的序号
+uint64_t g_last_tx_selected_seq = 0;    // writeLoop上次实际选中的命令序号
 uint64_t g_repeat_tx_count = 0;
-uint64_t g_repeat_streak = 0;
-uint64_t g_max_repeat_streak = 0;
-uint64_t g_skipped_rx_total = 0;
-uint64_t g_skip_event_count = 0;
 uint64_t g_short_write_count = 0;
-uint64_t g_nonzero_timeout_count = 0;
+uint64_t g_timeout_tx_count = 0;
 uint64_t g_stale_before_write_count = 0;
 
 bool g_last_tx_was_timeout = false;
@@ -43,141 +30,6 @@ ros::WallTime g_last_tx_wall_time;
 
 ros::Publisher g_applied_cmd_pub;
 ros::Publisher g_tx_diag_pub;
-
-// ==================== BASE-FAILSAFE V4.1 ====================
-// Software-only fail-safe for the observed RK3588 -> MCU stale/delayed command
-// fault.  NORMAL control is unchanged.  V4 estimates the effective command ->
-// odometry delay from recent trajectories instead of requiring odom to freeze.
-enum FailsafeState
-{
-  FS_NORMAL = 0,
-  FS_EMERGENCY_BRAKE = 1,
-  FS_HOLD_STOP = 2
-};
-
-struct FailsafeSample
-{
-  ros::WallTime wall_time;  // history retention / diagnostics
-  ros::Time tx_stamp;       // time this command was selected for serial TX
-  ros::Time odom_stamp;     // timestamp of the measured odom snapshot
-  double cmd_x;
-  double cmd_y;
-  double cmd_w;
-  double odom_x;
-  double odom_y;
-  double odom_w;
-};
-
-bool g_fs_enable = true;
-double g_fs_zero_rate_hz = 100.0;
-double g_fs_odom_max_age_ms = 120.0;
-
-// Channel A: strong persistent angular sign mismatch.
-double g_fs_reverse_cmd_w_min = 1.0;
-double g_fs_reverse_odom_w_min = 0.8;
-int g_fs_reverse_confirm_cycles = 5;  // roughly 250 ms at 20 Hz
-
-// Channel B: rolling trajectory delay estimator.
-double g_fs_history_keep_ms = 1400.0;
-double g_fs_delay_eval_window_ms = 220.0;
-double g_fs_delay_min_ms = 0.0;
-double g_fs_delay_max_ms = 650.0;
-double g_fs_delay_step_ms = 50.0;
-double g_fs_delay_normal_max_ms = 200.0;
-double g_fs_delay_fault_min_ms = 250.0;
-double g_fs_delay_match_tolerance_ms = 32.0;
-int g_fs_delay_min_eval_odom_samples = 5;
-int g_fs_delay_confirm_odom_frames = 2;
-
-// Delay is not identifiable on a nearly constant command.  Require excitation
-// in at least one control dimension over the evaluation window.
-double g_fs_delay_cmd_span_linear_min = 0.25;
-double g_fs_delay_cmd_span_angular_min = 0.90;
-
-// Ignore trivial near-stop mismatch and normal small tracking error.
-double g_fs_detection_min_linear = 0.15;
-double g_fs_detection_min_angular = 0.50;
-double g_fs_current_mismatch_linear = 0.25;
-double g_fs_current_mismatch_angular = 0.80;
-
-// Per-sample normalized trajectory fit score:
-// score = sqrt((linear_error/scale_linear)^2 +
-//              (angular_error/scale_angular)^2)
-double g_fs_delay_score_linear_scale = 0.22;
-double g_fs_delay_score_angular_scale = 0.55;
-
-// A large delay must fit the measured trajectory well AND substantially better
-// than every candidate in the normal-delay region.
-double g_fs_delay_fault_score_max = 2.20;
-double g_fs_delay_vs_normal_ratio_max = 0.85;
-double g_fs_delay_improvement_min = 0.25;
-
-// Channel C: FAST high-confidence abnormal-delay trigger.
-// Unlike the regular delay detector, this channel needs only one FRESH odom
-// frame, but it also requires a large current cmd/odom mismatch.
-bool g_fs_fast_delay_enable = true;
-double g_fs_fast_delay_min_ms = 300.0;
-double g_fs_fast_delay_score_max = 2.20;
-double g_fs_fast_delay_ratio_max = 0.82;
-double g_fs_fast_delay_improvement_min = 0.30;
-double g_fs_fast_mismatch_linear = 0.30;
-double g_fs_fast_mismatch_angular = 1.00;
-
-// Brake/recovery state machine.
-double g_fs_min_brake_ms = 200.0;
-double g_fs_hold_ms = 300.0;
-double g_fs_stop_linear = 0.05;
-double g_fs_stop_angular = 0.12;
-int g_fs_stop_confirm_odom_frames = 3;
-double g_fs_recovery_grace_ms = 500.0;
-
-FailsafeState g_fs_state = FS_NORMAL;
-uint64_t g_fs_trigger_count = 0;
-int g_fs_reverse_count = 0;
-int g_fs_delay_confirm_count = 0;
-int g_fs_stop_confirm_count = 0;
-ros::WallTime g_fs_trigger_wall;
-ros::WallTime g_fs_hold_start_wall;
-ros::WallTime g_fs_last_recover_wall;
-ros::Time g_fs_last_stop_check_odom_stamp;
-ros::Time g_fs_last_detection_odom_stamp;
-std::deque<FailsafeSample> g_fs_history;
-ros::Publisher g_fs_active_pub;
-
-static inline double fsLinearDiff(double ax, double ay, double bx, double by)
-{
-  const double dx = ax - bx;
-  const double dy = ay - by;
-  return sqrt(dx * dx + dy * dy);
-}
-
-static inline double fsDelaySampleScore(double cmd_x, double cmd_y, double cmd_w,
-                                        double odom_x, double odom_y, double odom_w)
-{
-  const double lin_scale = g_fs_delay_score_linear_scale > 1e-6
-                               ? g_fs_delay_score_linear_scale
-                               : 1e-6;
-  const double ang_scale = g_fs_delay_score_angular_scale > 1e-6
-                               ? g_fs_delay_score_angular_scale
-                               : 1e-6;
-  const double lin = fsLinearDiff(cmd_x, cmd_y, odom_x, odom_y) / lin_scale;
-  const double ang = fabs(cmd_w - odom_w) / ang_scale;
-  return sqrt(lin * lin + ang * ang);
-}
-
-static inline void resetFailsafeDetectionState()
-{
-  g_fs_reverse_count = 0;
-  g_fs_delay_confirm_count = 0;
-  g_fs_last_detection_odom_stamp = ros::Time();
-}
-
-static inline void publishFailsafeState(bool active)
-{
-  std_msgs::Bool msg;
-  msg.data = active;
-  g_fs_active_pub.publish(msg);
-}
 } // namespace
 baseBringup::baseBringup() :x_(0), y_(0), th_(0)
 {
@@ -216,95 +68,27 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   pravite_nh.param("debug_log", debug_log_, true);//  true rosinfo 等等  打印log数据
 
 
-  // ==================== BASE-DIAG V2 parameters ====================
+  // ==================== 速度链路诊断参数 ====================
+  // false时完全不发布诊断话题/异常日志；不影响原debug_log。
   pravite_nh.param("diagnostic_enable", g_diag_enable, true);
+  // verbose=true会每帧打印RX/TX，可能扰动实时性，正常排障保持false。
   pravite_nh.param("diagnostic_verbose", g_diag_verbose, false);
   pravite_nh.param("diag_lock_wait_warn_ms", g_diag_lock_wait_warn_ms, 2.0);
-  pravite_nh.param("diag_cmd_gap_warn_ms", g_diag_cmd_gap_warn_ms, 90.0);
+  pravite_nh.param("diag_cmd_gap_warn_ms", g_diag_cmd_gap_warn_ms, 70.0);
   pravite_nh.param("diag_write_warn_ms", g_diag_write_warn_ms, 3.0);
   pravite_nh.param("diag_tx_gap_warn_ms", g_diag_tx_gap_warn_ms, 75.0);
-  pravite_nh.param("diag_repeat_warn_streak", g_diag_repeat_warn_streak, 2);
-  pravite_nh.param("diag_repeat_error_streak", g_diag_repeat_error_streak, 3);
-  pravite_nh.param("diag_skip_warn_count", g_diag_skip_warn_count, 2);
-  pravite_nh.param("diag_nonzero_linear_eps", g_diag_nonzero_linear_eps, 0.01);
-  pravite_nh.param("diag_nonzero_angular_eps", g_diag_nonzero_angular_eps, 0.02);
-
-  // ==================== BASE-FAILSAFE V4.1 parameters ====================
-  pravite_nh.param("failsafe_enable", g_fs_enable, true);
-  pravite_nh.param("failsafe_zero_rate_hz", g_fs_zero_rate_hz, 100.0);
-  pravite_nh.param("failsafe_odom_max_age_ms", g_fs_odom_max_age_ms, 120.0);
-
-  pravite_nh.param("failsafe_reverse_cmd_w_min", g_fs_reverse_cmd_w_min, 1.0);
-  pravite_nh.param("failsafe_reverse_odom_w_min", g_fs_reverse_odom_w_min, 0.8);
-  pravite_nh.param("failsafe_reverse_confirm_cycles", g_fs_reverse_confirm_cycles, 5);
-
-  pravite_nh.param("failsafe_history_keep_ms", g_fs_history_keep_ms, 1400.0);
-  pravite_nh.param("failsafe_delay_eval_window_ms", g_fs_delay_eval_window_ms, 220.0);
-  pravite_nh.param("failsafe_delay_min_ms", g_fs_delay_min_ms, 0.0);
-  pravite_nh.param("failsafe_delay_max_ms", g_fs_delay_max_ms, 650.0);
-  pravite_nh.param("failsafe_delay_step_ms", g_fs_delay_step_ms, 50.0);
-  pravite_nh.param("failsafe_delay_normal_max_ms", g_fs_delay_normal_max_ms, 200.0);
-  pravite_nh.param("failsafe_delay_fault_min_ms", g_fs_delay_fault_min_ms, 250.0);
-  pravite_nh.param("failsafe_delay_match_tolerance_ms", g_fs_delay_match_tolerance_ms, 32.0);
-  pravite_nh.param("failsafe_delay_min_eval_odom_samples", g_fs_delay_min_eval_odom_samples, 5);
-  pravite_nh.param("failsafe_delay_confirm_odom_frames", g_fs_delay_confirm_odom_frames, 2);
-
-  pravite_nh.param("failsafe_delay_cmd_span_linear_min", g_fs_delay_cmd_span_linear_min, 0.25);
-  pravite_nh.param("failsafe_delay_cmd_span_angular_min", g_fs_delay_cmd_span_angular_min, 0.90);
-
-  pravite_nh.param("failsafe_detection_min_linear", g_fs_detection_min_linear, 0.15);
-  pravite_nh.param("failsafe_detection_min_angular", g_fs_detection_min_angular, 0.50);
-  pravite_nh.param("failsafe_current_mismatch_linear", g_fs_current_mismatch_linear, 0.25);
-  pravite_nh.param("failsafe_current_mismatch_angular", g_fs_current_mismatch_angular, 0.80);
-
-  pravite_nh.param("failsafe_delay_score_linear_scale", g_fs_delay_score_linear_scale, 0.22);
-  pravite_nh.param("failsafe_delay_score_angular_scale", g_fs_delay_score_angular_scale, 0.55);
-  pravite_nh.param("failsafe_delay_fault_score_max", g_fs_delay_fault_score_max, 2.20);
-  pravite_nh.param("failsafe_delay_vs_normal_ratio_max", g_fs_delay_vs_normal_ratio_max, 0.85);
-  pravite_nh.param("failsafe_delay_improvement_min", g_fs_delay_improvement_min, 0.25);
-
-  // FAST_DELAY: high-confidence single-fresh-odom trigger.
-  pravite_nh.param("failsafe_fast_delay_enable", g_fs_fast_delay_enable, true);
-  pravite_nh.param("failsafe_fast_delay_min_ms", g_fs_fast_delay_min_ms, 300.0);
-  pravite_nh.param("failsafe_fast_delay_score_max", g_fs_fast_delay_score_max, 2.20);
-  pravite_nh.param("failsafe_fast_delay_ratio_max", g_fs_fast_delay_ratio_max, 0.82);
-  pravite_nh.param("failsafe_fast_delay_improvement_min", g_fs_fast_delay_improvement_min, 0.30);
-  pravite_nh.param("failsafe_fast_mismatch_linear", g_fs_fast_mismatch_linear, 0.30);
-  pravite_nh.param("failsafe_fast_mismatch_angular", g_fs_fast_mismatch_angular, 1.00);
-
-  pravite_nh.param("failsafe_min_brake_ms", g_fs_min_brake_ms, 200.0);
-  pravite_nh.param("failsafe_hold_ms", g_fs_hold_ms, 300.0);
-  pravite_nh.param("failsafe_stop_linear", g_fs_stop_linear, 0.05);
-  pravite_nh.param("failsafe_stop_angular", g_fs_stop_angular, 0.12);
-  pravite_nh.param("failsafe_stop_confirm_odom_frames", g_fs_stop_confirm_odom_frames, 3);
-  pravite_nh.param("failsafe_recovery_grace_ms", g_fs_recovery_grace_ms, 500.0);
 
   g_cmd_rx_seq = 0;
   g_last_tx_selected_seq = 0;
   g_repeat_tx_count = 0;
-  g_repeat_streak = 0;
-  g_max_repeat_streak = 0;
-  g_skipped_rx_total = 0;
-  g_skip_event_count = 0;
   g_short_write_count = 0;
-  g_nonzero_timeout_count = 0;
+  g_timeout_tx_count = 0;
   g_stale_before_write_count = 0;
   g_last_tx_was_timeout = false;
   g_last_rx_lock_wait_ms = 0.0;
   g_last_rx_interval_ms = 0.0;
   g_last_cmd_callback_wall_time = ros::WallTime();
   g_last_tx_wall_time = ros::WallTime();
-  g_fs_state = FS_NORMAL;
-  g_fs_trigger_count = 0;
-  g_fs_reverse_count = 0;
-  g_fs_delay_confirm_count = 0;
-  g_fs_stop_confirm_count = 0;
-  g_fs_trigger_wall = ros::WallTime();
-  g_fs_hold_start_wall = ros::WallTime();
-  g_fs_last_recover_wall = ros::WallTime();
-  g_fs_last_stop_check_odom_stamp = ros::Time();
-  g_fs_last_detection_odom_stamp = ros::Time();
-  g_fs_history.clear();
 
   pravite_nh.param("imu_topic", imu_topic_, std::string("/imu"));
   pravite_nh.param("imu_frame", imu_frame_id_, std::string("imu")); 
@@ -333,12 +117,10 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   mag_pose_pub_ = nh_.advertise<geometry_msgs::Pose2D>(mag_pose_2d_topic_.c_str(), 10);
 
 
-  // Actual body command selected by writeLoop immediately before packet conversion.
+  // writeLoop实际采用的车体速度。它不是规划器期望值，而是底盘驱动真正选中的值。
   g_applied_cmd_pub = nh_.advertise<geometry_msgs::Twist>("/base_driver/applied_cmd_vel", 20);
-  // Numeric per-TX diagnostics. See writeLoop field definition below.
+  // Float64MultiArray字段定义见writeLoop中的注释。
   g_tx_diag_pub = nh_.advertise<std_msgs::Float64MultiArray>("/base_driver/tx_diag", 50);
-  g_fs_active_pub = nh_.advertise<std_msgs::Bool>("/base_driver/failsafe_active", 10, true);
-  publishFailsafeState(false);
 
   stop_move_server_   = nh_.advertiseService("stop_move", &baseBringup::stopMoveCB, this);
   set_max_vel_server_ = nh_.advertiseService("set_max_vel", &baseBringup::setMaxVelCB, this);
@@ -457,25 +239,23 @@ void baseBringup::writeLoop()
   ROS_INFO("baseBringup::writeLoop: start");
   led_timer = 0;
   ros::Rate loop_rate(rate_);
-
   while(ros::ok())
   {
     try
     {
       boost::unique_lock<boost::recursive_mutex> lock(Control_mutex_);
-      const int cur_controll_type = controll_type_;
+      int cur_controll_type = controll_type_;
       lock.unlock();
 
       double linear_x = 0.0;
       double linear_y = 0.0;
       double angular_z = 0.0;
 
-      // Cached command before timeout substitution. Used only to decide whether a
-      // timeout was dangerous (non-zero motion command) or harmless (already zero).
-      double cached_cmd_x = 0.0;
-      double cached_cmd_y = 0.0;
-      double cached_cmd_w = 0.0;
-
+      // ==================== 本周期诊断快照 ====================
+      // tx_selected_seq：本周期读取速度缓存时选中的/cmd_vel序号。
+      // rx_seq_at_write：真正调用serial.write前，缓存中最新/cmd_vel序号。
+      // 如果rx_seq_at_write > tx_selected_seq，则证明：
+      //   新命令已经进入base_driver，但writeLoop本周期仍准备发送旧命令。
       uint64_t tx_selected_seq = 0;
       uint64_t rx_seq_at_write = 0;
       double cmd_age_ms = -1.0;
@@ -498,41 +278,23 @@ void baseBringup::writeLoop()
         {
           cmd_mode = true;
           lock.lock();
-
+          const double dt = (ros::Time::now() - last_cmd_time_).toSec();
           tx_selected_seq = g_cmd_rx_seq;
-          cached_cmd_x = cmd_linear_x_;
-          cached_cmd_y = cmd_linear_y_;
-          cached_cmd_w = cmd_angular_z_;
+          cmd_age_ms = dt * 1000.0;
 
-          if (tx_selected_seq != 0)
+          if (dt > cmd_dt_threshold_)
           {
-            const double dt = (ros::Time::now() - last_cmd_time_).toSec();
-            cmd_age_ms = dt * 1000.0;
-
-            if (dt > cmd_dt_threshold_)
-            {
-              linear_x  = 0.0;
-              linear_y  = 0.0;
-              angular_z = 0.0;
-              cmd_timed_out = true;
-            }
-            else
-            {
-              linear_x  = cached_cmd_x;
-              linear_y  = cached_cmd_y;
-              angular_z = cached_cmd_w;
-            }
-          }
-          else
-          {
-            // No /cmd_vel has ever been received. Preserve original safe behavior:
-            // last_cmd_time_ is effectively old, so output zero.
-            linear_x = 0.0;
-            linear_y = 0.0;
+            linear_x  = 0.0;
+            linear_y  = 0.0;
             angular_z = 0.0;
             cmd_timed_out = true;
           }
-
+          else
+          {
+            linear_x  = cmd_linear_x_;
+            linear_y  = cmd_linear_y_;
+            angular_z = cmd_angular_z_;
+          }
           lock.unlock();
           break;
         }
@@ -552,7 +314,7 @@ void baseBringup::writeLoop()
           break;
       }
 
-      // ==================== Original limits ====================
+      // ==================== 以下保持原限幅逻辑 ====================
       if(linear_x > linear_speed_max_)
         linear_x = linear_speed_max_;
       else if(linear_x < -linear_speed_max_)
@@ -568,406 +330,6 @@ void baseBringup::writeLoop()
       else if(angular_z < -angular_speed_max_)
         angular_z = -angular_speed_max_;
 
-      // ==================== BASE-FAILSAFE V4.1 ====================
-      // Snapshot the newest wheel-odometry body velocity reported by the MCU.
-      nav_msgs::Odometry fs_odom;
-      lock.lock();
-      fs_odom = current_odom_;
-      lock.unlock();
-
-      const ros::WallTime fs_now = ros::WallTime::now();
-      const ros::Time fs_ros_now = ros::Time::now();
-      const double fs_odom_x = fs_odom.twist.twist.linear.x;
-      const double fs_odom_y = fs_odom.twist.twist.linear.y;
-      const double fs_odom_w = fs_odom.twist.twist.angular.z;
-
-      double fs_odom_age_ms = -1.0;
-      bool fs_odom_valid = !fs_odom.header.stamp.isZero();
-      if (fs_odom_valid)
-      {
-        fs_odom_age_ms = (fs_ros_now - fs_odom.header.stamp).toSec() * 1000.0;
-        if (fs_odom_age_ms < 0.0 || fs_odom_age_ms > g_fs_odom_max_age_ms)
-          fs_odom_valid = false;
-      }
-
-      const double fs_grace_age_ms =
-          (g_fs_last_recover_wall.toSec() > 0.0)
-              ? (fs_now - g_fs_last_recover_wall).toSec() * 1000.0
-              : 1e9;
-      const bool fs_in_recovery_grace = fs_grace_age_ms < g_fs_recovery_grace_ms;
-
-      const char* fs_trigger_reason = NULL;
-      bool fs_just_recovered_this_tx = false;
-
-      // V4 diagnostics.
-      double fs_eval_span_ms = -1.0;
-      double fs_cmd_span_linear = -1.0;
-      double fs_cmd_span_angular = -1.0;
-      double fs_best_delay_ms = -1.0;
-      double fs_best_delay_score = -1.0;
-      double fs_best_normal_delay_ms = -1.0;
-      double fs_best_normal_score = -1.0;
-      double fs_delay_improvement = -1.0;
-      int fs_eval_sample_count = 0;
-      bool fs_delay_fault_candidate = false;
-      bool fs_fast_delay_candidate = false;
-      double fs_current_mismatch_linear = -1.0;
-      double fs_current_mismatch_angular = -1.0;
-
-      // Keep a command/odom history in NORMAL state.  tx_stamp represents the
-      // actual command selected by writeLoop, i.e. immediately before serial TX.
-      if (g_fs_enable && g_fs_state == FS_NORMAL && cmd_mode && !cmd_timed_out &&
-          tx_selected_seq != 0 && fs_odom_valid)
-      {
-        FailsafeSample fs_sample;
-        fs_sample.wall_time = fs_now;
-        fs_sample.tx_stamp = fs_ros_now;
-        fs_sample.odom_stamp = fs_odom.header.stamp;
-        fs_sample.cmd_x = linear_x;
-        fs_sample.cmd_y = linear_y;
-        fs_sample.cmd_w = angular_z;
-        fs_sample.odom_x = fs_odom_x;
-        fs_sample.odom_y = fs_odom_y;
-        fs_sample.odom_w = fs_odom_w;
-        g_fs_history.push_back(fs_sample);
-
-        while (!g_fs_history.empty() &&
-               (fs_now - g_fs_history.front().wall_time).toSec() * 1000.0 > g_fs_history_keep_ms)
-          g_fs_history.pop_front();
-      }
-      else if (g_fs_state == FS_NORMAL)
-      {
-        g_fs_history.clear();
-        resetFailsafeDetectionState();
-      }
-
-      if (g_fs_enable && g_fs_state == FS_NORMAL && cmd_mode && !cmd_timed_out &&
-          tx_selected_seq != 0 && fs_odom_valid && !fs_in_recovery_grace)
-      {
-        // -------------------------------------------------------------------
-        // Channel A: persistent high-confidence angular sign disagreement.
-        // -------------------------------------------------------------------
-        const bool fs_reverse_condition =
-            fabs(angular_z) >= g_fs_reverse_cmd_w_min &&
-            fabs(fs_odom_w) >= g_fs_reverse_odom_w_min &&
-            (angular_z * fs_odom_w) < 0.0;
-
-        if (fs_reverse_condition)
-          ++g_fs_reverse_count;
-        else
-          g_fs_reverse_count = 0;
-
-        if (g_fs_reverse_count >= g_fs_reverse_confirm_cycles)
-          fs_trigger_reason = "ANGULAR_REVERSE_MISMATCH";
-
-        // -------------------------------------------------------------------
-        // Channel B: rolling trajectory delay estimation.
-        //
-        // For each candidate delay D, compare recent odom(t) with the command
-        // actually selected for TX near (t-D).  A stale/delayed actuator fault
-        // should produce a much smaller trajectory error for a large D than for
-        // every normal D (<= g_fs_delay_normal_max_ms).
-        // -------------------------------------------------------------------
-        if (g_fs_history.size() >= static_cast<size_t>(g_fs_delay_min_eval_odom_samples))
-        {
-          // Command excitation over the recent evaluation interval.
-          std::deque<FailsafeSample>::const_iterator eval_begin = g_fs_history.end();
-          for (std::deque<FailsafeSample>::const_iterator it = g_fs_history.begin();
-               it != g_fs_history.end(); ++it)
-          {
-            const double age_ms = (fs_now - it->wall_time).toSec() * 1000.0;
-            if (age_ms <= g_fs_delay_eval_window_ms)
-            {
-              eval_begin = it;
-              break;
-            }
-          }
-
-          if (eval_begin != g_fs_history.end())
-          {
-            fs_eval_span_ms = (fs_now - eval_begin->wall_time).toSec() * 1000.0;
-            fs_cmd_span_linear = 0.0;
-            fs_cmd_span_angular = 0.0;
-
-            for (std::deque<FailsafeSample>::const_iterator a = eval_begin;
-                 a != g_fs_history.end(); ++a)
-            {
-              std::deque<FailsafeSample>::const_iterator b = a;
-              ++b;
-              for (; b != g_fs_history.end(); ++b)
-              {
-                const double dl = fsLinearDiff(a->cmd_x, a->cmd_y, b->cmd_x, b->cmd_y);
-                const double dw = fabs(a->cmd_w - b->cmd_w);
-                if (dl > fs_cmd_span_linear) fs_cmd_span_linear = dl;
-                if (dw > fs_cmd_span_angular) fs_cmd_span_angular = dw;
-              }
-            }
-
-            const bool cmd_excited =
-                fs_cmd_span_linear >= g_fs_delay_cmd_span_linear_min ||
-                fs_cmd_span_angular >= g_fs_delay_cmd_span_angular_min;
-
-            const double current_cmd_linear = sqrt(linear_x * linear_x + linear_y * linear_y);
-            const double current_odom_linear = sqrt(fs_odom_x * fs_odom_x + fs_odom_y * fs_odom_y);
-            const bool meaningful_motion =
-                current_cmd_linear >= g_fs_detection_min_linear ||
-                current_odom_linear >= g_fs_detection_min_linear ||
-                fabs(angular_z) >= g_fs_detection_min_angular ||
-                fabs(fs_odom_w) >= g_fs_detection_min_angular;
-
-            fs_current_mismatch_linear =
-                fsLinearDiff(linear_x, linear_y, fs_odom_x, fs_odom_y);
-            fs_current_mismatch_angular = fabs(angular_z - fs_odom_w);
-            const bool current_mismatch =
-                fs_current_mismatch_linear >= g_fs_current_mismatch_linear ||
-                fs_current_mismatch_angular >= g_fs_current_mismatch_angular;
-
-            if (cmd_excited && meaningful_motion && current_mismatch &&
-                fs_eval_span_ms >= g_fs_delay_eval_window_ms * 0.75)
-            {
-              double best_score = 1e9;
-              double best_delay = -1.0;
-              int best_count = 0;
-              double best_normal_score = 1e9;
-              double best_normal_delay = -1.0;
-
-              const double delay_step = g_fs_delay_step_ms > 1.0 ? g_fs_delay_step_ms : 50.0;
-              for (double delay_ms = g_fs_delay_min_ms;
-                   delay_ms <= g_fs_delay_max_ms + 1e-6;
-                   delay_ms += delay_step)
-              {
-                double score_sum = 0.0;
-                int score_count = 0;
-                ros::Time last_eval_odom_stamp;
-
-                for (std::deque<FailsafeSample>::const_iterator s = eval_begin;
-                     s != g_fs_history.end(); ++s)
-                {
-                  if (s->odom_stamp.isZero())
-                    continue;
-
-                  // writeLoop can observe the same 20 Hz odom sample more than
-                  // once; count each physical odom frame only once.
-                  if (!last_eval_odom_stamp.isZero() && s->odom_stamp == last_eval_odom_stamp)
-                    continue;
-                  last_eval_odom_stamp = s->odom_stamp;
-
-                  const ros::Time target_tx =
-                      s->odom_stamp - ros::Duration(delay_ms / 1000.0);
-
-                  double nearest_dt_ms = 1e9;
-                  std::deque<FailsafeSample>::const_iterator nearest = g_fs_history.end();
-                  for (std::deque<FailsafeSample>::const_iterator c = g_fs_history.begin();
-                       c != g_fs_history.end(); ++c)
-                  {
-                    const double dt_ms = fabs((c->tx_stamp - target_tx).toSec()) * 1000.0;
-                    if (dt_ms < nearest_dt_ms)
-                    {
-                      nearest_dt_ms = dt_ms;
-                      nearest = c;
-                    }
-                  }
-
-                  if (nearest == g_fs_history.end() ||
-                      nearest_dt_ms > g_fs_delay_match_tolerance_ms)
-                    continue;
-
-                  score_sum += fsDelaySampleScore(nearest->cmd_x,
-                                                  nearest->cmd_y,
-                                                  nearest->cmd_w,
-                                                  s->odom_x,
-                                                  s->odom_y,
-                                                  s->odom_w);
-                  ++score_count;
-                }
-
-                if (score_count >= g_fs_delay_min_eval_odom_samples)
-                {
-                  const double avg_score = score_sum / static_cast<double>(score_count);
-                  if (avg_score < best_score)
-                  {
-                    best_score = avg_score;
-                    best_delay = delay_ms;
-                    best_count = score_count;
-                  }
-
-                  if (delay_ms <= g_fs_delay_normal_max_ms && avg_score < best_normal_score)
-                  {
-                    best_normal_score = avg_score;
-                    best_normal_delay = delay_ms;
-                  }
-                }
-              }
-
-              if (best_score < 1e8)
-              {
-                fs_best_delay_ms = best_delay;
-                fs_best_delay_score = best_score;
-                fs_eval_sample_count = best_count;
-              }
-              if (best_normal_score < 1e8)
-              {
-                fs_best_normal_delay_ms = best_normal_delay;
-                fs_best_normal_score = best_normal_score;
-              }
-
-              if (best_score < 1e8 && best_normal_score < 1e8)
-              {
-                fs_delay_improvement = best_normal_score - best_score;
-                fs_delay_fault_candidate =
-                    best_delay >= g_fs_delay_fault_min_ms &&
-                    best_score <= g_fs_delay_fault_score_max &&
-                    best_score <= best_normal_score * g_fs_delay_vs_normal_ratio_max &&
-                    fs_delay_improvement >= g_fs_delay_improvement_min;
-
-                // FAST_DELAY is stricter about instantaneous mismatch, but does
-                // not wait for a second odom confirmation.
-                fs_fast_delay_candidate =
-                    g_fs_fast_delay_enable &&
-                    best_delay >= g_fs_fast_delay_min_ms &&
-                    best_score <= g_fs_fast_delay_score_max &&
-                    best_score <= best_normal_score * g_fs_fast_delay_ratio_max &&
-                    fs_delay_improvement >= g_fs_fast_delay_improvement_min &&
-                    (fs_current_mismatch_linear >= g_fs_fast_mismatch_linear ||
-                     fs_current_mismatch_angular >= g_fs_fast_mismatch_angular);
-              }
-            }
-          }
-        }
-
-        // Delay fault confirmation counts only NEW odom frames.
-        bool fs_new_detection_odom = false;
-        if (fs_odom.header.stamp != g_fs_last_detection_odom_stamp)
-        {
-          fs_new_detection_odom = true;
-          g_fs_last_detection_odom_stamp = fs_odom.header.stamp;
-
-          if (fs_delay_fault_candidate)
-            ++g_fs_delay_confirm_count;
-          else
-            g_fs_delay_confirm_count = 0;
-        }
-
-        // High-confidence path: one fresh odom frame is enough.
-        if (fs_trigger_reason == NULL &&
-            fs_new_detection_odom &&
-            fs_fast_delay_candidate)
-          fs_trigger_reason = "FAST_ABNORMAL_COMMAND_TO_ODOM_DELAY";
-
-        // Medium-confidence path: retain two-frame confirmation.
-        if (fs_trigger_reason == NULL &&
-            g_fs_delay_confirm_count >= g_fs_delay_confirm_odom_frames)
-          fs_trigger_reason = "ABNORMAL_COMMAND_TO_ODOM_DELAY";
-      }
-      else if (g_fs_state == FS_NORMAL)
-      {
-        g_fs_reverse_count = 0;
-        g_fs_delay_confirm_count = 0;
-        g_fs_last_detection_odom_stamp = ros::Time();
-      }
-
-      if (fs_trigger_reason != NULL && g_fs_state == FS_NORMAL)
-      {
-        g_fs_state = FS_EMERGENCY_BRAKE;
-        g_fs_trigger_wall = fs_now;
-        g_fs_hold_start_wall = ros::WallTime();
-        g_fs_stop_confirm_count = 0;
-        g_fs_last_stop_check_odom_stamp = ros::Time();
-        ++g_fs_trigger_count;
-        publishFailsafeState(true);
-
-        ROS_ERROR("[BASE-FAILSAFE][TRIGGER] reason=%s count=%llu cmd=(%.3f,%.3f,%.3f) odom=(%.3f,%.3f,%.3f) odom_age_ms=%.2f reverse_count=%d delay_count=%d fast_delay=%d best_delay_ms=%.1f best_score=%.3f normal_delay_ms=%.1f normal_score=%.3f improvement=%.3f mismatch=(%.3f,%.3f) eval_n=%d cmd_span=(%.3f,%.3f)",
-                  fs_trigger_reason,
-                  static_cast<unsigned long long>(g_fs_trigger_count),
-                  linear_x, linear_y, angular_z,
-                  fs_odom_x, fs_odom_y, fs_odom_w,
-                  fs_odom_age_ms,
-                  g_fs_reverse_count,
-                  g_fs_delay_confirm_count,
-                  fs_fast_delay_candidate ? 1 : 0,
-                  fs_best_delay_ms,
-                  fs_best_delay_score,
-                  fs_best_normal_delay_ms,
-                  fs_best_normal_score,
-                  fs_delay_improvement,
-                  fs_current_mismatch_linear,
-                  fs_current_mismatch_angular,
-                  fs_eval_sample_count,
-                  fs_cmd_span_linear,
-                  fs_cmd_span_angular);
-
-        // The triggering TX cycle is already forced to zero.
-        linear_x = 0.0;
-        linear_y = 0.0;
-        angular_z = 0.0;
-        g_fs_history.clear();
-      }
-
-      // Once active, base_driver owns output and ignores all motion commands.
-      if (g_fs_state != FS_NORMAL)
-      {
-        linear_x = 0.0;
-        linear_y = 0.0;
-        angular_z = 0.0;
-
-        // Count STOP confirmations only on NEW odometry frames.  Emergency TX
-        // runs at 100 Hz while odometry is normally around 20 Hz.
-        if (fs_odom_valid && fs_odom.header.stamp != g_fs_last_stop_check_odom_stamp)
-        {
-          g_fs_last_stop_check_odom_stamp = fs_odom.header.stamp;
-          const double odom_linear_speed = sqrt(fs_odom_x * fs_odom_x + fs_odom_y * fs_odom_y);
-          const bool odom_stopped =
-              odom_linear_speed <= g_fs_stop_linear &&
-              fabs(fs_odom_w) <= g_fs_stop_angular;
-
-          if (odom_stopped)
-            ++g_fs_stop_confirm_count;
-          else
-            g_fs_stop_confirm_count = 0;
-        }
-
-        if (g_fs_state == FS_EMERGENCY_BRAKE)
-        {
-          const double brake_ms = (fs_now - g_fs_trigger_wall).toSec() * 1000.0;
-          if (brake_ms >= g_fs_min_brake_ms &&
-              g_fs_stop_confirm_count >= g_fs_stop_confirm_odom_frames)
-          {
-            g_fs_state = FS_HOLD_STOP;
-            g_fs_hold_start_wall = fs_now;
-            ROS_WARN("[BASE-FAILSAFE][STOP_CONFIRMED] brake_ms=%.1f odom=(%.3f,%.3f,%.3f) confirm_frames=%d; entering HOLD_STOP",
-                     brake_ms,
-                     fs_odom_x, fs_odom_y, fs_odom_w,
-                     g_fs_stop_confirm_count);
-          }
-        }
-        else if (g_fs_state == FS_HOLD_STOP)
-        {
-          const double hold_ms = (fs_now - g_fs_hold_start_wall).toSec() * 1000.0;
-          if (hold_ms >= g_fs_hold_ms)
-          {
-            g_fs_state = FS_NORMAL;
-            g_fs_last_recover_wall = fs_now;
-            g_fs_stop_confirm_count = 0;
-            g_fs_history.clear();
-            resetFailsafeDetectionState();
-
-            // Prevent the normal 20 Hz loop from immediately "catching up"
-            // after the temporary 100 Hz emergency loop.
-            g_last_tx_selected_seq = 0;
-            g_repeat_streak = 0;
-            g_last_tx_wall_time = ros::WallTime();
-            fs_just_recovered_this_tx = true;
-
-            publishFailsafeState(false);
-            ROS_WARN("[BASE-FAILSAFE][RECOVER] hold_ms=%.1f; returning to NORMAL with %.1fms detection grace",
-                     hold_ms,
-                     g_fs_recovery_grace_ms);
-          }
-        }
-      }
-
-      const bool failsafe_active_this_tx = (g_fs_state != FS_NORMAL);
-
       const double vw1 = linear_x - linear_y - angular_z * (base_shape_a_ + base_shape_b_);
       const double vw2 = linear_x + linear_y + angular_z * (base_shape_a_ + base_shape_b_);
       const double vw3 = linear_x - linear_y + angular_z * (base_shape_a_ + base_shape_b_);
@@ -978,13 +340,14 @@ void baseBringup::writeLoop()
       pack_write_.write_tmp[1] = 0x75;
       pack_write_.pack.ver     = 0;
       pack_write_.pack.len     = 11;
+      // pack_write_.pack.sn_num = write_sn_++;
       pack_write_.pack.data.pluse_w1 = -period_/1000.0*vw1*(encode_resolution_/(2.0*Pi*wheel_radius_));
       pack_write_.pack.data.pluse_w2 =  period_/1000.0*vw2*(encode_resolution_/(2.0*Pi*wheel_radius_));
       pack_write_.pack.data.pluse_w3 = -period_/1000.0*vw4*(encode_resolution_/(2.0*Pi*wheel_radius_));
       pack_write_.pack.data.pluse_w4 =  period_/1000.0*vw3*(encode_resolution_/(2.0*Pi*wheel_radius_));
 
       const int cur_led_mode = led_mode_type_;
-      ++led_timer;
+      led_timer++;
       lock.unlock();
 
       switch (cur_led_mode)
@@ -1035,77 +398,52 @@ void baseBringup::writeLoop()
         }
       }
 
-      // ==================== Critical TX observation point ====================
-      // Keep serial.write under the original Control_mutex_ on purpose. V2 is a
-      // diagnostic build, not a behavioral fix.
+      // ==================== 真正串口发送前的关键诊断点 ====================
+      // 保留原行为：serial.write仍然在Control_mutex_保护内。
+      // 这样诊断版本身不会“顺手修掉”我们正在寻找的bug。
       lock.lock();
 
+      // 注意：这里可能已经有比tx_selected_seq更新的/cmd_vel进入缓存。
       rx_seq_at_write = g_cmd_rx_seq;
       const bool newer_rx_pending =
           cmd_mode && tx_selected_seq != 0 && rx_seq_at_write > tx_selected_seq;
-      const uint64_t seq_lag = newer_rx_pending ? (rx_seq_at_write - tx_selected_seq) : 0;
+      const uint64_t seq_lag =
+          newer_rx_pending ? (rx_seq_at_write - tx_selected_seq) : 0;
 
       const double rx_lock_wait_ms_snapshot = g_last_rx_lock_wait_ms;
       const double rx_interval_ms_snapshot = g_last_rx_interval_ms;
-
-      // Repeat streak: number of EXTRA consecutive transmissions using same RX.
-      // TX 100,100,100 => streak values 0,1,2.
-      uint64_t repeat_streak_this_tx = 0;
-      bool repeated_same_seq = false;
-      if (cmd_mode && tx_selected_seq != 0 && !cmd_timed_out && !failsafe_active_this_tx)
-      {
-        repeated_same_seq = (tx_selected_seq == g_last_tx_selected_seq);
-        if (repeated_same_seq)
-        {
-          ++g_repeat_tx_count;
-          ++g_repeat_streak;
-        }
-        else
-        {
-          g_repeat_streak = 0;
-        }
-        repeat_streak_this_tx = g_repeat_streak;
-        if (g_repeat_streak > g_max_repeat_streak)
-          g_max_repeat_streak = g_repeat_streak;
-      }
-      else
-      {
-        g_repeat_streak = 0;
-      }
-
-      // Commands skipped between two distinct selected RX sequence numbers.
-      uint64_t skipped_this_tx = 0;
-      if (cmd_mode && tx_selected_seq != 0 && g_last_tx_selected_seq != 0 &&
-          tx_selected_seq > g_last_tx_selected_seq + 1)
-      {
-        skipped_this_tx = tx_selected_seq - g_last_tx_selected_seq - 1;
-        g_skipped_rx_total += skipped_this_tx;
-        ++g_skip_event_count;
-      }
-
-      const bool cached_cmd_nonzero =
-          (sqrt(cached_cmd_x * cached_cmd_x + cached_cmd_y * cached_cmd_y) > g_diag_nonzero_linear_eps) ||
-          (fabs(cached_cmd_w) > g_diag_nonzero_angular_eps);
-
-      const bool timeout_edge =
-          cmd_mode && tx_selected_seq != 0 && cmd_timed_out && !g_last_tx_was_timeout;
-      const bool nonzero_timeout_edge = timeout_edge && cached_cmd_nonzero;
 
       setWriteCS(WRITE_MSG_LONGTH);
 
       const ros::WallTime write_start = ros::WallTime::now();
       double tx_gap_ms = 0.0;
       if (g_last_tx_wall_time.toSec() > 0.0)
+      {
         tx_gap_ms = (write_start - g_last_tx_wall_time).toSec() * 1000.0;
+      }
 
       const size_t pack_write_s = serial_.write(pack_write_.write_tmp, WRITE_MSG_LONGTH);
       const ros::WallTime write_end = ros::WallTime::now();
       const double write_ms = (write_end - write_start).toSec() * 1000.0;
 
+      const bool repeated_same_seq =
+          cmd_mode &&
+          tx_selected_seq != 0 &&
+          !cmd_timed_out &&
+          tx_selected_seq == g_last_tx_selected_seq;
+
+      const bool timeout_edge =
+          cmd_mode &&
+          tx_selected_seq != 0 &&
+          cmd_timed_out &&
+          !g_last_tx_was_timeout;
+
+      if (repeated_same_seq)
+        ++g_repeat_tx_count;
       if (pack_write_s != WRITE_MSG_LONGTH)
         ++g_short_write_count;
-      if (nonzero_timeout_edge)
-        ++g_nonzero_timeout_count;
+      if (timeout_edge)
+        ++g_timeout_tx_count;
       if (newer_rx_pending)
         ++g_stale_before_write_count;
 
@@ -1124,103 +462,45 @@ void baseBringup::writeLoop()
 
       if (g_diag_enable)
       {
+        // 实际被writeLoop选中的车体速度。
         geometry_msgs::Twist applied_cmd;
         applied_cmd.linear.x = linear_x;
         applied_cmd.linear.y = linear_y;
         applied_cmd.angular.z = angular_z;
         g_applied_cmd_pub.publish(applied_cmd);
 
-        // /base_driver/tx_diag fields:
-        // [0]  rx_seq_at_write
-        // [1]  tx_selected_seq
-        // [2]  cmd_age_ms (-1 before first RX)
-        // [3]  serial_write_ms
-        // [4]  serial_write_bytes
-        // [5]  repeat_streak (extra repeats; 0,1,2,...)
-        // [6]  command_timeout
-        // [7]  tx_gap_ms
-        // [8]  last_rx_lock_wait_ms
-        // [9]  last_rx_interval_ms
-        // [10] newer_rx_pending
-        // [11] seq_lag
-        // [12] skipped_this_tx
-        // [13] skipped_rx_total
-        // [14] repeat_tx_total
-        // [15] max_repeat_streak
-        // [16] cached_cmd_nonzero
-        // [17] nonzero_timeout_total
-        // [18] failsafe_state: 0 NORMAL, 1 BRAKE, 2 HOLD
-        // [19] failsafe_reverse_count
-        // [20] abnormal-delay confirmation count
-        // [21] failsafe_trigger_total
-        // [22] odom_age_ms
-        // [23] measured_odom_vx
-        // [24] measured_odom_vy
-        // [25] measured_odom_wz
-        // [26..29] reserved compatibility slots
-        // [30] delay_eval_window_span_ms
-        // [31] command_linear_span_mps
-        // [32] command_angular_span_radps
-        // [33] best_delay_ms
-        // [34] best_delay_score
-        // [35] best_normal_delay_ms
-        // [36] best_normal_delay_score
-        // [37] delay_fault_candidate
-        // [38] delay_eval_odom_sample_count
-        // [39] current_linear_mismatch_mps
-        // [40] current_angular_mismatch_radps
-        // [41] normal_score_minus_best_score
-        // [42] fast_delay_candidate
+        // tx_diag字段：
+        // [0]  rx_seq_at_write       真正写串口前缓存中的最新RX序号
+        // [1]  tx_selected_seq       本周期实际选中的RX序号
+        // [2]  cmd_age_ms            选中该命令时的命令年龄
+        // [3]  serial_write_ms       serial.write调用耗时
+        // [4]  serial_write_bytes    serial.write返回字节数，应恒为16
+        // [5]  repeated_same_seq     是否连续两次TX使用同一RX序号
+        // [6]  command_timeout       是否因cmd_timeout改发0速度
+        // [7]  tx_gap_ms             相邻两次serial.write起点间隔
+        // [8]  last_rx_lock_wait_ms  最近一次velCallback等待Control_mutex_时间
+        // [9]  last_rx_interval_ms   最近两次velCallback写入缓存的间隔
+        // [10] newer_rx_pending      写串口前是否已经存在更新的RX命令
+        // [11] seq_lag               当前TX落后最新RX多少条
         std_msgs::Float64MultiArray diag_msg;
-        diag_msg.data.resize(43);
+        diag_msg.data.resize(12);
         diag_msg.data[0]  = static_cast<double>(rx_seq_at_write);
         diag_msg.data[1]  = static_cast<double>(tx_selected_seq);
         diag_msg.data[2]  = cmd_age_ms;
         diag_msg.data[3]  = write_ms;
         diag_msg.data[4]  = static_cast<double>(pack_write_s);
-        diag_msg.data[5]  = static_cast<double>(repeat_streak_this_tx);
+        diag_msg.data[5]  = repeated_same_seq ? 1.0 : 0.0;
         diag_msg.data[6]  = cmd_timed_out ? 1.0 : 0.0;
         diag_msg.data[7]  = tx_gap_ms;
         diag_msg.data[8]  = rx_lock_wait_ms_snapshot;
         diag_msg.data[9]  = rx_interval_ms_snapshot;
         diag_msg.data[10] = newer_rx_pending ? 1.0 : 0.0;
         diag_msg.data[11] = static_cast<double>(seq_lag);
-        diag_msg.data[12] = static_cast<double>(skipped_this_tx);
-        diag_msg.data[13] = static_cast<double>(g_skipped_rx_total);
-        diag_msg.data[14] = static_cast<double>(g_repeat_tx_count);
-        diag_msg.data[15] = static_cast<double>(g_max_repeat_streak);
-        diag_msg.data[16] = cached_cmd_nonzero ? 1.0 : 0.0;
-        diag_msg.data[17] = static_cast<double>(g_nonzero_timeout_count);
-        diag_msg.data[18] = static_cast<double>(g_fs_state);
-        diag_msg.data[19] = static_cast<double>(g_fs_reverse_count);
-        diag_msg.data[20] = static_cast<double>(g_fs_delay_confirm_count);
-        diag_msg.data[21] = static_cast<double>(g_fs_trigger_count);
-        diag_msg.data[22] = fs_odom_age_ms;
-        diag_msg.data[23] = fs_odom_x;
-        diag_msg.data[24] = fs_odom_y;
-        diag_msg.data[25] = fs_odom_w;
-        diag_msg.data[26] = 0.0;
-        diag_msg.data[27] = -1.0;
-        diag_msg.data[28] = -1.0;
-        diag_msg.data[29] = -1.0;
-        diag_msg.data[30] = fs_eval_span_ms;
-        diag_msg.data[31] = fs_cmd_span_linear;
-        diag_msg.data[32] = fs_cmd_span_angular;
-        diag_msg.data[33] = fs_best_delay_ms;
-        diag_msg.data[34] = fs_best_delay_score;
-        diag_msg.data[35] = fs_best_normal_delay_ms;
-        diag_msg.data[36] = fs_best_normal_score;
-        diag_msg.data[37] = fs_delay_fault_candidate ? 1.0 : 0.0;
-        diag_msg.data[38] = static_cast<double>(fs_eval_sample_count);
-        diag_msg.data[39] = fs_current_mismatch_linear;
-        diag_msg.data[40] = fs_current_mismatch_angular;
-        diag_msg.data[41] = fs_delay_improvement;
-        diag_msg.data[42] = fs_fast_delay_candidate ? 1.0 : 0.0;
         g_tx_diag_pub.publish(diag_msg);
 
         if (pack_write_s != WRITE_MSG_LONGTH)
         {
-          ROS_ERROR("[BASE-DIAG][SHORT_WRITE] selected_rx=%llu bytes=%lu/%d write_ms=%.3f age_ms=%.3f",
+          ROS_ERROR("[BASE-DIAG][SHORT_WRITE] TX选中RX#%llu，串口只写入%lu/%d bytes，write=%.3fms age=%.3fms",
                     static_cast<unsigned long long>(tx_selected_seq),
                     static_cast<unsigned long>(pack_write_s),
                     WRITE_MSG_LONGTH,
@@ -1230,7 +510,7 @@ void baseBringup::writeLoop()
 
         if (write_ms > g_diag_write_warn_ms)
         {
-          ROS_WARN("[BASE-DIAG][SLOW_WRITE] selected_rx=%llu write_ms=%.3f threshold_ms=%.3f bytes=%lu/%d",
+          ROS_WARN("[BASE-DIAG][SLOW_WRITE] RX#%llu serial.write耗时%.3fms > %.3fms，bytes=%lu/%d",
                    static_cast<unsigned long long>(tx_selected_seq),
                    write_ms,
                    g_diag_write_warn_ms,
@@ -1238,71 +518,51 @@ void baseBringup::writeLoop()
                    WRITE_MSG_LONGTH);
         }
 
-        // Do NOT warn for the first one-cycle repeat. Normal 20Hz phase jitter
-        // produces these frequently. Warn only at the configured streak.
-        if (repeat_streak_this_tx == static_cast<uint64_t>(g_diag_repeat_warn_streak))
+        if (repeated_same_seq)
         {
-          ROS_WARN("[BASE-DIAG][REPEAT_STREAK] rx=%llu repeat_streak=%llu age_ms=%.3f cmd=(%.3f,%.3f,%.3f) tx_gap_ms=%.3f",
+          ROS_WARN("[BASE-DIAG][REPEAT_TX] 连续重复RX#%llu：cmd=(%.3f,%.3f,%.3f)，age=%.3fms write=%.3fms tx_gap=%.3fms rx_lock_wait=%.3fms rx_interval=%.3fms",
                    static_cast<unsigned long long>(tx_selected_seq),
-                   static_cast<unsigned long long>(repeat_streak_this_tx),
-                   cmd_age_ms,
                    linear_x, linear_y, angular_z,
-                   tx_gap_ms);
-        }
-        else if (repeat_streak_this_tx == static_cast<uint64_t>(g_diag_repeat_error_streak))
-        {
-          ROS_ERROR("[BASE-DIAG][REPEAT_STUCK] rx=%llu repeat_streak=%llu age_ms=%.3f cmd=(%.3f,%.3f,%.3f) tx_gap_ms=%.3f",
-                    static_cast<unsigned long long>(tx_selected_seq),
-                    static_cast<unsigned long long>(repeat_streak_this_tx),
-                    cmd_age_ms,
-                    linear_x, linear_y, angular_z,
-                    tx_gap_ms);
+                   cmd_age_ms,
+                   write_ms,
+                   tx_gap_ms,
+                   rx_lock_wait_ms_snapshot,
+                   rx_interval_ms_snapshot);
         }
 
         if (newer_rx_pending)
         {
-          ROS_WARN("[BASE-DIAG][STALE_BEFORE_WRITE] selected_rx=%llu latest_rx=%llu lag=%llu cmd=(%.3f,%.3f,%.3f)",
+          ROS_WARN("[BASE-DIAG][STALE_BEFORE_WRITE] 本周期选中RX#%llu，但真正写串口前最新已是RX#%llu，落后%llu条；仍发送旧cmd=(%.3f,%.3f,%.3f)",
                    static_cast<unsigned long long>(tx_selected_seq),
                    static_cast<unsigned long long>(rx_seq_at_write),
                    static_cast<unsigned long long>(seq_lag),
                    linear_x, linear_y, angular_z);
         }
 
-        if (nonzero_timeout_edge)
+        if (timeout_edge)
         {
-          ROS_WARN("[BASE-DIAG][NONZERO_TIMEOUT] rx=%llu age_ms=%.3f timeout_ms=%.3f cached_cmd=(%.3f,%.3f,%.3f)",
+          ROS_WARN("[BASE-DIAG][CMD_TIMEOUT] RX#%llu age=%.3fms > timeout=%.3fms，驱动开始发送0速度",
                    static_cast<unsigned long long>(tx_selected_seq),
                    cmd_age_ms,
-                   cmd_dt_threshold_ * 1000.0,
-                   cached_cmd_x, cached_cmd_y, cached_cmd_w);
+                   cmd_dt_threshold_ * 1000.0);
         }
 
-        if (tx_gap_ms > g_diag_tx_gap_warn_ms && tx_selected_seq != 0)
+        if (tx_gap_ms > g_diag_tx_gap_warn_ms && g_last_tx_selected_seq != 0)
         {
-          ROS_WARN("[BASE-DIAG][TX_GAP] tx_gap_ms=%.3f threshold_ms=%.3f selected_rx=%llu",
+          ROS_WARN("[BASE-DIAG][TX_GAP] 串口发送周期%.3fms > %.3fms，TX选中RX#%llu",
                    tx_gap_ms,
                    g_diag_tx_gap_warn_ms,
                    static_cast<unsigned long long>(tx_selected_seq));
         }
 
-        // Single skipped RX is expected when a one-cycle repeat is followed by
-        // catching up. Only warn on bursts of >= diag_skip_warn_count.
-        if (skipped_this_tx >= static_cast<uint64_t>(g_diag_skip_warn_count))
-        {
-          ROS_WARN("[BASE-DIAG][SKIP_BURST] selected_rx=%llu skipped_now=%llu skipped_total=%llu",
-                   static_cast<unsigned long long>(tx_selected_seq),
-                   static_cast<unsigned long long>(skipped_this_tx),
-                   static_cast<unsigned long long>(g_skipped_rx_total));
-        }
-
         if (g_diag_verbose)
         {
-          ROS_INFO("[BASE-DIAG][TX] latest_rx=%llu selected_rx=%llu age_ms=%.3f repeat_streak=%llu skipped=%llu stale=%d lag=%llu timeout=%d write=%lu/%d write_ms=%.3f gap_ms=%.3f",
+          ROS_INFO("[BASE-DIAG][TX] latestRX#%llu selectedRX#%llu cmd=(%.3f,%.3f,%.3f) age=%.3fms repeat=%d stale=%d lag=%llu timeout=%d write=%lu/%d %.3fms gap=%.3fms",
                    static_cast<unsigned long long>(rx_seq_at_write),
                    static_cast<unsigned long long>(tx_selected_seq),
+                   linear_x, linear_y, angular_z,
                    cmd_age_ms,
-                   static_cast<unsigned long long>(repeat_streak_this_tx),
-                   static_cast<unsigned long long>(skipped_this_tx),
+                   repeated_same_seq ? 1 : 0,
                    newer_rx_pending ? 1 : 0,
                    static_cast<unsigned long long>(seq_lag),
                    cmd_timed_out ? 1 : 0,
@@ -1312,82 +572,32 @@ void baseBringup::writeLoop()
                    tx_gap_ms);
         }
 
-        if (tx_selected_seq == 0)
-        {
-          ROS_INFO_THROTTLE(1.0,
-                            "[BASE-DIAG][SUMMARY] latest_rx=0 selected_rx=0 age_ms=NA repeat_total=%llu repeat_streak=0 max_repeat=%llu skipped_total=%llu skip_events=%llu stale=%llu short_write=%llu nonzero_timeout=%llu write_ms=%.2f tx_gap_ms=%.2f",
-                            static_cast<unsigned long long>(g_repeat_tx_count),
-                            static_cast<unsigned long long>(g_max_repeat_streak),
-                            static_cast<unsigned long long>(g_skipped_rx_total),
-                            static_cast<unsigned long long>(g_skip_event_count),
-                            static_cast<unsigned long long>(g_stale_before_write_count),
-                            static_cast<unsigned long long>(g_short_write_count),
-                            static_cast<unsigned long long>(g_nonzero_timeout_count),
-                            write_ms,
-                            tx_gap_ms);
-        }
-        else
-        {
-          ROS_INFO_THROTTLE(1.0,
-                            "[BASE-DIAG][SUMMARY] latest_rx=%llu selected_rx=%llu age_ms=%.2f repeat_total=%llu repeat_streak=%llu max_repeat=%llu skipped_total=%llu skip_events=%llu stale=%llu short_write=%llu nonzero_timeout=%llu write_ms=%.2f tx_gap_ms=%.2f rx_lock_wait_ms=%.3f rx_interval_ms=%.2f fs_state=%d fs_triggers=%llu fs_rev=%d fs_delay=%d delay_fault=%d fast_delay=%d eval_ms=%.1f cmd_span=(%.2f,%.2f) best_delay_ms=%.1f best_score=%.2f normal_delay_ms=%.1f normal_score=%.2f improve=%.2f mismatch=(%.2f,%.2f) eval_n=%d odom_age_ms=%.1f",
-                            static_cast<unsigned long long>(rx_seq_at_write),
-                            static_cast<unsigned long long>(tx_selected_seq),
-                            cmd_age_ms,
-                            static_cast<unsigned long long>(g_repeat_tx_count),
-                            static_cast<unsigned long long>(repeat_streak_this_tx),
-                            static_cast<unsigned long long>(g_max_repeat_streak),
-                            static_cast<unsigned long long>(g_skipped_rx_total),
-                            static_cast<unsigned long long>(g_skip_event_count),
-                            static_cast<unsigned long long>(g_stale_before_write_count),
-                            static_cast<unsigned long long>(g_short_write_count),
-                            static_cast<unsigned long long>(g_nonzero_timeout_count),
-                            write_ms,
-                            tx_gap_ms,
-                            rx_lock_wait_ms_snapshot,
-                            rx_interval_ms_snapshot,
-                            static_cast<int>(g_fs_state),
-                            static_cast<unsigned long long>(g_fs_trigger_count),
-                            g_fs_reverse_count,
-                            g_fs_delay_confirm_count,
-                            fs_delay_fault_candidate ? 1 : 0,
-                            fs_fast_delay_candidate ? 1 : 0,
-                            fs_eval_span_ms,
-                            fs_cmd_span_linear,
-                            fs_cmd_span_angular,
-                            fs_best_delay_ms,
-                            fs_best_delay_score,
-                            fs_best_normal_delay_ms,
-                            fs_best_normal_score,
-                            fs_delay_improvement,
-                            fs_current_mismatch_linear,
-                            fs_current_mismatch_angular,
-                            fs_eval_sample_count,
-                            fs_odom_age_ms);
-        }
+        ROS_INFO_THROTTLE(1.0,
+                          "[BASE-DIAG][SUMMARY] latestRX#%llu selectedRX#%llu repeat=%llu stale_before_write=%llu short_write=%llu timeout=%llu age=%.2fms write=%.2fms tx_gap=%.2fms rx_lock_wait=%.2fms rx_interval=%.2fms",
+                          static_cast<unsigned long long>(rx_seq_at_write),
+                          static_cast<unsigned long long>(tx_selected_seq),
+                          static_cast<unsigned long long>(g_repeat_tx_count),
+                          static_cast<unsigned long long>(g_stale_before_write_count),
+                          static_cast<unsigned long long>(g_short_write_count),
+                          static_cast<unsigned long long>(g_timeout_tx_count),
+                          cmd_age_ms,
+                          write_ms,
+                          tx_gap_ms,
+                          rx_lock_wait_ms_snapshot,
+                          rx_interval_ms_snapshot);
       }
 
       if(debug_log_)
       {
         cout << "write buf:" << endl;
         for (size_t i = 0; i < WRITE_MSG_LONGTH; i++)
+        {
           cout << std::hex << (int)pack_write_.write_tmp[i] << " ";
+        }
         cout << std::dec << endl;
       }
 
-      if (g_fs_state != FS_NORMAL && g_fs_zero_rate_hz > 0.0)
-      {
-        ros::WallDuration(1.0 / g_fs_zero_rate_hz).sleep();
-      }
-      else if (fs_just_recovered_this_tx)
-      {
-        // Re-establish a clean normal-rate phase after the 100 Hz emergency
-        // loop instead of letting the old ros::Rate object "catch up" instantly.
-        ros::WallDuration(1.0 / static_cast<double>(rate_)).sleep();
-      }
-      else
-      {
-        loop_rate.sleep();
-      }
+      loop_rate.sleep();
     }
     catch(const std::exception& e)
     {
@@ -2040,6 +1250,8 @@ void baseBringup::joyCallback(const sensor_msgs::Joy::ConstPtr& msg){
 
 void baseBringup::velCallback(const geometry_msgs::Twist::ConstPtr& msg)
 {
+  // 在请求Control_mutex_之前打时间戳。
+  // 这样能直接测出serial.write持锁等因素导致的回调锁等待。
   const ros::WallTime callback_enter = ros::WallTime::now();
 
   boost::unique_lock<boost::recursive_mutex> lock(Control_mutex_);
@@ -2055,7 +1267,9 @@ void baseBringup::velCallback(const geometry_msgs::Twist::ConstPtr& msg)
   }
 
   if(debug_log_)
+  {
     std::cout << "vel mode" << std::endl;
+  }
 
   double rx_interval_ms = 0.0;
   if (g_last_cmd_callback_wall_time.toSec() > 0.0)
@@ -2086,17 +1300,16 @@ void baseBringup::velCallback(const geometry_msgs::Twist::ConstPtr& msg)
   {
     if (lock_wait_ms > g_diag_lock_wait_warn_ms)
     {
-      ROS_WARN("[BASE-DIAG][RX_LOCK_WAIT] rx=%llu wait_ms=%.3f threshold_ms=%.3f cmd=(%.3f,%.3f,%.3f)",
+      ROS_WARN("[BASE-DIAG][RX_LOCK_WAIT] RX#%llu等待Control_mutex_ %.3fms > %.3fms，cmd=(%.3f,%.3f,%.3f)",
                static_cast<unsigned long long>(this_rx_seq),
                lock_wait_ms,
                g_diag_lock_wait_warn_ms,
                rx_x, rx_y, rx_w);
     }
 
-    // Ignore interval==0 (first command). Normal 70-77 ms jitter is no longer warned.
     if (rx_interval_ms > g_diag_cmd_gap_warn_ms)
     {
-      ROS_WARN("[BASE-DIAG][RX_GAP] interval_ms=%.3f threshold_ms=%.3f rx=%llu cmd=(%.3f,%.3f,%.3f)",
+      ROS_WARN("[BASE-DIAG][RX_GAP] /cmd_vel写入缓存间隔%.3fms > %.3fms，RX#%llu cmd=(%.3f,%.3f,%.3f)",
                rx_interval_ms,
                g_diag_cmd_gap_warn_ms,
                static_cast<unsigned long long>(this_rx_seq),
@@ -2105,13 +1318,15 @@ void baseBringup::velCallback(const geometry_msgs::Twist::ConstPtr& msg)
 
     if (g_diag_verbose)
     {
-      ROS_INFO("[BASE-DIAG][RX] rx=%llu cmd=(%.3f,%.3f,%.3f) interval_ms=%.3f lock_wait_ms=%.3f",
+      ROS_INFO("[BASE-DIAG][RX] RX#%llu cmd=(%.3f,%.3f,%.3f) interval=%.3fms lock_wait=%.3fms",
                static_cast<unsigned long long>(this_rx_seq),
                rx_x, rx_y, rx_w,
                rx_interval_ms,
                lock_wait_ms);
     }
   }
+
+  return;
 }
 
 bool baseBringup::checkCS(int len){

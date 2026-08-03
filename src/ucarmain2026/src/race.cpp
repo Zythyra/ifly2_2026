@@ -6,6 +6,7 @@
 
 #include <ros/ros.h>
 #include <std_msgs/Int32.h>
+#include <std_msgs/UInt8MultiArray.h>
 #include <actionlib/client/simple_action_client.h>
 #include <move_base_msgs/MoveBaseAction.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -21,9 +22,11 @@
 #include <chrono>
 #include <clocale>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
@@ -63,28 +66,50 @@ string final_sim_item = "";
 ros::ServiceClient semantic_client;
 ros::ServiceClient qr_client;
 ros::ServiceClient classifier_client;
+ros::Publisher target_class_pub;
 
 // ================= 二代车语音唤醒、录音与播报 =================
 const char* const WAKEUP_TOPIC = "/angle";
+const char* const PCM_TOPIC = "/mic/pcm/deno";
 const char* const SPEECH_NODE = "/speech_command_node";
-const char* const AUDIO_DEVICE = "hw:XFMDPV0018";
-const char* const PACKAGE_DIR =
-    "/home/ucar/ucar_ws_copy/src/ucarmain2026";
 const char* const AUDIO_FILE =
     "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav";
-const char* const AUDIO_DONE_FILE =
-    "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.done";
+const char* const VAD_STATUS_FILE =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.vad.json";
+const char* const VAD_SCRIPT =
+    "/home/ucar/ucar_ws_copy/src/ucarmain2026/scripts/vad_record.py";
 const char* const ERROR_AUDIO =
     "/home/ucar/ucar_ws_copy/src/ucarmain2026/audios/1.wav";
 const char* const TASK_AUDIO_SCRIPT =
     "/home/ucar/ucar_ws_copy/src/ucarmain2026/scripts/generate_task_audios.py";
 const char* const AUDIO_DIR =
     "/home/ucar/ucar_ws_copy/src/ucarmain2026/audios";
-const int RECORD_SECONDS = 9;
-const double INITIAL_RECORD_TIMEOUT_SECONDS = 12.0;
 
 bool wakeup_received = false;
-bool first_recording_uses_wakeup_stream = true;
+
+constexpr int PCM_SAMPLE_RATE = 16000;
+constexpr int PCM_CHANNELS = 1;
+constexpr int PCM_SAMPLE_WIDTH = 2;
+constexpr size_t PCM_PREBUFFER_BYTES =
+    static_cast<size_t>(
+        PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_SAMPLE_WIDTH * 0.30
+    );
+
+bool vad_running = false;
+bool vad_pipe_error_reported = false;
+bool pcm_received = false;
+pid_t vad_pid = -1;
+int vad_stdin_fd = -1;
+deque<uint8_t> pcm_prebuffer;
+ros::Subscriber pcm_sub;
+
+string vad_script = VAD_SCRIPT;
+string vad_status_file = VAD_STATUS_FILE;
+string vad_backend = "auto";
+double vad_min_seconds = 2.0;
+double vad_silence_seconds = 1.2;
+double vad_max_seconds = 9.0;
+double vad_tail_seconds = 0.30;
 
 /**
  * @brief 把任意 UTF-8 文本安全地作为一个 shell 参数传给 system()。
@@ -305,11 +330,245 @@ bool playAudioTextSequence(
     return true;
 }
 
-void awakeCallback(const std_msgs::Int32::ConstPtr& msg) {
-    if (current_state == WAIT_WAKEUP && !wakeup_received) {
-        wakeup_received = true;
-        ROS_INFO("检测到‘小飞小飞’，唤醒角度：%d", msg->data);
+bool ensureDirectory(const string& directory) {
+    if (mkdir(directory.c_str(), 0755) == 0 || errno == EEXIST) {
+        return true;
     }
+
+    ROS_ERROR(
+        "无法创建录音目录 %s：%s",
+        directory.c_str(),
+        strerror(errno)
+    );
+    return false;
+}
+
+string parentDirectory(const string& path) {
+    const string::size_type position = path.find_last_of('/');
+    if (position == string::npos) {
+        return ".";
+    }
+    if (position == 0) {
+        return "/";
+    }
+    return path.substr(0, position);
+}
+
+bool writeAllToVad(const uint8_t* data, size_t size) {
+    if (vad_stdin_fd < 0 || data == nullptr || size == 0) {
+        return false;
+    }
+
+    size_t offset = 0;
+    while (offset < size) {
+        const ssize_t written = write(
+            vad_stdin_fd,
+            data + offset,
+            size - offset
+        );
+
+        if (written > 0) {
+            offset += static_cast<size_t>(written);
+            continue;
+        }
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (!vad_pipe_error_reported) {
+            ROS_WARN(
+                "向 vad_record.py 写入 PCM 失败：%s",
+                strerror(errno)
+            );
+            vad_pipe_error_reported = true;
+        }
+        return false;
+    }
+
+    return true;
+}
+
+void closeVadPipe() {
+    if (vad_stdin_fd >= 0) {
+        close(vad_stdin_fd);
+        vad_stdin_fd = -1;
+    }
+}
+
+void appendToPcmPrebuffer(const uint8_t* data, size_t size) {
+    if (data == nullptr || size == 0) {
+        return;
+    }
+
+    for (size_t index = 0; index < size; ++index) {
+        pcm_prebuffer.push_back(data[index]);
+    }
+    while (pcm_prebuffer.size() > PCM_PREBUFFER_BYTES) {
+        pcm_prebuffer.pop_front();
+    }
+}
+
+bool startVadProcess(bool include_prebuffer) {
+    if (vad_running) {
+        ROS_WARN("VAD 已经在运行，忽略重复启动请求");
+        return false;
+    }
+    if (!ensureDirectory(parentDirectory(AUDIO_FILE))) {
+        return false;
+    }
+
+    remove(AUDIO_FILE);
+    remove(vad_status_file.c_str());
+
+    int pipe_fds[2] = {-1, -1};
+    if (pipe(pipe_fds) != 0) {
+        ROS_ERROR("创建 VAD PCM 管道失败：%s", strerror(errno));
+        return false;
+    }
+
+    const string min_seconds = to_string(vad_min_seconds);
+    const string silence_seconds = to_string(vad_silence_seconds);
+    const string max_seconds = to_string(vad_max_seconds);
+    const string tail_seconds = to_string(vad_tail_seconds);
+
+    const pid_t child = fork();
+    if (child < 0) {
+        ROS_ERROR("fork vad_record.py 失败：%s", strerror(errno));
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return false;
+    }
+
+    if (child == 0) {
+        close(pipe_fds[1]);
+        if (dup2(pipe_fds[0], STDIN_FILENO) < 0) {
+            _exit(126);
+        }
+        close(pipe_fds[0]);
+
+        execlp(
+            "python3",
+            "python3",
+            "-u",
+            vad_script.c_str(),
+            "--output",
+            AUDIO_FILE,
+            "--status-file",
+            vad_status_file.c_str(),
+            "--sample-rate",
+            "16000",
+            "--channels",
+            "1",
+            "--sample-width",
+            "2",
+            "--frame-ms",
+            "20",
+            "--min-seconds",
+            min_seconds.c_str(),
+            "--silence-seconds",
+            silence_seconds.c_str(),
+            "--max-seconds",
+            max_seconds.c_str(),
+            "--tail-seconds",
+            tail_seconds.c_str(),
+            "--backend",
+            vad_backend.c_str(),
+            static_cast<char*>(nullptr)
+        );
+        _exit(127);
+    }
+
+    close(pipe_fds[0]);
+    vad_pid = child;
+    vad_stdin_fd = pipe_fds[1];
+    vad_running = true;
+    vad_pipe_error_reported = false;
+
+    ROS_INFO(
+        "VAD 动态录音已启动：最短 %.1fs，静音 %.1fs，最长 %.1fs",
+        vad_min_seconds,
+        vad_silence_seconds,
+        vad_max_seconds
+    );
+
+    if (include_prebuffer && !pcm_prebuffer.empty()) {
+        vector<uint8_t> buffered_pcm(
+            pcm_prebuffer.begin(),
+            pcm_prebuffer.end()
+        );
+        writeAllToVad(buffered_pcm.data(), buffered_pcm.size());
+        ROS_INFO(
+            "已向 VAD 补入 %.0f ms 唤醒衔接音频",
+            1000.0 * pcm_prebuffer.size()
+                / static_cast<double>(
+                    PCM_SAMPLE_RATE
+                    * PCM_CHANNELS
+                    * PCM_SAMPLE_WIDTH
+                )
+        );
+    }
+
+    return true;
+}
+
+void pcmCallback(
+    const std_msgs::UInt8MultiArray::ConstPtr& message
+) {
+    if (message->data.empty()) {
+        return;
+    }
+
+    const uint8_t* data = message->data.data();
+    const size_t size = message->data.size();
+
+    if (!pcm_received) {
+        pcm_received = true;
+        ROS_INFO(
+            "已收到 PCM 音频流：话题=%s，首包=%zu 字节",
+            PCM_TOPIC,
+            size
+        );
+    }
+    appendToPcmPrebuffer(data, size);
+
+    if (vad_running) {
+        writeAllToVad(data, size);
+    }
+}
+
+void awakeCallback(const std_msgs::Int32::ConstPtr& msg) {
+    if (
+        current_state != WAIT_WAKEUP
+        || wakeup_received
+        || vad_running
+    ) {
+        return;
+    }
+
+    ROS_INFO(
+        "检测到‘小飞小飞’，唤醒角度：%d，立即启动同流 VAD 录音",
+        msg->data
+    );
+
+    if (pcm_sub.getNumPublishers() == 0) {
+        ROS_ERROR(
+            "无法启动 VAD：PCM 话题 %s 没有发布者",
+            PCM_TOPIC
+        );
+        return;
+    }
+
+    if (!pcm_received) {
+        ROS_WARN("PCM 话题已有发布者，但暂未收到数据");
+    }
+
+    if (!startVadProcess(true)) {
+        ROS_ERROR("VAD 启动失败，请再次说‘小飞小飞’");
+        return;
+    }
+
+    wakeup_received = true;
+    ROS_INFO("请直接衔接说任务内容，不需要等待提示");
 }
 
 string runCommandAndCapture(const string& command) {
@@ -445,115 +704,96 @@ bool audioFileLooksValid() {
     return input.tellg() > static_cast<streampos>(44);
 }
 
-bool fileExists(const string& path) {
-    struct stat file_status;
-    return stat(path.c_str(), &file_status) == 0;
-}
+enum VadPollResult {
+    VAD_NOT_RUNNING,
+    VAD_STILL_RUNNING,
+    VAD_RECORDING_SUCCEEDED,
+    VAD_RECORDING_FAILED
+};
 
-bool waitForWakeupStreamRecording() {
-    ROS_INFO(
-        "任务录音已在唤醒节点内部无缝开始，等待 %d 秒录制完成...",
-        RECORD_SECONDS
-    );
+VadPollResult pollVadProcess() {
+    if (!vad_running || vad_pid <= 0) {
+        return VAD_NOT_RUNNING;
+    }
 
-    const auto deadline =
-        chrono::steady_clock::now()
-        + chrono::milliseconds(
-            static_cast<int>(INITIAL_RECORD_TIMEOUT_SECONDS * 1000.0)
-        );
-
-    while (
-        ros::ok()
-        && chrono::steady_clock::now() < deadline
-    ) {
-        if (fileExists(AUDIO_DONE_FILE)) {
-            if (!audioFileLooksValid()) {
-                ROS_ERROR(
-                    "收到录音完成标志，但 WAV 文件无有效音频数据"
-                );
-                std::remove(AUDIO_DONE_FILE);
-                stopSpeechCommandNodeFast();
-                return false;
-            }
-
-            std::remove(AUDIO_DONE_FILE);
-            ROS_INFO(
-                "连续任务录音完成：%s；不存在声卡切换空窗",
-                AUDIO_FILE
-            );
-            stopSpeechCommandNodeFast();
-            return true;
+    int status = 0;
+    const pid_t result = waitpid(vad_pid, &status, WNOHANG);
+    if (result == 0) {
+        return VAD_STILL_RUNNING;
+    }
+    if (result < 0) {
+        if (errno == EINTR) {
+            return VAD_STILL_RUNNING;
         }
-
-        ros::spinOnce();
-        this_thread::sleep_for(chrono::milliseconds(20));
+        ROS_ERROR("waitpid 检查 VAD 进程失败：%s", strerror(errno));
+        vad_running = false;
+        vad_pid = -1;
+        closeVadPipe();
+        return VAD_RECORDING_FAILED;
     }
 
-    ROS_ERROR(
-        "等待唤醒节点完成任务录音超时（%.1f 秒）",
-        INITIAL_RECORD_TIMEOUT_SECONDS
-    );
-    stopSpeechCommandNodeFast();
-    return false;
-}
+    vad_running = false;
+    vad_pid = -1;
+    closeVadPipe();
 
-bool recordNineSecondsDirect() {
-    // 避免录音失败后 Spark 误用上一次的旧文件。
-    std::remove(AUDIO_FILE);
-    std::remove(AUDIO_DONE_FILE);
-
-    const string record_dir = string(PACKAGE_DIR) + "/wakeup_record";
-    const string mkdir_command = "mkdir -p " + shellQuote(record_dir);
-    if (system(mkdir_command.c_str()) != 0) {
-        ROS_ERROR("无法创建任务录音目录");
-        return false;
-    }
-
-    const string command =
-        string("arecord -q")
-        + " -D " + shellQuote(AUDIO_DEVICE)
-        + " -t wav"
-        + " -f S16_LE"
-        + " -r 16000"
-        + " -c 1"
-        + " -d " + to_string(RECORD_SECONDS)
-        + " " + shellQuote(AUDIO_FILE);
-
-    ROS_INFO(
-        "开始录制任务语音，请在 %d 秒内说完任务...",
-        RECORD_SECONDS
-    );
-    const int result = system(command.c_str());
-
-    if (result != 0) {
-        ROS_ERROR("arecord 录音失败，system 返回值：%d", result);
-        ROS_ERROR(
-            "请检查 XFMDPV0018 是否存在以及麦克风是否仍被占用"
-        );
-        return false;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (WIFEXITED(status)) {
+            ROS_ERROR(
+                "vad_record.py 异常退出，退出码：%d",
+                WEXITSTATUS(status)
+            );
+        } else if (WIFSIGNALED(status)) {
+            ROS_ERROR(
+                "vad_record.py 被信号 %d 终止",
+                WTERMSIG(status)
+            );
+        } else {
+            ROS_ERROR("vad_record.py 未正常结束");
+        }
+        return VAD_RECORDING_FAILED;
     }
 
     if (!audioFileLooksValid()) {
-        ROS_ERROR("录音文件不存在或没有有效音频数据");
-        return false;
+        ROS_ERROR(
+            "VAD 已退出，但没有生成有效 WAV：%s",
+            AUDIO_FILE
+        );
+        return VAD_RECORDING_FAILED;
     }
 
-    ROS_INFO("%d 秒录音完成：%s", RECORD_SECONDS, AUDIO_FILE);
-    return true;
+    ROS_INFO("VAD 任务录音完成：%s", AUDIO_FILE);
+    return VAD_RECORDING_SUCCEEDED;
 }
 
-bool recordNineSeconds() {
-    if (first_recording_uses_wakeup_stream) {
-        first_recording_uses_wakeup_stream = false;
-        return waitForWakeupStreamRecording();
-    }
+void stopVadProcess() {
+    closeVadPipe();
 
-    ROS_INFO("进入重录流程，使用已释放的麦克风直接录制");
-    return recordNineSecondsDirect();
+    if (vad_pid > 0) {
+        kill(vad_pid, SIGTERM);
+        waitpid(vad_pid, nullptr, 0);
+    }
+    vad_pid = -1;
+    vad_running = false;
 }
 
 void playRetryPrompt() {
     playAudio(ERROR_AUDIO, "重录提示音");
+}
+
+bool startRetryRecording() {
+    playRetryPrompt();
+    // 播放提示音期间主循环被阻塞，先处理并丢弃队列中残留的提示音 PCM，
+    // 避免提示音本身被下一轮 VAD 当成用户任务语音。
+    ros::spinOnce();
+    pcm_prebuffer.clear();
+
+    if (!startVadProcess(false)) {
+        ROS_ERROR("重新启动 VAD 失败");
+        return false;
+    }
+
+    ROS_INFO("请重新说出完整任务，VAD 将在说完后自动停止");
+    return true;
 }
 
 // ================= 导航 Action =================
@@ -667,8 +907,46 @@ string extractResult(const string& json_str) {
 
 int main(int argc, char** argv) {
     setlocale(LC_ALL, "");
+    signal(SIGPIPE, SIG_IGN);
     ros::init(argc, argv, "main_competition_node");
     ros::NodeHandle nh;
+    ros::NodeHandle private_nh("~");
+
+    private_nh.param<string>(
+        "vad_script",
+        vad_script,
+        VAD_SCRIPT
+    );
+    private_nh.param<string>(
+        "vad_status_file",
+        vad_status_file,
+        VAD_STATUS_FILE
+    );
+    private_nh.param<string>(
+        "vad_backend",
+        vad_backend,
+        "auto"
+    );
+    private_nh.param(
+        "vad_min_seconds",
+        vad_min_seconds,
+        2.0
+    );
+    private_nh.param(
+        "vad_silence_seconds",
+        vad_silence_seconds,
+        1.2
+    );
+    private_nh.param(
+        "vad_max_seconds",
+        vad_max_seconds,
+        9.0
+    );
+    private_nh.param(
+        "vad_tail_seconds",
+        vad_tail_seconds,
+        0.30
+    );
 
     semantic_client =
         nh.serviceClient<ucarmain2026::GetTaskSemantics>(
@@ -687,18 +965,37 @@ int main(int argc, char** argv) {
             5,
             awakeCallback
         );
+    pcm_sub =
+        nh.subscribe<std_msgs::UInt8MultiArray>(
+            PCM_TOPIC,
+            100,
+            pcmCallback
+        );
+
+    // 关闭 speech_command_node 内部旧版固定 9 秒写盘，只保留同流
+    // PCM 发布；正式录音统一交给本节点启动的 vad_record.py。
+    nh.setParam(
+        "/speech_command/internal_task_recording",
+        false
+    );
 
     MoveBaseClient ac("move_base", true);
 
     ROS_INFO("等待 Spark 语义服务 /get_task_semantics...");
     semantic_client.waitForExistence();
 
-    // speech_command_node 启动时也会清理旧文件；这里再清理一次，
-    // 保证本轮不会误读上一次比赛遗留的完成标志。
-    std::remove(AUDIO_FILE);
-    std::remove(AUDIO_DONE_FILE);
+    // 防止 Spark 语义服务误读上一轮比赛遗留的录音。
+    remove(AUDIO_FILE);
+    remove(vad_status_file.c_str());
 
     ROS_INFO("智能车总控节点已启动！请说‘小飞小飞’唤醒...");
+    ROS_INFO(
+        "VAD 参数：min=%.1fs，silence=%.1fs，max=%.1fs，backend=%s",
+        vad_min_seconds,
+        vad_silence_seconds,
+        vad_max_seconds,
+        vad_backend.c_str()
+    );
 
     ros::Rate rate(20);
     while (ros::ok() && current_state != ALL_FINISHED) {
@@ -708,22 +1005,30 @@ int main(int argc, char** argv) {
             case WAIT_WAKEUP:
                 if (wakeup_received) {
                     awake_sub.shutdown();
-                    // 不再关闭唤醒节点或重新打开声卡。speech_command_node
-                    // 已经在同一条 PCM 流上开始写入 9 秒任务录音。
+                    // 唤醒回调已经在同一条 PCM 流上启动 Python VAD。
                     current_state = RECORDING;
                 }
                 break;
 
             case RECORDING:
-                if (recordNineSeconds()) {
+            {
+                const VadPollResult vad_result = pollVadProcess();
+                if (vad_result == VAD_RECORDING_SUCCEEDED) {
                     current_state = SEMANTIC_PARSING;
-                } else {
+                } else if (
+                    vad_result == VAD_RECORDING_FAILED
+                    || vad_result == VAD_NOT_RUNNING
+                ) {
                     ROS_WARN(
                         "录音失败，播放提示音后直接重新录制..."
                     );
-                    playRetryPrompt();
+                    if (!startRetryRecording()) {
+                        ROS_ERROR("无法继续任务录音，结束本次任务");
+                        current_state = ALL_FINISHED;
+                    }
                 }
                 break;
+            }
 
             case SEMANTIC_PARSING:
             {
@@ -739,13 +1044,19 @@ int main(int argc, char** argv) {
                         target_real.c_str(),
                         target_sim.c_str()
                     );
+                    // 语义成功后不再需要麦克风，立即释放后台算力。
+                    stopSpeechCommandNodeFast();
                     current_state = NAVIGATING;
                 } else {
                     ROS_WARN(
                         "解析失败！播放提示音后直接重新录制..."
                     );
-                    playRetryPrompt();
-                    current_state = RECORDING;
+                    if (startRetryRecording()) {
+                        current_state = RECORDING;
+                    } else {
+                        ROS_ERROR("无法重新启动 VAD，结束本次任务");
+                        current_state = ALL_FINISHED;
+                    }
                 }
                 break;
             }
@@ -963,6 +1274,11 @@ int main(int argc, char** argv) {
         rate.sleep();
     }
 
+    stopVadProcess();
+    nh.setParam(
+        "/speech_command/internal_task_recording",
+        true
+    );
     ROS_INFO("二维码识别、分类及整句片段离线语音播报全部完成");
     return 0;
 }

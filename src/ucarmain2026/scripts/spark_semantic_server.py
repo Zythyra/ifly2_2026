@@ -24,8 +24,31 @@ APISecret = "YTE2MDNjNjdlZjU5NzE4ZDUzZTJmOTVi"
 APIKey = "a96d7ffe156859dc325d186a3bb20e17"
 AUDIO_FILE = "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav"
 
-TARGET_DICT = {"食品": "food", "日用品": "daily", "电子产品": "electronic"}
+# “品”是三个类别中的公共字，不能用于分类；其余任意一个字都可触发类别。
+CATEGORY_CHAR_TO_CODE = {
+    "食": "food",
+    "日": "daily",
+    "用": "daily",
+    "电": "electronic",
+    "子": "electronic",
+    "产": "electronic",
+}
+
+# 同一类别的连续有效字只算一次，例如：
+#   “日用品” -> “日用” -> daily
+#   “电子产品” -> “电子产” -> electronic
+# 这样不会把一个完整类别词误当成多个任务类别。
+CATEGORY_TOKEN_PATTERN = re.compile(r"[日用]+|[电子产]+|食")
 final_result = ""
+
+
+def extract_target_categories(text):
+    """按文本出现顺序提取类别代码，“品”不参与判定。"""
+    categories = []
+    for match in CATEGORY_TOKEN_PATTERN.finditer(text):
+        token = match.group(0)
+        categories.append(CATEGORY_CHAR_TO_CODE[token[0]])
+    return categories
 
 class Ws_Param(object):
     def __init__(self, APPID, APIKey, APISecret, AudioFile):
@@ -91,11 +114,11 @@ def handle_semantic_request(req):
 
     print(f"🧠 [语音原文]: {final_result}")
     
-    matches = re.findall(r"(食品|日用品|电子产品)", final_result)
+    matches = extract_target_categories(final_result)
     
     if len(matches) >= 2:
-        en_target_1 = TARGET_DICT[matches[0]]
-        en_target_2 = TARGET_DICT[matches[1]]
+        en_target_1 = matches[0]
+        en_target_2 = matches[1]
         print(f"✅ [解析成功] 实体区: {en_target_1}, 仿真区: {en_target_2}")
         # 结构化返回数据
         return GetTaskSemanticsResponse(success=True, target_real=en_target_1, target_sim=en_target_2)

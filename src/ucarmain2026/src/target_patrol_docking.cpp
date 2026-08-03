@@ -74,31 +74,6 @@ public:
         pnh_.param("yaw_pause_threshold_deg", yaw_pause_threshold_deg_, 10.0);
         pnh_.param("segment_end_tolerance", segment_end_tolerance_, 0.025);
         pnh_.param("control_rate", control_rate_, 15.0);
-        pnh_.param("patrol_use_lidar_wall_follow",
-                   patrol_use_lidar_wall_follow_, true);
-        pnh_.param("wall_target_distance", wall_target_distance_, 0.25);
-        pnh_.param("wall_distance_kp", wall_distance_kp_, 1.8);
-        pnh_.param("wall_angle_kp", wall_angle_kp_, 2.5);
-        pnh_.param("wall_max_lateral_speed",
-                   wall_max_lateral_speed_, 0.16);
-        pnh_.param("wall_max_angular_speed",
-                   wall_max_angular_speed_, 0.30);
-        pnh_.param("wall_scan_min_angle_deg",
-                   wall_scan_min_angle_deg_, 50.0);
-        pnh_.param("wall_scan_max_angle_deg",
-                   wall_scan_max_angle_deg_, 130.0);
-        pnh_.param("wall_scan_min_range", wall_scan_min_range_, 0.10);
-        pnh_.param("wall_scan_max_range", wall_scan_max_range_, 0.70);
-        pnh_.param("wall_fit_inlier_threshold",
-                   wall_fit_inlier_threshold_, 0.025);
-        pnh_.param("wall_fit_min_points", wall_fit_min_points_, 12);
-        pnh_.param("wall_fit_min_inliers", wall_fit_min_inliers_, 10);
-        pnh_.param("wall_fit_min_span", wall_fit_min_span_, 0.16);
-        pnh_.param("wall_fit_max_angle_deg",
-                   wall_fit_max_angle_deg_, 30.0);
-        pnh_.param("wall_fit_max_rms", wall_fit_max_rms_, 0.030);
-        pnh_.param("wall_fit_filter_alpha",
-                   wall_fit_filter_alpha_, 0.35);
 
         pnh_.param("rotate_kp", rotate_kp_, 3.5);
         pnh_.param("rotate_min_speed", rotate_min_speed_, 0.15);
@@ -167,11 +142,6 @@ public:
                  "停靠导航点距墙%.2fm",
                  room_min_x_, room_max_x_, room_min_y_, room_max_y_,
                  docking_standoff_);
-        ROS_INFO("巡检守线模式：%s；左墙目标距离=%.3fm",
-                 patrol_use_lidar_wall_follow_
-                     ? "左侧雷达直线拟合（拟合失败时回退map巡检线）"
-                     : "仅使用map巡检线",
-                 wall_target_distance_);
     }
 
     ~TargetPatrolDocking() {
@@ -308,28 +278,6 @@ private:
             : valid(false), wall(WALL_LEFT), x(0.0), y(0.0) {}
     };
 
-    struct Point2D {
-        double x;
-        double y;
-    };
-
-    struct WallFit {
-        bool valid;
-        double distance;
-        double angle;
-        double rms;
-        int point_count;
-        int inlier_count;
-
-        WallFit()
-            : valid(false),
-              distance(0.0),
-              angle(0.0),
-              rms(std::numeric_limits<double>::infinity()),
-              point_count(0),
-              inlier_count(0) {}
-    };
-
     enum SegmentResult {
         SEGMENT_COMPLETE,
         SEGMENT_MISSION_COMPLETE,
@@ -370,24 +318,6 @@ private:
         line_hold_max_speed_ = std::fabs(line_hold_max_speed_);
         yaw_hold_kp_ = std::fabs(yaw_hold_kp_);
         yaw_hold_max_speed_ = std::fabs(yaw_hold_max_speed_);
-        wall_target_distance_ = std::fabs(wall_target_distance_);
-        wall_distance_kp_ = std::fabs(wall_distance_kp_);
-        wall_angle_kp_ = std::fabs(wall_angle_kp_);
-        wall_max_lateral_speed_ = std::fabs(wall_max_lateral_speed_);
-        wall_max_angular_speed_ = std::fabs(wall_max_angular_speed_);
-        wall_scan_min_range_ = std::fabs(wall_scan_min_range_);
-        wall_scan_max_range_ =
-            std::max(std::fabs(wall_scan_max_range_),
-                     wall_scan_min_range_ + 0.01);
-        wall_fit_inlier_threshold_ =
-            std::fabs(wall_fit_inlier_threshold_);
-        wall_fit_min_points_ = std::max(2, wall_fit_min_points_);
-        wall_fit_min_inliers_ = std::max(2, wall_fit_min_inliers_);
-        wall_fit_min_span_ = std::fabs(wall_fit_min_span_);
-        wall_fit_max_angle_deg_ = std::fabs(wall_fit_max_angle_deg_);
-        wall_fit_max_rms_ = std::fabs(wall_fit_max_rms_);
-        wall_fit_filter_alpha_ =
-            clampValue(wall_fit_filter_alpha_, 0.01, 1.0);
         rotate_kp_ = std::fabs(rotate_kp_);
         rotate_min_speed_ = std::fabs(rotate_min_speed_);
         rotate_max_speed_ =
@@ -478,16 +408,6 @@ private:
             retreat_slow_distance_ <= retreat_line_tolerance_ ||
             retreat_timeout_ <= 0.0) {
             ROS_ERROR("视觉、重复判定、后退或雷达逼近参数无效");
-            return false;
-        }
-        if (wall_target_distance_ <= 0.0 ||
-            wall_scan_min_angle_deg_ >= wall_scan_max_angle_deg_ ||
-            wall_fit_min_points_ < 2 ||
-            wall_fit_min_inliers_ < 2 ||
-            wall_fit_inlier_threshold_ <= 0.0 ||
-            wall_fit_min_span_ <= 0.0 ||
-            wall_fit_max_rms_ <= 0.0) {
-            ROS_ERROR("左墙拟合参数无效");
             return false;
         }
         for (std::size_t i = 0; i < segments_.size(); ++i) {
@@ -663,191 +583,7 @@ private:
                (pose.y - segment.start_y) * segment.dir_y;
     }
 
-    void resetWallFollower() {
-        wall_fit_initialized_ = false;
-        filtered_wall_distance_ = 0.0;
-        filtered_wall_angle_ = 0.0;
-    }
-
-    WallFit fitLeftWall() {
-        WallFit result;
-        if (!have_laser_scan_ ||
-            (ros::WallTime::now() - latest_scan_wall_time_).toSec() >
-                lidar_data_timeout_ ||
-            latest_scan_.ranges.empty() ||
-            std::fabs(latest_scan_.angle_increment) < 1e-12) {
-            return result;
-        }
-
-        const double min_angle =
-            wall_scan_min_angle_deg_ * kPi / 180.0;
-        const double max_angle =
-            wall_scan_max_angle_deg_ * kPi / 180.0;
-        const double valid_min_range =
-            std::max(wall_scan_min_range_,
-                     static_cast<double>(latest_scan_.range_min));
-        const double valid_max_range =
-            std::min(wall_scan_max_range_,
-                     static_cast<double>(latest_scan_.range_max));
-
-        std::vector<Point2D> points;
-        points.reserve(latest_scan_.ranges.size() / 3);
-        for (std::size_t i = 0; i < latest_scan_.ranges.size(); ++i) {
-            const double angle =
-                latest_scan_.angle_min +
-                static_cast<double>(i) * latest_scan_.angle_increment;
-            if (angle < min_angle || angle > max_angle) continue;
-            const double range =
-                latest_scan_.ranges[i];
-            if (!std::isfinite(range) ||
-                range < valid_min_range ||
-                range > valid_max_range) {
-                continue;
-            }
-            Point2D point;
-            point.x = range * std::cos(angle);
-            point.y = range * std::sin(angle);
-            if (point.y <= 0.0) continue;
-            points.push_back(point);
-        }
-        result.point_count = static_cast<int>(points.size());
-        if (result.point_count < wall_fit_min_points_) return result;
-
-        // RANSAC先找左侧占比最大的近似水平直线，避免文字板、路障和
-        // 转角处相邻墙面把普通最小二乘拟合拉歪。
-        int best_inlier_count = 0;
-        double best_residual_sum = std::numeric_limits<double>::infinity();
-        double best_nx = 0.0;
-        double best_ny = 1.0;
-        double best_d = 0.0;
-        const std::size_t hypothesis_step =
-            std::max<std::size_t>(1, points.size() / 45);
-        for (std::size_t i = 0; i + 1 < points.size();
-             i += hypothesis_step) {
-            for (std::size_t j = i + 1; j < points.size();
-                 j += hypothesis_step) {
-                const double dx = points[j].x - points[i].x;
-                const double dy = points[j].y - points[i].y;
-                const double pair_span = std::hypot(dx, dy);
-                if (pair_span < wall_fit_min_span_ * 0.55) continue;
-
-                double tangent_angle = std::atan2(dy, dx);
-                if (tangent_angle > 0.5 * kPi) tangent_angle -= kPi;
-                if (tangent_angle < -0.5 * kPi) tangent_angle += kPi;
-                if (std::fabs(tangent_angle) >
-                    wall_fit_max_angle_deg_ * kPi / 180.0) {
-                    continue;
-                }
-
-                double nx = -dy / pair_span;
-                double ny = dx / pair_span;
-                if (ny < 0.0) {
-                    nx = -nx;
-                    ny = -ny;
-                }
-                const double d = nx * points[i].x + ny * points[i].y;
-                if (d <= 0.0) continue;
-
-                int inlier_count = 0;
-                double residual_sum = 0.0;
-                for (std::size_t k = 0; k < points.size(); ++k) {
-                    const double residual =
-                        std::fabs(nx * points[k].x +
-                                  ny * points[k].y - d);
-                    if (residual <= wall_fit_inlier_threshold_) {
-                        ++inlier_count;
-                        residual_sum += residual;
-                    }
-                }
-                if (inlier_count > best_inlier_count ||
-                    (inlier_count == best_inlier_count &&
-                     residual_sum < best_residual_sum)) {
-                    best_inlier_count = inlier_count;
-                    best_residual_sum = residual_sum;
-                    best_nx = nx;
-                    best_ny = ny;
-                    best_d = d;
-                }
-            }
-        }
-        if (best_inlier_count < wall_fit_min_inliers_) return result;
-
-        std::vector<Point2D> inliers;
-        inliers.reserve(static_cast<std::size_t>(best_inlier_count));
-        for (std::size_t i = 0; i < points.size(); ++i) {
-            const double residual =
-                std::fabs(best_nx * points[i].x +
-                          best_ny * points[i].y - best_d);
-            if (residual <= wall_fit_inlier_threshold_) {
-                inliers.push_back(points[i]);
-            }
-        }
-
-        double mean_x = 0.0;
-        double mean_y = 0.0;
-        for (std::size_t i = 0; i < inliers.size(); ++i) {
-            mean_x += inliers[i].x;
-            mean_y += inliers[i].y;
-        }
-        mean_x /= static_cast<double>(inliers.size());
-        mean_y /= static_cast<double>(inliers.size());
-
-        double sxx = 0.0;
-        double sxy = 0.0;
-        double syy = 0.0;
-        for (std::size_t i = 0; i < inliers.size(); ++i) {
-            const double x = inliers[i].x - mean_x;
-            const double y = inliers[i].y - mean_y;
-            sxx += x * x;
-            sxy += x * y;
-            syy += y * y;
-        }
-        const double tangent_angle =
-            0.5 * std::atan2(2.0 * sxy, sxx - syy);
-        if (std::fabs(tangent_angle) >
-            wall_fit_max_angle_deg_ * kPi / 180.0) {
-            return result;
-        }
-
-        const double tangent_x = std::cos(tangent_angle);
-        const double tangent_y = std::sin(tangent_angle);
-        const double normal_x = -tangent_y;
-        const double normal_y = tangent_x;
-        const double distance = normal_x * mean_x + normal_y * mean_y;
-        if (distance <= 0.0) return result;
-
-        double min_projection = std::numeric_limits<double>::infinity();
-        double max_projection = -std::numeric_limits<double>::infinity();
-        double squared_error_sum = 0.0;
-        for (std::size_t i = 0; i < inliers.size(); ++i) {
-            const double projection =
-                tangent_x * inliers[i].x +
-                tangent_y * inliers[i].y;
-            min_projection = std::min(min_projection, projection);
-            max_projection = std::max(max_projection, projection);
-            const double residual =
-                normal_x * inliers[i].x +
-                normal_y * inliers[i].y - distance;
-            squared_error_sum += residual * residual;
-        }
-        const double span = max_projection - min_projection;
-        const double rms =
-            std::sqrt(squared_error_sum /
-                      static_cast<double>(inliers.size()));
-        if (span < wall_fit_min_span_ || rms > wall_fit_max_rms_) {
-            return result;
-        }
-
-        result.valid = true;
-        result.distance = distance;
-        result.angle = tangent_angle;
-        result.rms = rms;
-        result.inlier_count = static_cast<int>(inliers.size());
-        return result;
-    }
-
-    void publishMapPatrolCommand(const Segment& segment,
-                                 const Pose2D& pose) {
+    void publishPatrolCommand(const Segment& segment, const Pose2D& pose) {
         // 顺时针巡检时墙始终位于左侧，因此左法向就是巡检线法向。
         const double normal_x = -segment.dir_y;
         const double normal_y = segment.dir_x;
@@ -867,64 +603,6 @@ private:
             yaw_pause_threshold_deg_ * kPi / 180.0) {
             linear_x = 0.0;
         }
-        publishVelocity(linear_x, linear_y, angular_z);
-    }
-
-    void publishPatrolCommand(const Segment& segment, const Pose2D& pose) {
-        if (!patrol_use_lidar_wall_follow_) {
-            publishMapPatrolCommand(segment, pose);
-            return;
-        }
-
-        const WallFit fit = fitLeftWall();
-        if (!fit.valid) {
-            ROS_WARN_THROTTLE(
-                1.0,
-                "左墙拟合无效（候选点=%d），本周期回退map巡检线控制",
-                fit.point_count);
-            resetWallFollower();
-            publishMapPatrolCommand(segment, pose);
-            return;
-        }
-
-        if (!wall_fit_initialized_) {
-            filtered_wall_distance_ = fit.distance;
-            filtered_wall_angle_ = fit.angle;
-            wall_fit_initialized_ = true;
-        } else {
-            filtered_wall_distance_ +=
-                wall_fit_filter_alpha_ *
-                (fit.distance - filtered_wall_distance_);
-            filtered_wall_angle_ = normalizeAngle(
-                filtered_wall_angle_ +
-                wall_fit_filter_alpha_ *
-                normalizeAngle(fit.angle - filtered_wall_angle_));
-        }
-
-        const double distance_error =
-            filtered_wall_distance_ - wall_target_distance_;
-        const double linear_y =
-            clampValue(wall_distance_kp_ * distance_error,
-                       -wall_max_lateral_speed_,
-                       wall_max_lateral_speed_);
-        const double angular_z =
-            clampValue(wall_angle_kp_ * filtered_wall_angle_,
-                       -wall_max_angular_speed_,
-                       wall_max_angular_speed_);
-        double linear_x = patrol_forward_speed_;
-        if (std::fabs(filtered_wall_angle_) >
-            yaw_pause_threshold_deg_ * kPi / 180.0) {
-            linear_x = 0.0;
-        }
-
-        ROS_INFO_THROTTLE(
-            0.5,
-            "左墙拟合巡检：距离=%.3fm，夹角=%.2f度，"
-            "内点=%d/%d，RMS=%.3fm，vy=%.3f，wz=%.3f",
-            filtered_wall_distance_,
-            filtered_wall_angle_ * 180.0 / kPi,
-            fit.inlier_count, fit.point_count, fit.rms,
-            linear_y, angular_z);
         publishVelocity(linear_x, linear_y, angular_z);
     }
 
@@ -1089,7 +767,6 @@ private:
 
     SegmentResult patrolSegment(std::size_t segment_index) {
         const Segment& segment = segments_[segment_index];
-        resetWallFollower();
         ROS_INFO("开始%s：(%.2f, %.2f)→(%.2f, %.2f)，"
                  "前进朝向%.1f度，墙在车体左侧",
                  segment.name.c_str(), segment.start_x, segment.start_y,
@@ -2098,23 +1775,6 @@ private:
     double yaw_pause_threshold_deg_;
     double segment_end_tolerance_;
     double control_rate_;
-    bool patrol_use_lidar_wall_follow_;
-    double wall_target_distance_;
-    double wall_distance_kp_;
-    double wall_angle_kp_;
-    double wall_max_lateral_speed_;
-    double wall_max_angular_speed_;
-    double wall_scan_min_angle_deg_;
-    double wall_scan_max_angle_deg_;
-    double wall_scan_min_range_;
-    double wall_scan_max_range_;
-    double wall_fit_inlier_threshold_;
-    int wall_fit_min_points_;
-    int wall_fit_min_inliers_;
-    double wall_fit_min_span_;
-    double wall_fit_max_angle_deg_;
-    double wall_fit_max_rms_;
-    double wall_fit_filter_alpha_;
     double rotate_kp_;
     double rotate_min_speed_;
     double rotate_max_speed_;
@@ -2176,9 +1836,6 @@ private:
     bool have_laser_scan_ = false;
     bool lidar_layout_logged_ = false;
     double final_front_distance_ = -1.0;
-    bool wall_fit_initialized_ = false;
-    double filtered_wall_distance_ = 0.0;
-    double filtered_wall_angle_ = 0.0;
 
 };
 
