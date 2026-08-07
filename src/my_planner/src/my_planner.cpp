@@ -1,5 +1,7 @@
-// 交付构建标识：MYPLANNER_MPC_C4_0_4_ORIGINAL_FINAL_POSE_CONTROL_20260802
-// C4.0.4：保留条件式初始对准和C4路径跟踪，恢复C3.2原始终点位姿调整。
+// 交付构建标识：IFLY2026_FIXED_PATH_PATROL_V9_HEADING_HOLD_20260806
+// 局部规划器基线：MYPLANNER_MPC_C4_1_4_EXTERNAL_FIXED_PATROL_PATH
+// 保留控制器基线标识：MYPLANNER_MPC_C4_0_4_ORIGINAL_FINAL_POSE_CONTROL
+// 基于C4.1.2：增加分区域动态旁路、四项运行时速度参数和重规划热开关。
 #include "my_planner.h"
 
 #include <pluginlib/class_list_macros.h>
@@ -23,6 +25,42 @@ MyPlanner::MyPlanner()
     : initialized_(false),
       tf_listener_(NULL),
       costmap_ros_(NULL),
+      runtime_shadow_mode_(true),
+      enable_path_replanning_(true),
+      runtime_parameters_initialized_(false),
+      patrol_path_locked_(false),
+      active_plan_is_patrol_(false),
+      patrol_path_revision_(0),
+      applied_patrol_path_revision_(0),
+      patrol_goal_position_tolerance_(0.05),
+      patrol_goal_yaw_tolerance_(0.15),
+      patrol_pp_enabled_(true),
+      patrol_pp_align_tolerance_(1.0 * M_PI / 180.0),
+      patrol_pp_settle_omega_(0.03),
+      patrol_pp_settle_frames_(4),
+      patrol_align_kp_(1.50),
+      patrol_align_max_wz_(0.40),
+      patrol_align_near_angle_(5.0 * M_PI / 180.0),
+      patrol_align_near_wz_(0.06),
+      patrol_heading_hold_enabled_(true),
+      patrol_heading_kp_(1.20),
+      patrol_heading_max_wz_(0.18),
+      patrol_heading_deadband_(0.5 * M_PI / 180.0),
+      patrol_heading_acc_lim_(0.60),
+      patrol_pp_lookahead_dist_(0.35),
+      patrol_pp_preview_start_(0.20),
+      patrol_pp_preview_end_(0.80),
+      patrol_pp_lateral_gain_(1.80),
+      patrol_pp_lateral_deadband_(0.01),
+      patrol_pp_max_vy_(0.20),
+      patrol_pp_acc_lim_y_(0.80),
+      patrol_pp_avoid_offset_rate_(0.35),
+      patrol_pp_return_offset_rate_(0.15),
+      patrol_pp_goal_slowdown_distance_(0.30),
+      patrol_pp_goal_position_tolerance_(0.04),
+      patrol_pp_settle_counter_(0),
+      patrol_pp_filtered_offset_(0.0),
+      patrol_pp_alignment_required_(false),
       has_goal_(false),
       target_index_(0),
       goal_reached_(false),
@@ -276,6 +314,9 @@ void MyPlanner::initialize(std::string name,
     costmap_frame_ = costmap_ros_->getGlobalFrameID();
 
     ros::NodeHandle private_nh("~/" + name);
+    private_nh_ = private_nh;
+    clearance_optimizer_nh_ = ros::NodeHandle(
+        private_nh_, "clearance_optimizer");
 
     // -------------------------------------------------------------------------
     // Stage 0.1：基础类 PP，并恢复全向底盘横移纠偏
@@ -308,8 +349,68 @@ void MyPlanner::initialize(std::string name,
                      path_healing_debug_publish_rate_, 5.0);
 
     // -------------------------------------------------------------------------
-    // 保留前方全局路径碰撞检查；命中障碍后返回 false 触发全局重规划
+    // 保留前方全局路径碰撞检查；命中障碍后可返回false触发全局重规划。
+    // enable_path_replanning支持运行时修改，默认开启。
     // -------------------------------------------------------------------------
+    private_nh.param("enable_path_replanning",
+                     enable_path_replanning_, true);
+    private_nh.param("patrol_goal_position_tolerance",
+                     patrol_goal_position_tolerance_, 0.05);
+    private_nh.param("patrol_goal_yaw_tolerance",
+                     patrol_goal_yaw_tolerance_, 0.15);
+
+    // 固定巡检Path专用全向PP。普通导航和停靠仍由controller_mode决定，
+    // 这些参数只在“固定路径已锁定且当前setPlan确实套用了该路径”时生效。
+    private_nh.param("patrol_pp_enabled", patrol_pp_enabled_, true);
+    double patrol_pp_align_tolerance_deg = 1.0;
+    private_nh.param("patrol_pp_align_tolerance_deg",
+                     patrol_pp_align_tolerance_deg, 1.0);
+    private_nh.param("patrol_pp_settle_omega",
+                     patrol_pp_settle_omega_, 0.03);
+    private_nh.param("patrol_pp_settle_frames",
+                     patrol_pp_settle_frames_, 4);
+    private_nh.param("patrol_align_kp",
+                     patrol_align_kp_, 1.50);
+    private_nh.param("patrol_align_max_wz",
+                     patrol_align_max_wz_, 0.40);
+    double patrol_align_near_angle_deg = 5.0;
+    private_nh.param("patrol_align_near_angle_deg",
+                     patrol_align_near_angle_deg, 5.0);
+    private_nh.param("patrol_align_near_wz",
+                     patrol_align_near_wz_, 0.06);
+    private_nh.param("patrol_heading_hold_enabled",
+                     patrol_heading_hold_enabled_, true);
+    private_nh.param("patrol_heading_kp",
+                     patrol_heading_kp_, 1.20);
+    private_nh.param("patrol_heading_max_wz",
+                     patrol_heading_max_wz_, 0.18);
+    double patrol_heading_deadband_deg = 0.5;
+    private_nh.param("patrol_heading_deadband_deg",
+                     patrol_heading_deadband_deg, 0.5);
+    private_nh.param("patrol_heading_acc_lim",
+                     patrol_heading_acc_lim_, 0.60);
+    private_nh.param("patrol_pp_lookahead_dist",
+                     patrol_pp_lookahead_dist_, 0.35);
+    private_nh.param("patrol_pp_preview_start",
+                     patrol_pp_preview_start_, 0.20);
+    private_nh.param("patrol_pp_preview_end",
+                     patrol_pp_preview_end_, 0.80);
+    private_nh.param("patrol_pp_lateral_gain",
+                     patrol_pp_lateral_gain_, 1.80);
+    private_nh.param("patrol_pp_lateral_deadband",
+                     patrol_pp_lateral_deadband_, 0.01);
+    private_nh.param("patrol_pp_max_vy",
+                     patrol_pp_max_vy_, 0.20);
+    private_nh.param("patrol_pp_acc_lim_y",
+                     patrol_pp_acc_lim_y_, 0.80);
+    private_nh.param("patrol_pp_avoid_offset_rate",
+                     patrol_pp_avoid_offset_rate_, 0.35);
+    private_nh.param("patrol_pp_return_offset_rate",
+                     patrol_pp_return_offset_rate_, 0.15);
+    private_nh.param("patrol_pp_goal_slowdown_distance",
+                     patrol_pp_goal_slowdown_distance_, 0.30);
+    private_nh.param("patrol_pp_goal_position_tolerance",
+                     patrol_pp_goal_position_tolerance_, 0.04);
     private_nh.param("collision_check_lookahead_points",
                      collision_check_lookahead_points_, 10);
 
@@ -453,6 +554,12 @@ void MyPlanner::initialize(std::string name,
     c3_beta_rate_limit_ = c3_beta_rate_limit_deg_per_s * deg_to_rad;
     initial_align_enter_angle_ = initial_align_enter_angle_deg * deg_to_rad;
     initial_align_exit_angle_ = initial_align_exit_angle_deg * deg_to_rad;
+    patrol_pp_align_tolerance_ =
+        patrol_pp_align_tolerance_deg * deg_to_rad;
+    patrol_align_near_angle_ =
+        patrol_align_near_angle_deg * deg_to_rad;
+    patrol_heading_deadband_ =
+        patrol_heading_deadband_deg * deg_to_rad;
 
     private_nh.param("mpc_weight_longitudinal", mpc_weight_longitudinal_, 3.0);
     private_nh.param("mpc_weight_lateral", mpc_weight_lateral_, 110.0);
@@ -625,6 +732,47 @@ void MyPlanner::initialize(std::string name,
         0.02, initial_path_tangent_lookahead_);
     goal_dist_threshold_ = std::max(
         goal_position_tolerance_, goal_dist_threshold_);
+    patrol_goal_position_tolerance_ = std::max(
+        0.005, patrol_goal_position_tolerance_);
+    patrol_goal_yaw_tolerance_ = clampValue(
+        patrol_goal_yaw_tolerance_, 0.01, M_PI);
+    patrol_pp_align_tolerance_ = clampValue(
+        patrol_pp_align_tolerance_, 0.5 * deg_to_rad, 10.0 * deg_to_rad);
+    patrol_pp_settle_omega_ = clampValue(
+        patrol_pp_settle_omega_, 0.005, 0.50);
+    patrol_pp_settle_frames_ = std::max(1, patrol_pp_settle_frames_);
+    patrol_align_kp_ = std::max(0.01, patrol_align_kp_);
+    patrol_align_max_wz_ = clampValue(
+        std::abs(patrol_align_max_wz_), 0.01, max_vel_theta_);
+    patrol_align_near_angle_ = clampValue(
+        patrol_align_near_angle_, patrol_pp_align_tolerance_, 30.0 * deg_to_rad);
+    patrol_align_near_wz_ = clampValue(
+        std::abs(patrol_align_near_wz_), 0.005, patrol_align_max_wz_);
+    patrol_heading_kp_ = std::max(0.0, patrol_heading_kp_);
+    patrol_heading_max_wz_ = clampValue(
+        std::abs(patrol_heading_max_wz_), 0.0, max_vel_theta_);
+    patrol_heading_deadband_ = clampValue(
+        patrol_heading_deadband_, 0.0, patrol_pp_align_tolerance_);
+    patrol_heading_acc_lim_ = std::max(0.01, patrol_heading_acc_lim_);
+    patrol_pp_lookahead_dist_ = std::max(0.05, patrol_pp_lookahead_dist_);
+    patrol_pp_preview_start_ = std::max(0.0, patrol_pp_preview_start_);
+    patrol_pp_preview_end_ = std::max(
+        patrol_pp_preview_start_ + c2_resample_distance_,
+        patrol_pp_preview_end_);
+    patrol_pp_lateral_gain_ = std::max(0.0, patrol_pp_lateral_gain_);
+    patrol_pp_lateral_deadband_ = std::max(
+        0.0, patrol_pp_lateral_deadband_);
+    patrol_pp_max_vy_ = std::max(0.01, std::abs(patrol_pp_max_vy_));
+    patrol_pp_acc_lim_y_ = std::max(0.01, patrol_pp_acc_lim_y_);
+    patrol_pp_avoid_offset_rate_ = std::max(
+        0.01, patrol_pp_avoid_offset_rate_);
+    patrol_pp_return_offset_rate_ = std::max(
+        0.01, patrol_pp_return_offset_rate_);
+    patrol_pp_goal_position_tolerance_ = std::max(
+        0.005, patrol_pp_goal_position_tolerance_);
+    patrol_pp_goal_slowdown_distance_ = std::max(
+        patrol_pp_goal_position_tolerance_,
+        patrol_pp_goal_slowdown_distance_);
 
 
     target_index_ = 0;
@@ -635,6 +783,7 @@ void MyPlanner::initialize(std::string name,
     last_odom_stamp_ = ros::Time(0);
     odom_received_ = false;
     omega_filter_state_ = ButterworthFilterState();
+    resetPatrolPpState();
     last_control_time_ = ros::Time(0);
     resetMpcState();
 
@@ -656,6 +805,47 @@ void MyPlanner::initialize(std::string name,
     healed_window_path_pub_ =
         private_nh.advertise<nav_msgs::Path>("healed_window_path", 1, true);
 
+    patrol_path_sub_ = private_nh.subscribe<nav_msgs::Path>(
+        "patrol_path", 1, &MyPlanner::patrolPathCallback, this);
+    patrol_path_lock_service_ = private_nh.advertiseService(
+        "lock_patrol_path", &MyPlanner::lockPatrolPathCallback, this);
+    controller_reset_service_ = private_nh.advertiseService(
+        "reset_controller_state",
+        &MyPlanner::resetControllerStateCallback,
+        this);
+
+    // 独立模块只处理几何路径。默认shadow模式不会替换global_plan_，
+    // 不发布cmd_vel，也没有停车或请求重规划的权限。
+    clearance_path_optimizer_.initialize(
+        private_nh, costmap_ros_->getCostmap(), costmap_frame_);
+    runtime_shadow_mode_ = clearance_path_optimizer_.shadowMode();
+    runtime_parameters_initialized_ = true;
+
+    ROS_INFO("路径重规划开关：%s；可运行时修改参数 "
+             "/move_base/%s/enable_path_replanning。",
+             enable_path_replanning_ ? "开启" : "关闭",
+             name.c_str());
+
+    ROS_INFO("固定巡检路径接口已启动：patrol_path、lock_patrol_path、"
+             "reset_controller_state；终点匹配阈值=%.3fm/%.1f度。",
+             patrol_goal_position_tolerance_,
+             patrol_goal_yaw_tolerance_ * 180.0 / M_PI);
+
+    ROS_INFO("固定巡检全向PP：%s；对准阈值=%.1f度，停稳角速度=%.3frad/s×%d帧，"
+             "对准Kp/max/near=%.2f/%.2f/%.2frad/s，"
+             "航向保持=%s(Kp=%.2f，max=%.2frad/s，死区=%.1f度)，"
+             "前视=%.2fm，横向窗口=%.2f~%.2fm，max_vy=%.2fm/s。",
+             patrol_pp_enabled_ ? "启用" : "关闭",
+             patrol_pp_align_tolerance_ * 180.0 / M_PI,
+             patrol_pp_settle_omega_, patrol_pp_settle_frames_,
+             patrol_align_kp_, patrol_align_max_wz_, patrol_align_near_wz_,
+             patrol_heading_hold_enabled_ ? "启用" : "关闭",
+             patrol_heading_kp_, patrol_heading_max_wz_,
+             patrol_heading_deadband_ * 180.0 / M_PI,
+             patrol_pp_lookahead_dist_,
+             patrol_pp_preview_start_, patrol_pp_preview_end_,
+             patrol_pp_max_vy_);
+
     ROS_INFO("路径治愈可视化：%s，发布频率=%.1fHz；"
              "话题为 raw_global_path / healed_global_path / healed_window_path。",
              publish_path_healing_debug_ ? "开启" : "关闭",
@@ -663,7 +853,8 @@ void MyPlanner::initialize(std::string name,
 
     initialized_ = true;
 
-    ROS_WARN("MyPlanner MPC-C4.0.4 ORIGINAL-FINAL-POSE-CONTROL 启动："
+    ROS_WARN("IFLY2026_FIXED_PATH_PATROL_V9_HEADING_HOLD_20260806："
+             "MyPlanner MPC-C4.1.4 FIXED-PATROL-PATH 启动："
              "mode=%s，路径合速度=%.2f~%.2fm/s，N=%d，dt=%.3fs；"
              "odom=%s topic=%s timeout=%.2fs，input_delay=%.3fs，tau(v/w)=%.3f/%.3fs；"
              "omegaRate(acc/dec/rev)=%.1f/%.1f/%.1f，curvatureFF=%.2f，"
@@ -731,6 +922,8 @@ const char* MyPlanner::controlStateName(ControlState state)
             return "WAITING_FOR_PLAN";
         case ControlState::INITIAL_ALIGN:
             return "INITIAL_ALIGN";
+        case ControlState::PATROL_SETTLING:
+            return "PATROL_SETTLING";
         case ControlState::PATH_TRACKING:
             return "PATH_TRACKING";
         case ControlState::FINAL_SETTLING:
@@ -763,17 +956,48 @@ void MyPlanner::transitionTo(
              reason.c_str());
 }
 
+bool MyPlanner::isPatrolPpActive() const
+{
+    std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+    return patrol_pp_enabled_
+        && patrol_path_locked_
+        && active_plan_is_patrol_;
+}
+
+bool MyPlanner::isPatrolPpAlignmentRequired() const
+{
+    std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+    return patrol_pp_alignment_required_;
+}
+
+void MyPlanner::markPatrolPpAlignmentComplete()
+{
+    std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+    patrol_pp_alignment_required_ = false;
+}
+
+void MyPlanner::resetPatrolPpState()
+{
+    patrol_pp_settle_counter_ = 0;
+    patrol_pp_filtered_offset_ = 0.0;
+}
+
 bool MyPlanner::computeInitialPathTangentError(double& angle_error)
 {
     angle_error = 0.0;
-    if (global_plan_.size() < 2)
+    // 巡检开始和行进中的航向闭环都必须对准原始固定直线，不能对准
+    // 净空优化器产生的绕障弧线，避免车头跟随路障左右摆动。
+    const std::vector<geometry_msgs::PoseStamped>& tangent_plan =
+        isPatrolPpActive() ? raw_plan_ : global_plan_;
+
+    if (tangent_plan.size() < 2)
         return false;
 
-    const int path_size = static_cast<int>(global_plan_.size());
+    const int path_size = static_cast<int>(tangent_plan.size());
     const int search_end = std::min(
         path_size - 1, std::max(20, mpc_reference_search_ahead_points_));
 
-    std::string plan_frame = global_plan_.front().header.frame_id;
+    std::string plan_frame = tangent_plan.front().header.frame_id;
     if (plan_frame.empty())
         plan_frame = costmap_frame_;
 
@@ -798,7 +1022,7 @@ bool MyPlanner::computeInitialPathTangentError(double& angle_error)
     for (int index = 0; index <= search_end; ++index)
     {
         const geometry_msgs::PoseStamped& source =
-            global_plan_[static_cast<std::size_t>(index)];
+            tangent_plan[static_cast<std::size_t>(index)];
         const std::string source_frame = source.header.frame_id.empty()
             ? plan_frame : source.header.frame_id;
 
@@ -886,6 +1110,7 @@ void MyPlanner::resetForNewGoal()
     goal_reached_ = false;
     control_state_ = ControlState::WAITING_FOR_PLAN;
     last_control_time_ = ros::Time(0);
+    resetPatrolPpState();
     // 新目标到来时底盘并不会瞬间静止，必须保留上一命令和延迟历史，
     // 否则外层加速度限制与C3.2输入延迟预测会把运动中的车辆误认为零速。
     resetMpcState();
@@ -898,6 +1123,125 @@ void MyPlanner::stopImmediately(geometry_msgs::Twist& cmd_vel)
     recordPublishedCommand(last_cmd_vel_, ros::Time::now());
 }
 
+void MyPlanner::patrolPathCallback(
+    const nav_msgs::Path::ConstPtr& message)
+{
+    if (!message || message->poses.size() < 2)
+    {
+        ROS_ERROR("拒绝外部巡检路径：路径点少于2个。");
+        return;
+    }
+
+    std::vector<geometry_msgs::PoseStamped> candidate = message->poses;
+    const std::string default_frame = message->header.frame_id.empty()
+        ? costmap_frame_ : message->header.frame_id;
+
+    for (std::size_t i = 0; i < candidate.size(); ++i)
+    {
+        geometry_msgs::PoseStamped& pose = candidate[i];
+        if (pose.header.frame_id.empty())
+            pose.header.frame_id = default_frame;
+        if (pose.header.frame_id != default_frame
+            || !std::isfinite(pose.pose.position.x)
+            || !std::isfinite(pose.pose.position.y))
+        {
+            ROS_ERROR("拒绝外部巡检路径：第%zu个点的坐标或坐标系无效。", i);
+            return;
+        }
+        pose.header.stamp = ros::Time(0);
+    }
+
+    std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+    staged_patrol_plan_.swap(candidate);
+    ++patrol_path_revision_;
+    ROS_INFO("已暂存外部巡检路径：修订号=%u，点数=%zu，终点=(%.3f, %.3f)。",
+             static_cast<unsigned int>(patrol_path_revision_),
+             staged_patrol_plan_.size(),
+             staged_patrol_plan_.back().pose.position.x,
+             staged_patrol_plan_.back().pose.position.y);
+}
+
+bool MyPlanner::lockPatrolPathCallback(
+    std_srvs::SetBool::Request& request,
+    std_srvs::SetBool::Response& response)
+{
+    std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+    if (request.data)
+    {
+        if (staged_patrol_plan_.size() < 2)
+        {
+            response.success = false;
+            response.message = "尚未收到至少包含2个点的patrol_path";
+            return true;
+        }
+        patrol_path_locked_ = true;
+        // 不能只依赖外部reset_controller_state切换控制状态。服务回调、
+        // setPlan和控制循环可能异步交错，因此每次重新锁定固定Path时
+        // 使用独立闩锁强制执行一次“精确对准->停稳”。
+        patrol_pp_alignment_required_ = true;
+        response.success = true;
+        response.message = "固定巡检路径已锁定";
+        ROS_WARN("固定巡检路径已锁定：修订号=%u，点数=%zu。",
+                 static_cast<unsigned int>(patrol_path_revision_),
+                 staged_patrol_plan_.size());
+        return true;
+    }
+
+    patrol_path_locked_ = false;
+    active_plan_is_patrol_ = false;
+    patrol_pp_alignment_required_ = false;
+    staged_patrol_plan_.clear();
+    resetPatrolPpState();
+    response.success = true;
+    response.message = "固定巡检路径已解除";
+    ROS_WARN("固定巡检路径已解除并清空暂存路线；"
+             "后续setPlan恢复使用move_base全局路径。");
+    return true;
+}
+
+void MyPlanner::resetControllerStateForExternalControl()
+{
+    target_index_ = 0;
+    goal_reached_ = false;
+    control_state_ = ControlState::WAITING_FOR_PLAN;
+    last_cmd_vel_ = geometry_msgs::Twist();
+    last_control_time_ = ros::Time(0);
+    resetPatrolPpState();
+
+    {
+        std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+        // 若复位发生在固定Path仍锁定期间，下一控制周期必须重新对准；
+        // 普通导航或尚未锁定新巡检Path时则不保留旧要求。
+        patrol_pp_alignment_required_ = patrol_path_locked_;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(command_history_mutex_);
+        command_history_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(measured_state_mutex_);
+        measured_body_twist_ = geometry_msgs::Twist();
+        last_odom_stamp_ = ros::Time(0);
+        odom_received_ = false;
+        omega_filter_state_ = ButterworthFilterState();
+    }
+
+    clearance_path_optimizer_.reset();
+    resetMpcState();
+}
+
+bool MyPlanner::resetControllerStateCallback(
+    std_srvs::Trigger::Request&,
+    std_srvs::Trigger::Response& response)
+{
+    resetControllerStateForExternalControl();
+    response.success = true;
+    response.message = "控制器速度历史、输入延迟历史和MPC状态已复位";
+    ROS_WARN("外部请求已复位局部规划器控制状态；下一条路径将从静止状态启动。");
+    return true;
+}
+
 bool MyPlanner::setPlan(
     const std::vector<geometry_msgs::PoseStamped>& plan)
 {
@@ -907,12 +1251,64 @@ bool MyPlanner::setPlan(
         return false;
     }
 
-    const bool new_goal = isNewGoal(plan.back());
+    std::vector<geometry_msgs::PoseStamped> effective_plan = plan;
+    bool using_patrol_path = false;
+    bool patrol_path_changed = false;
+    std::uint32_t patrol_revision = 0;
 
-    raw_plan_ = plan;
-    global_plan_ = plan;
-    goal_pose_ = plan.back();
+    {
+        std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+        if (patrol_path_locked_)
+        {
+            if (staged_patrol_plan_.size() < 2)
+            {
+                ROS_ERROR("固定巡检路径处于锁定状态，但暂存路径无效。");
+                return false;
+            }
+
+            const geometry_msgs::PoseStamped& move_base_goal = plan.back();
+            const geometry_msgs::PoseStamped& patrol_goal =
+                staged_patrol_plan_.back();
+            const double goal_distance = std::hypot(
+                move_base_goal.pose.position.x - patrol_goal.pose.position.x,
+                move_base_goal.pose.position.y - patrol_goal.pose.position.y);
+            const double goal_yaw_error = std::abs(normalizeAngle(
+                tf::getYaw(move_base_goal.pose.orientation)
+                - tf::getYaw(patrol_goal.pose.orientation)));
+
+            if (goal_distance > patrol_goal_position_tolerance_
+                || goal_yaw_error > patrol_goal_yaw_tolerance_)
+            {
+                ROS_ERROR("拒绝套用固定巡检路径：move_base终点与巡检终点差"
+                          "%.3fm/%.1f度，阈值为%.3fm/%.1f度。",
+                          goal_distance, goal_yaw_error * 180.0 / M_PI,
+                          patrol_goal_position_tolerance_,
+                          patrol_goal_yaw_tolerance_ * 180.0 / M_PI);
+                return false;
+            }
+
+            effective_plan = staged_patrol_plan_;
+            using_patrol_path = true;
+            patrol_revision = patrol_path_revision_;
+            patrol_path_changed =
+                patrol_revision != applied_patrol_path_revision_;
+            if (patrol_path_changed)
+                patrol_pp_alignment_required_ = true;
+        }
+        active_plan_is_patrol_ = using_patrol_path;
+    }
+
+    const bool new_goal = patrol_path_changed
+        || isNewGoal(effective_plan.back());
+
+    raw_plan_ = effective_plan;
+    global_plan_ = effective_plan;
+    clearance_path_optimizer_.reset();
+    goal_pose_ = effective_plan.back();
     has_goal_ = true;
+
+    if (using_patrol_path)
+        applied_patrol_path_revision_ = patrol_revision;
 
     // 新路径的点索引从头建立；同目标重规划不重置控制阶段。
     target_index_ = 0;
@@ -920,17 +1316,121 @@ bool MyPlanner::setPlan(
     if (new_goal)
     {
         resetForNewGoal();
-        ROS_INFO("收到新目标，状态已重置；路径点数：%zu。", plan.size());
+        ROS_INFO("收到%s，状态已重置；路径点数：%zu。",
+                 using_patrol_path ? "新的固定巡检路径" : "新目标",
+                 effective_plan.size());
     }
     else
     {
         if (control_state_ == ControlState::FAILURE_STOP)
             transitionTo(ControlState::PATH_TRACKING, "收到同目标的新全局路径");
         resetMpcState();
-        ROS_INFO("同一目标的全局路径已更新；路径点数：%zu。", plan.size());
+        ROS_INFO("同一目标的%s已更新；路径点数：%zu。",
+                 using_patrol_path ? "固定巡检路径" : "全局路径",
+                 effective_plan.size());
     }
 
     return true;
+}
+
+void MyPlanner::refreshRuntimeParameters()
+{
+    // getParamCached首次读取后会订阅参数更新；后续控制周期不需要反复访问
+    // ROS master，但rosparam set的变化仍会在下一个控制周期生效。
+    bool requested_shadow_mode = runtime_shadow_mode_;
+    bool requested_enable_path_replanning = enable_path_replanning_;
+    double requested_c2_max_reference_speed = c2_max_reference_speed_;
+    double requested_mpc_max_vx = mpc_max_vx_;
+    double requested_mpc_max_translational_speed =
+        mpc_max_translational_speed_;
+    double requested_max_vel_x = max_vel_x_;
+
+    clearance_optimizer_nh_.getParamCached(
+        "shadow_mode", requested_shadow_mode);
+    private_nh_.getParamCached(
+        "enable_path_replanning", requested_enable_path_replanning);
+    private_nh_.getParamCached(
+        "c2_max_reference_speed", requested_c2_max_reference_speed);
+    private_nh_.getParamCached("mpc_max_vx", requested_mpc_max_vx);
+    private_nh_.getParamCached(
+        "mpc_max_translational_speed",
+        requested_mpc_max_translational_speed);
+    private_nh_.getParamCached("max_vel_x", requested_max_vel_x);
+
+    // 非法浮点参数不进入控制器，继续沿用上一控制周期的有效值。
+    if (!std::isfinite(requested_c2_max_reference_speed))
+        requested_c2_max_reference_speed = c2_max_reference_speed_;
+    if (!std::isfinite(requested_mpc_max_vx))
+        requested_mpc_max_vx = mpc_max_vx_;
+    if (!std::isfinite(requested_mpc_max_translational_speed))
+        requested_mpc_max_translational_speed =
+            mpc_max_translational_speed_;
+    if (!std::isfinite(requested_max_vel_x))
+        requested_max_vel_x = max_vel_x_;
+
+    // 先在临时变量内统一约束，最后一次性提交，避免连续执行多条
+    // rosparam set时把成员变量留在互相矛盾的中间状态。
+    const double new_max_vel_x = std::max(0.05, requested_max_vel_x);
+    const double new_c2_max_reference_speed = clampValue(
+        requested_c2_max_reference_speed, 0.05, new_max_vel_x);
+    const double new_mpc_max_vx = std::max(
+        mpc_min_vx_, requested_mpc_max_vx);
+
+    const double maximum_mpc_translational_capability = std::hypot(
+        new_mpc_max_vx,
+        std::max(std::abs(mpc_min_vy_), std::abs(mpc_max_vy_)));
+    const double new_mpc_max_translational_speed = std::max(
+        0.05,
+        std::min(requested_mpc_max_translational_speed,
+                 maximum_mpc_translational_capability));
+
+    const bool speed_changed =
+        std::abs(new_c2_max_reference_speed
+                 - c2_max_reference_speed_) > 1.0e-9
+        || std::abs(new_mpc_max_vx - mpc_max_vx_) > 1.0e-9
+        || std::abs(new_mpc_max_translational_speed
+                    - mpc_max_translational_speed_) > 1.0e-9
+        || std::abs(new_max_vel_x - max_vel_x_) > 1.0e-9;
+
+    c2_max_reference_speed_ = new_c2_max_reference_speed;
+    mpc_max_vx_ = new_mpc_max_vx;
+    mpc_max_translational_speed_ = new_mpc_max_translational_speed;
+    max_vel_x_ = new_max_vel_x;
+
+    if (speed_changed)
+    {
+        ROS_WARN("运行时速度参数已更新："
+                 "c2_max_reference_speed=%.3f，mpc_max_vx=%.3f，"
+                 "mpc_max_translational_speed=%.3f，max_vel_x=%.3f。",
+                 c2_max_reference_speed_, mpc_max_vx_,
+                 mpc_max_translational_speed_, max_vel_x_);
+    }
+
+    if (requested_enable_path_replanning != enable_path_replanning_)
+    {
+        enable_path_replanning_ = requested_enable_path_replanning;
+        ROS_WARN("运行时路径重规划已%s：%s",
+                 enable_path_replanning_ ? "开启" : "关闭",
+                 enable_path_replanning_
+                     ? "从本周期起，前方路径进入死区时停车并请求全局重规划。"
+                     : "从本周期起，跳过死区触发重规划检查，继续跟踪当前路径。");
+    }
+
+    if (!runtime_parameters_initialized_
+        || requested_shadow_mode != runtime_shadow_mode_)
+    {
+        runtime_shadow_mode_ = requested_shadow_mode;
+        clearance_path_optimizer_.setShadowMode(runtime_shadow_mode_);
+        resetMpcState();
+
+        ROS_WARN("路径优化器运行时模式切换为：%s。%s",
+                 runtime_shadow_mode_ ? "BYPASS（走廊）" : "ACTIVE（路障区）",
+                 runtime_shadow_mode_
+                     ? "本周期起跳过净空优化并清空历史缓存。"
+                     : "本周期起从当前原始路径重新生成优化路径。");
+    }
+
+    runtime_parameters_initialized_ = true;
 }
 
 void MyPlanner::updateHealedPath()
@@ -1071,6 +1571,61 @@ void MyPlanner::updateHealedPath()
     }
 
     publishPathHealingDebug(heal_start, heal_end);
+}
+
+void MyPlanner::updateClearanceOptimizedPath()
+{
+    // 本版把shadow_mode定义为真正的旁路模式：走廊中不计算优化路径，
+    // global_plan_保持updateHealedPath()刚生成的原始/治愈路径。
+    if (runtime_shadow_mode_)
+        return;
+
+    if (!clearance_path_optimizer_.enabled() || global_plan_.size() < 3)
+        return;
+
+    // 优化器内部只接受costmap坐标，避免把TF职责扩散到独立算法模块。
+    std::vector<geometry_msgs::PoseStamped> plan_costmap;
+    plan_costmap.reserve(global_plan_.size());
+    for (std::size_t i = 0; i < global_plan_.size(); ++i)
+    {
+        geometry_msgs::PoseStamped transformed;
+        if (!transformPose(costmap_frame_, global_plan_[i], transformed))
+        {
+            ROS_WARN_THROTTLE(
+                1.0,
+                "C4.1路径优化器输入路径TF失败；本周期继续使用原路径。");
+            return;
+        }
+        transformed.header.frame_id = costmap_frame_;
+        transformed.header.stamp = ros::Time(0);
+        plan_costmap.push_back(transformed);
+    }
+
+    geometry_msgs::PoseStamped robot_origin;
+    robot_origin.header.frame_id = base_frame_;
+    robot_origin.header.stamp = ros::Time(0);
+    robot_origin.pose.orientation.w = 1.0;
+
+    geometry_msgs::PoseStamped robot_costmap;
+    if (!transformPose(costmap_frame_, robot_origin, robot_costmap))
+    {
+        ROS_WARN_THROTTLE(
+            1.0,
+            "C4.1路径优化器机器人位姿TF失败；本周期继续使用原路径。");
+        return;
+    }
+
+    ClearancePathOptimizer::Output output;
+    if (!clearance_path_optimizer_.optimize(
+            plan_costmap, robot_costmap, output)
+        || !output.valid)
+    {
+        // 这里绝不返回false给move_base。优化器失败与控制/重规划解耦。
+        return;
+    }
+
+    // 输出与输入点数相同，target_index_的语义保持不变。
+    global_plan_ = output.optimized_full_path;
 }
 
 void MyPlanner::publishPathDebug(
@@ -1272,6 +1827,48 @@ bool MyPlanner::selectTrackingTarget(
     return false;
 }
 
+bool MyPlanner::selectPatrolTrackingTarget(
+    geometry_msgs::PoseStamped& target_pose)
+{
+    if (global_plan_.empty())
+        return false;
+
+    const int path_size = static_cast<int>(global_plan_.size());
+    const int search_start = std::max(0, std::min(target_index_, path_size - 1));
+
+    geometry_msgs::PoseStamped last_valid;
+    bool have_last_valid = false;
+    for (int i = search_start; i < path_size; ++i)
+    {
+        geometry_msgs::PoseStamped point_base;
+        if (!transformPose(base_frame_, global_plan_[i], point_base))
+            continue;
+
+        last_valid = point_base;
+        have_last_valid = true;
+        const double distance = std::hypot(
+            point_base.pose.position.x,
+            point_base.pose.position.y);
+
+        if (point_base.pose.position.x > 0.0
+            && distance >= patrol_pp_lookahead_dist_)
+        {
+            target_index_ = i;
+            target_pose = point_base;
+            return true;
+        }
+    }
+
+    if (have_last_valid)
+    {
+        target_index_ = path_size - 1;
+        target_pose = last_valid;
+        return true;
+    }
+
+    return false;
+}
+
 double MyPlanner::computeLateralDeviation(
     const geometry_msgs::PoseStamped& target_pose)
 {
@@ -1300,35 +1897,369 @@ double MyPlanner::computeLateralDeviation(
     return lateral_deviation;
 }
 
+bool MyPlanner::computePatrolPreviewErrors(
+    double& raw_lateral_error,
+    double& optimized_lateral_offset)
+{
+    raw_lateral_error = 0.0;
+    optimized_lateral_offset = patrol_pp_filtered_offset_;
+
+    if (raw_plan_.size() < 2
+        || global_plan_.size() != raw_plan_.size())
+    {
+        return false;
+    }
+
+    std::string raw_frame = raw_plan_.front().header.frame_id;
+    if (raw_frame.empty())
+        raw_frame = costmap_frame_;
+
+    std::string optimized_frame = global_plan_.front().header.frame_id;
+    if (optimized_frame.empty())
+        optimized_frame = costmap_frame_;
+
+    tf::StampedTransform raw_to_base;
+    tf::StampedTransform optimized_to_base;
+    try
+    {
+        if (raw_frame == base_frame_)
+            raw_to_base.setIdentity();
+        else
+            tf_listener_->lookupTransform(
+                base_frame_, raw_frame, ros::Time(0), raw_to_base);
+
+        if (optimized_frame == raw_frame)
+            optimized_to_base = raw_to_base;
+        else if (optimized_frame == base_frame_)
+            optimized_to_base.setIdentity();
+        else
+            tf_listener_->lookupTransform(
+                base_frame_, optimized_frame, ros::Time(0),
+                optimized_to_base);
+    }
+    catch (const tf::TransformException& ex)
+    {
+        ROS_WARN_THROTTLE(
+            1.0, "巡检PP前视窗口TF查询失败：%s", ex.what());
+        return false;
+    }
+
+    std::vector<PathPoint2D> raw_local;
+    raw_local.reserve(raw_plan_.size());
+    for (std::size_t i = 0; i < raw_plan_.size(); ++i)
+    {
+        const geometry_msgs::PoseStamped& pose = raw_plan_[i];
+        const std::string frame = pose.header.frame_id.empty()
+            ? raw_frame : pose.header.frame_id;
+
+        PathPoint2D point;
+        if (frame == raw_frame)
+        {
+            const tf::Vector3 source(
+                pose.pose.position.x, pose.pose.position.y, 0.0);
+            const tf::Vector3 result = raw_to_base * source;
+            point.x = result.x();
+            point.y = result.y();
+        }
+        else
+        {
+            geometry_msgs::PoseStamped point_base;
+            if (!transformPose(base_frame_, pose, point_base))
+                return false;
+            point.x = point_base.pose.position.x;
+            point.y = point_base.pose.position.y;
+        }
+        point.source_index = static_cast<int>(i);
+        raw_local.push_back(point);
+    }
+
+    std::size_t closest = 0;
+    double closest_distance = std::numeric_limits<double>::max();
+    for (std::size_t i = 0; i < raw_local.size(); ++i)
+    {
+        const double distance = std::hypot(raw_local[i].x, raw_local[i].y);
+        if (distance < closest_distance)
+        {
+            closest_distance = distance;
+            closest = i;
+        }
+    }
+
+    raw_lateral_error = raw_local[closest].y;
+
+    double accumulated = 0.0;
+    double weighted_offset_sum = 0.0;
+    double weight_sum = 0.0;
+    const double preview_center =
+        0.5 * (patrol_pp_preview_start_ + patrol_pp_preview_end_);
+    const double preview_half_width = std::max(
+        1.0e-3,
+        0.5 * (patrol_pp_preview_end_ - patrol_pp_preview_start_));
+
+    for (std::size_t i = closest; i < raw_local.size(); ++i)
+    {
+        if (i > closest)
+        {
+            accumulated += std::hypot(
+                raw_local[i].x - raw_local[i - 1].x,
+                raw_local[i].y - raw_local[i - 1].y);
+        }
+
+        if (accumulated > patrol_pp_preview_end_)
+            break;
+        if (accumulated < patrol_pp_preview_start_)
+            continue;
+
+        const geometry_msgs::PoseStamped& optimized_pose = global_plan_[i];
+        const std::string frame = optimized_pose.header.frame_id.empty()
+            ? optimized_frame : optimized_pose.header.frame_id;
+
+        double optimized_y = 0.0;
+        if (frame == optimized_frame)
+        {
+            const tf::Vector3 source(
+                optimized_pose.pose.position.x,
+                optimized_pose.pose.position.y,
+                0.0);
+            const tf::Vector3 result = optimized_to_base * source;
+            optimized_y = result.y();
+        }
+        else
+        {
+            geometry_msgs::PoseStamped point_base;
+            if (!transformPose(base_frame_, optimized_pose, point_base))
+                continue;
+            optimized_y = point_base.pose.position.y;
+        }
+
+        // 两条路径使用相同索引，差值只代表优化器要求的横向避障偏移，
+        // 不包含车辆自身已经偏离原始巡检线的误差。
+        const double offset = optimized_y - raw_local[i].y;
+        const double normalized_distance = std::abs(
+            accumulated - preview_center) / preview_half_width;
+        const double weight = std::max(0.50, 1.0 - 0.50 * normalized_distance);
+        weighted_offset_sum += weight * offset;
+        weight_sum += weight;
+    }
+
+    if (weight_sum <= 1.0e-9)
+        return false;
+
+    optimized_lateral_offset = weighted_offset_sum / weight_sum;
+    return std::isfinite(raw_lateral_error)
+        && std::isfinite(optimized_lateral_offset);
+}
+
+void MyPlanner::computePatrolPurePursuitCommand(
+    const geometry_msgs::PoseStamped& target_pose,
+    double control_dt,
+    geometry_msgs::Twist& desired_cmd,
+    double& raw_lateral_error,
+    double& requested_lateral_offset,
+    double& lateral_error)
+{
+    desired_cmd = geometry_msgs::Twist();
+
+    if (!computePatrolPreviewErrors(
+            raw_lateral_error, requested_lateral_offset))
+    {
+        // 短暂TF或优化器输出异常时保持上一避障偏移，不突然回线。
+        raw_lateral_error = target_pose.pose.position.y
+            - patrol_pp_filtered_offset_;
+        requested_lateral_offset = patrol_pp_filtered_offset_;
+    }
+
+    const double offset_delta =
+        requested_lateral_offset - patrol_pp_filtered_offset_;
+    const bool moving_farther_from_raw_line =
+        requested_lateral_offset * patrol_pp_filtered_offset_ >= 0.0
+        && std::abs(requested_lateral_offset)
+               > std::abs(patrol_pp_filtered_offset_) + 1.0e-6;
+    const double offset_rate = moving_farther_from_raw_line
+        ? patrol_pp_avoid_offset_rate_
+        : patrol_pp_return_offset_rate_;
+    const double max_offset_step = offset_rate * control_dt;
+    patrol_pp_filtered_offset_ += clampValue(
+        offset_delta, -max_offset_step, max_offset_step);
+
+    lateral_error = raw_lateral_error + patrol_pp_filtered_offset_;
+    if (std::abs(lateral_error) < patrol_pp_lateral_deadband_)
+        lateral_error = 0.0;
+
+    double vy = clampValue(
+        patrol_pp_lateral_gain_ * lateral_error,
+        -patrol_pp_max_vy_, patrol_pp_max_vy_);
+
+    const double speed_cap = std::max(
+        0.05,
+        std::min(c2_max_reference_speed_,
+                 std::min(mpc_max_translational_speed_, max_vel_x_)));
+    if (std::abs(vy) > speed_cap)
+        vy = std::copysign(speed_cap, vy);
+
+    const double vx_speed_circle = std::sqrt(std::max(
+        0.0, speed_cap * speed_cap - vy * vy));
+    const double vx_pp = std::max(
+        0.0, target_pose.pose.position.x * path_linear_x_gain_);
+
+    desired_cmd.linear.x = std::min(vx_pp, vx_speed_circle);
+    desired_cmd.linear.y = vy;
+    desired_cmd.angular.z = 0.0;
+}
+
+bool MyPlanner::computePatrolFinalPositionCommand(
+    const geometry_msgs::PoseStamped& final_pose,
+    geometry_msgs::Twist& desired_cmd)
+{
+    desired_cmd = geometry_msgs::Twist();
+    const double x_error = final_pose.pose.position.x;
+    const double y_error = final_pose.pose.position.y;
+    const double distance_error = std::hypot(x_error, y_error);
+
+    if (distance_error <= patrol_pp_goal_position_tolerance_)
+    {
+        goal_reached_ = true;
+        transitionTo(
+            ControlState::GOAL_HOLD,
+            "巡检全向PP到达终点位置，忽略终点航向误差");
+        ROS_WARN("巡检路线到达终点：位置误差=%.3fm，停止全部速度。",
+                 distance_error);
+        return true;
+    }
+
+    double vx = final_linear_x_gain_ * x_error;
+    double vy = final_linear_y_gain_ * y_error;
+    if (std::abs(x_error) <= patrol_pp_goal_position_tolerance_ * 0.65)
+        vx = 0.0;
+    if (std::abs(y_error) <= patrol_pp_goal_position_tolerance_ * 0.65)
+        vy = 0.0;
+
+    vx = applyMinimumMagnitude(vx, final_min_linear_speed_);
+    vy = applyMinimumMagnitude(vy, final_min_linear_speed_);
+
+    const double speed_cap = std::max(
+        0.05,
+        std::min(c2_max_reference_speed_,
+                 std::min(mpc_max_translational_speed_, max_vel_x_)));
+    desired_cmd.linear.x = clampValue(
+        vx, -std::min(final_max_vel_x_, speed_cap),
+        std::min(final_max_vel_x_, speed_cap));
+    desired_cmd.linear.y = clampValue(
+        vy, -std::min(patrol_pp_max_vy_, speed_cap),
+        std::min(patrol_pp_max_vy_, speed_cap));
+
+    const double speed = std::hypot(
+        desired_cmd.linear.x, desired_cmd.linear.y);
+    if (speed > speed_cap + 1.0e-9)
+    {
+        const double scale = speed_cap / speed;
+        desired_cmd.linear.x *= scale;
+        desired_cmd.linear.y *= scale;
+    }
+    desired_cmd.angular.z = 0.0;
+    return false;
+}
+
+void MyPlanner::applyPatrolVelocityLimits(
+    const geometry_msgs::Twist& desired_cmd,
+    geometry_msgs::Twist& limited_cmd,
+    double dt)
+{
+    geometry_msgs::Twist patrol_target = desired_cmd;
+
+    // 巡检横移使用更保守的独立加速度上限，避免整车快速左右甩动。
+    const double max_delta_y = patrol_pp_acc_lim_y_ * dt;
+    patrol_target.linear.y = clampValue(
+        patrol_target.linear.y,
+        last_cmd_vel_.linear.y - max_delta_y,
+        last_cmd_vel_.linear.y + max_delta_y);
+
+    // 巡检航向保持使用独立的小角速度和角加速度限制。它只纠正底盘偏航，
+    // 目标方向来自raw_plan_切线，不会追随优化路径的绕障弯曲。
+    patrol_target.angular.z = clampValue(
+        patrol_target.angular.z,
+        -patrol_heading_max_wz_, patrol_heading_max_wz_);
+    const double max_delta_wz = patrol_heading_acc_lim_ * dt;
+    patrol_target.angular.z = clampValue(
+        patrol_target.angular.z,
+        last_cmd_vel_.angular.z - max_delta_wz,
+        last_cmd_vel_.angular.z + max_delta_wz);
+
+    applyVelocityAndAccelerationLimits(patrol_target, limited_cmd, dt);
+}
+
 bool MyPlanner::computeInitialRotationCommand(
     double angle_error,
     geometry_msgs::Twist& desired_cmd)
 {
     desired_cmd = geometry_msgs::Twist();
 
-    if (!enable_initial_rotation_)
+    const bool patrol_pp_active = isPatrolPpActive();
+    // 普通导航仍服从enable_initial_rotation_；固定巡检PP必须完成对准，
+    // 否则随后wz=0会把停靠后的歪车头永久锁住。
+    if (!enable_initial_rotation_ && !patrol_pp_active)
         return false;
 
-    if (std::abs(angle_error) <= initial_align_exit_angle_)
+    const double exit_tolerance = patrol_pp_active
+        ? patrol_pp_align_tolerance_
+        : initial_align_exit_angle_;
+
+    if (std::abs(angle_error) <= exit_tolerance)
     {
-        transitionTo(
-            ControlState::PATH_TRACKING,
-            "车头已进入MPC可实现漂移角范围");
+        if (patrol_pp_active)
+        {
+            patrol_pp_settle_counter_ = 0;
+            transitionTo(
+                ControlState::PATROL_SETTLING,
+                "巡检车头已精确对准原始路径，等待旋转完全停止");
+        }
+        else
+        {
+            transitionTo(
+                ControlState::PATH_TRACKING,
+                "车头已进入MPC可实现漂移角范围");
+        }
         return false;
     }
 
-    double angular_speed =
-        std::abs(angle_error) * initial_angular_gain_;
-
-    angular_speed =
-        clampValue(angular_speed,
-                   initial_min_angular_speed_,
-                   initial_max_angular_speed_);
+    double angular_speed = 0.0;
+    if (patrol_pp_active)
+    {
+        // 巡检对准不使用普通导航的最小角速度。越接近目标，指令自然越小；
+        // 进入near区域后再限一次速度，避免越过目标后产生大角度超调。
+        angular_speed = std::min(
+            std::abs(angle_error) * patrol_align_kp_,
+            patrol_align_max_wz_);
+        if (std::abs(angle_error) <= patrol_align_near_angle_)
+            angular_speed = std::min(angular_speed, patrol_align_near_wz_);
+    }
+    else
+    {
+        angular_speed =
+            std::abs(angle_error) * initial_angular_gain_;
+        angular_speed =
+            clampValue(angular_speed,
+                       initial_min_angular_speed_,
+                       initial_max_angular_speed_);
+    }
 
     desired_cmd.angular.z =
         std::copysign(angular_speed, angle_error);
 
     return true;
+}
+
+double MyPlanner::computePatrolHeadingHoldCommand(double angle_error) const
+{
+    if (!patrol_heading_hold_enabled_
+        || std::abs(angle_error) <= patrol_heading_deadband_)
+    {
+        return 0.0;
+    }
+
+    return clampValue(
+        patrol_heading_kp_ * angle_error,
+        -patrol_heading_max_wz_, patrol_heading_max_wz_);
 }
 
 bool MyPlanner::computeFinalPoseCommand(
@@ -1439,6 +2370,9 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         return false;
     }
 
+    // 所有运行时参数在路径处理和MPC求解前刷新，保证同一控制周期生效。
+    refreshRuntimeParameters();
+
     const ros::Time now = ros::Time::now();
 
     double dt = 0.05;
@@ -1458,11 +2392,14 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
             dt, mpc_dt_);
     }
 
-    // 1. 路径预处理保持独立。C4.0参数默认关闭路径治愈。
+    // 1. 路径预处理保持独立。旧路径治愈默认关闭；C4.1优化器默认shadow。
     updateHealedPath();
+    updateClearanceOptimizedPath();
+    const bool patrol_pp_active = isPatrolPpActive();
 
-    // 2. 前方路径碰撞仍由全局重规划处理，任何失败周期都明确写零速度。
-    if (!checkPathCollision())
+    // 2. 重规划开关开启时，前方路径命中死区才停车并返回false。
+    // 关闭后完全跳过此检查，不会由该分支请求move_base重规划。
+    if (enable_path_replanning_ && !checkPathCollision())
     {
         transitionTo(ControlState::FAILURE_STOP, "前方全局路径碰撞");
         stopImmediately(cmd_vel);
@@ -1490,10 +2427,27 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 
     geometry_msgs::Twist desired_cmd;
 
+    // V7续巡保护：对准要求使用独立闩锁，不依赖某一次setPlan是否成功
+    // 把control_state_留在WAITING_FOR_PLAN。只要新固定Path尚未完成对准，
+    // 任何被异步更新到PATH_TRACKING/GOAL_HOLD等状态的情况都会退回初始化。
+    if (patrol_pp_active
+        && isPatrolPpAlignmentRequired()
+        && control_state_ != ControlState::WAITING_FOR_PLAN
+        && control_state_ != ControlState::INITIAL_ALIGN
+        && control_state_ != ControlState::PATROL_SETTLING)
+    {
+        resetPatrolPpState();
+        transitionTo(
+            ControlState::WAITING_FOR_PLAN,
+            "新的或断点续巡固定Path尚未完成车头对准，强制重新初始化");
+        ROS_WARN("巡检续巡对准闩锁生效：禁止带着停靠后的残余航向直接进入平移跟踪。");
+    }
+
     // 3. 恢复C3.2原始终点逻辑：距离小于阈值立即退出MPC，
     // 由独立XYZ比例控制持续调整到位姿阈值，不等待速度条件，
     // 不执行C4.0的厘米级轨迹安全检查和静止保持计时。
-    if (control_state_ != ControlState::FINAL_SETTLING
+    if (!patrol_pp_active
+        && control_state_ != ControlState::FINAL_SETTLING
         && final_distance < goal_dist_threshold_)
     {
         transitionTo(
@@ -1503,7 +2457,8 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
                  final_distance);
     }
 
-    if (control_state_ == ControlState::FINAL_SETTLING)
+    if (!patrol_pp_active
+        && control_state_ == ControlState::FINAL_SETTLING)
     {
         if (computeFinalPoseCommand(final_pose, desired_cmd))
         {
@@ -1527,7 +2482,23 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
             return false;
         }
 
-        if (shouldEnterInitialAlign(tangent_error))
+        if (patrol_pp_active)
+        {
+            if (std::abs(tangent_error) > patrol_pp_align_tolerance_)
+            {
+                transitionTo(
+                    ControlState::INITIAL_ALIGN,
+                    "巡检车头需要精确对准原始固定路径");
+            }
+            else
+            {
+                patrol_pp_settle_counter_ = 0;
+                transitionTo(
+                    ControlState::PATROL_SETTLING,
+                    "巡检车头已在精确阈值内，等待旋转完全停止");
+            }
+        }
+        else if (shouldEnterInitialAlign(tangent_error))
         {
             transitionTo(
                 ControlState::INITIAL_ALIGN,
@@ -1559,8 +2530,160 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         }
     }
 
+    if (control_state_ == ControlState::PATROL_SETTLING)
+    {
+        if (!patrol_pp_active)
+        {
+            transitionTo(
+                ControlState::PATH_TRACKING,
+                "固定巡检PP已解除，恢复普通路径控制");
+        }
+        else
+        {
+            double tangent_error = 0.0;
+            if (!computeInitialPathTangentError(tangent_error))
+            {
+                transitionTo(
+                    ControlState::FAILURE_STOP,
+                    "巡检停稳复查时无法计算原始路径切线");
+                stopImmediately(cmd_vel);
+                return false;
+            }
+
+            // 进入角度阈值后车体仍可能因惯性越过目标。停稳阶段必须每帧
+            // 复查最终航向；一旦超差，立即按误差符号反向低速回调。
+            if (std::abs(tangent_error) > patrol_pp_align_tolerance_)
+            {
+                patrol_pp_settle_counter_ = 0;
+                transitionTo(
+                    ControlState::INITIAL_ALIGN,
+                    "巡检停车后航向越过目标并超出容差，立即反向回调");
+
+                if (computeInitialRotationCommand(tangent_error, desired_cmd))
+                {
+                    applyVelocityAndAccelerationLimits(
+                        desired_cmd, cmd_vel, dt);
+                    ROS_WARN_THROTTLE(
+                        0.5,
+                        "巡检对准超调回调：航向误差=%.2f度，cmd_wz=%.3frad/s。",
+                        tangent_error * 180.0 / M_PI,
+                        cmd_vel.angular.z);
+                    return true;
+                }
+            }
+
+            const MeasuredBodyState measured = getMeasuredBodyState(now);
+            const bool heading_aligned =
+                std::abs(tangent_error) <= patrol_pp_align_tolerance_;
+            const bool angular_stopped =
+                std::abs(measured.omega) <= patrol_pp_settle_omega_
+                && std::abs(last_cmd_vel_.angular.z)
+                       <= patrol_pp_settle_omega_;
+
+            if (heading_aligned && angular_stopped)
+                ++patrol_pp_settle_counter_;
+            else
+                patrol_pp_settle_counter_ = 0;
+
+            desired_cmd = geometry_msgs::Twist();
+            if (patrol_pp_settle_counter_ < patrol_pp_settle_frames_)
+            {
+                applyVelocityAndAccelerationLimits(
+                    desired_cmd, cmd_vel, dt);
+                ROS_INFO_THROTTLE(
+                    0.5,
+                    "巡检PP等待最终对准并停稳：航向误差=%.2f度，"
+                    "omega=%.3frad/s，命令wz=%.3f，稳定帧=%d/%d。",
+                    tangent_error * 180.0 / M_PI,
+                    measured.omega, cmd_vel.angular.z,
+                    patrol_pp_settle_counter_, patrol_pp_settle_frames_);
+                return true;
+            }
+
+            last_cmd_vel_.angular.z = 0.0;
+            markPatrolPpAlignmentComplete();
+            transitionTo(
+                ControlState::PATH_TRACKING,
+                "巡检最终航向正确且旋转已停稳，开始平移追踪和航向保持");
+            ROS_WARN("巡检全向PP开始：优化路径控制vx/vy，原始巡检线闭环保持航向。" );
+        }
+    }
+
     if (control_state_ == ControlState::FAILURE_STOP)
         transitionTo(ControlState::PATH_TRACKING, "故障条件已消失，恢复路径跟踪");
+
+    // 固定巡检Path专用分支：普通导航和停靠不会进入这里。
+    // 终点仅以x/y判定到达，不跟踪move_base目标姿态；减速接近期间仍
+    // 继续保持raw_plan_巡检航向。
+    if (patrol_pp_active)
+    {
+        double patrol_heading_error = 0.0;
+        double patrol_heading_wz = 0.0;
+        if (computeInitialPathTangentError(patrol_heading_error))
+        {
+            patrol_heading_wz =
+                computePatrolHeadingHoldCommand(patrol_heading_error);
+        }
+        else
+        {
+            ROS_WARN_THROTTLE(
+                1.0,
+                "巡检航向保持暂时无法取得原始路径切线，本周期wz置零。" );
+        }
+
+        if (final_distance < patrol_pp_goal_slowdown_distance_)
+        {
+            if (computePatrolFinalPositionCommand(final_pose, desired_cmd))
+            {
+                stopImmediately(cmd_vel);
+                return true;
+            }
+
+            desired_cmd.angular.z = patrol_heading_wz;
+            applyPatrolVelocityLimits(desired_cmd, cmd_vel, dt);
+            ROS_INFO_THROTTLE(
+                0.5,
+                "巡检PP终点位置调整：distance=%.3f，航向误差=%.2f度，"
+                "cmd=(%.3f,%.3f,%.3f)。",
+                final_distance, patrol_heading_error * 180.0 / M_PI,
+                cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z);
+            return true;
+        }
+
+        geometry_msgs::PoseStamped patrol_target;
+        if (!selectPatrolTrackingTarget(patrol_target))
+        {
+            transitionTo(
+                ControlState::FAILURE_STOP,
+                "巡检PP无法取得前视点");
+            stopImmediately(cmd_vel);
+            return false;
+        }
+
+        double raw_lateral_error = 0.0;
+        double requested_lateral_offset = 0.0;
+        double lateral_error = 0.0;
+        computePatrolPurePursuitCommand(
+            patrol_target, dt, desired_cmd,
+            raw_lateral_error,
+            requested_lateral_offset,
+            lateral_error);
+        desired_cmd.angular.z = patrol_heading_wz;
+        applyPatrolVelocityLimits(desired_cmd, cmd_vel, dt);
+
+        ROS_INFO_THROTTLE(
+            0.5,
+            "巡检全向PP：raw_y=%.3f，优化偏移=%.3f，滤波偏移=%.3f，"
+            "横向误差=%.3f，航向误差=%.2f度，target_x=%.3f，"
+            "cmd=(%.3f,%.3f,%.3f)，index=%d。",
+            raw_lateral_error, requested_lateral_offset,
+            patrol_pp_filtered_offset_, lateral_error,
+            patrol_heading_error * 180.0 / M_PI,
+            patrol_target.pose.position.x,
+            cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z,
+            target_index_);
+        return true;
+    }
 
     // 5. 路径跟踪仍完整保留C4.0.3的MPC与PP回退。
     geometry_msgs::PoseStamped target_pose;

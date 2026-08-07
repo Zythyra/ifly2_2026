@@ -1,25 +1,41 @@
 <launch>
-    <!--
-        两个节点共用同一个 YAML 文件，但分别加载到各自命名空间。
-        line_right 只读取原赛道参数；line2_right 只读取新赛道参数。
-    -->
+    <!-- 三个巡线程序分别加载各自的 YAML，参数键名保持不变。 -->
     <rosparam
         command="load"
-        file="$(find line_follow)/config/line.yaml"
+        file="$(find line_follow)/config/line_right.yaml"
         ns="line_right"/>
 
+    <!-- 保留旧 line_left 节点，并继续沿用原赛道参数。 -->
     <rosparam
         command="load"
-        file="$(find line_follow)/config/line.yaml"
+        file="$(find line_follow)/config/line_left.yaml"
+        ns="line_left"/>
+
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/line2_right.yaml"
         ns="line2_right"/>
 
-    <!-- 两个节点使用同一份相机标定文件 -->
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/line2_left.yaml"
+        ns="line2_left"/>
+
+    <!-- 各巡线节点使用同一份相机标定文件；巡线参数则由各自 YAML 独立提供。 -->
     <param
         name="/line_right/calibration_file"
         value="$(find line_follow)/camera_info/pinhole.yaml"/>
 
     <param
+        name="/line_left/calibration_file"
+        value="$(find line_follow)/camera_info/pinhole.yaml"/>
+
+    <param
         name="/line2_right/calibration_file"
+        value="$(find line_follow)/camera_info/pinhole.yaml"/>
+
+    <param
+        name="/line2_left/calibration_file"
         value="$(find line_follow)/camera_info/pinhole.yaml"/>
 
     <!-- 位姿获取服务：/getpose_server -->
@@ -38,11 +54,27 @@
         output="screen"
         respawn="false"/>
 
+    <!-- 原赛道左侧巡线继续沿用 line_right.yaml。 -->
+    <node
+        pkg="line_follow"
+        type="line_left"
+        name="line_left"
+        output="screen"
+        respawn="false"/>
+
     <!-- 新赛道右侧巡线服务：/line2_right -->
     <node
         pkg="line_follow"
         type="line2_right"
         name="line2_right"
+        output="screen"
+        respawn="false"/>
+
+    <!-- 新赛道左侧巡线服务：/line2_left -->
+    <node
+        pkg="line_follow"
+        type="line2_left"
+        name="line2_left"
         output="screen"
         respawn="false"/>
 </launch>

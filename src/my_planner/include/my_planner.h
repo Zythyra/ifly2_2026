@@ -1,6 +1,8 @@
 #ifndef MY_PLANNER_H_
 #define MY_PLANNER_H_
 
+#include "clearance_path_optimizer.h"
+
 #include <ros/ros.h>
 #include <nav_core/base_local_planner.h>
 #include <costmap_2d/costmap_2d_ros.h>
@@ -8,10 +10,13 @@
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Path.h>
 #include <nav_msgs/Odometry.h>
+#include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
 #include <tf/transform_listener.h>
 #include <tf2_ros/buffer.h>
 
 #include <deque>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -88,6 +93,7 @@ private:
     {
         WAITING_FOR_PLAN,
         INITIAL_ALIGN,
+        PATROL_SETTLING,
         PATH_TRACKING,
         FINAL_SETTLING,
         GOAL_HOLD,
@@ -213,6 +219,14 @@ private:
 
 
     void odomCallback(const nav_msgs::Odometry::ConstPtr& message);
+    void patrolPathCallback(const nav_msgs::Path::ConstPtr& message);
+    bool lockPatrolPathCallback(
+        std_srvs::SetBool::Request& request,
+        std_srvs::SetBool::Response& response);
+    bool resetControllerStateCallback(
+        std_srvs::Trigger::Request& request,
+        std_srvs::Trigger::Response& response);
+    void resetControllerStateForExternalControl();
     double filterMeasuredOmega(double raw_omega, const ros::Time& stamp);
     MeasuredBodyState getMeasuredBodyState(const ros::Time& now) const;
     DelayCompensatedState predictStateThroughInputDelay(
@@ -229,12 +243,18 @@ private:
     void resetForNewGoal();
     void stopImmediately(geometry_msgs::Twist& cmd_vel);
     static const char* controlStateName(ControlState state);
+    bool isPatrolPpAlignmentRequired() const;
+    void markPatrolPpAlignmentComplete();
     void transitionTo(ControlState next_state, const std::string& reason);
     bool computeInitialPathTangentError(double& angle_error);
     bool shouldEnterInitialAlign(double angle_error) const;
+    bool isPatrolPpActive() const;
+    void resetPatrolPpState();
 
     // 原稳定PP外围机制与失败回退。
+    void refreshRuntimeParameters();
     void updateHealedPath();
+    void updateClearanceOptimizedPath();
     void publishPathDebug(
         const std::vector<geometry_msgs::PoseStamped>& source_path,
         ros::Publisher& publisher,
@@ -244,11 +264,14 @@ private:
     void publishPathHealingDebug(int heal_start, int heal_end);
     bool checkPathCollision();
     bool selectTrackingTarget(geometry_msgs::PoseStamped& target_pose);
+    bool selectPatrolTrackingTarget(
+        geometry_msgs::PoseStamped& target_pose);
     double computeLateralDeviation(
         const geometry_msgs::PoseStamped& target_pose);
     bool computeInitialRotationCommand(
         double angle_error,
         geometry_msgs::Twist& desired_cmd);
+    double computePatrolHeadingHoldCommand(double angle_error) const;
     bool computeFinalPoseCommand(
         const geometry_msgs::PoseStamped& final_pose,
         geometry_msgs::Twist& desired_cmd);
@@ -256,6 +279,23 @@ private:
         const geometry_msgs::PoseStamped& target_pose,
         geometry_msgs::Twist& desired_cmd,
         double& lateral_deviation);
+    bool computePatrolPreviewErrors(
+        double& raw_lateral_error,
+        double& optimized_lateral_offset);
+    void computePatrolPurePursuitCommand(
+        const geometry_msgs::PoseStamped& target_pose,
+        double control_dt,
+        geometry_msgs::Twist& desired_cmd,
+        double& raw_lateral_error,
+        double& requested_lateral_offset,
+        double& lateral_error);
+    bool computePatrolFinalPositionCommand(
+        const geometry_msgs::PoseStamped& final_pose,
+        geometry_msgs::Twist& desired_cmd);
+    void applyPatrolVelocityLimits(
+        const geometry_msgs::Twist& desired_cmd,
+        geometry_msgs::Twist& limited_cmd,
+        double dt);
     void applyVelocityAndAccelerationLimits(
         const geometry_msgs::Twist& desired_cmd,
         geometry_msgs::Twist& limited_cmd,
@@ -282,12 +322,57 @@ private:
     bool initialized_;
     tf::TransformListener* tf_listener_;
     costmap_2d::Costmap2DROS* costmap_ros_;
+    ros::NodeHandle private_nh_;
+    ros::NodeHandle clearance_optimizer_nh_;
+    bool runtime_shadow_mode_;
+    bool enable_path_replanning_;
+    bool runtime_parameters_initialized_;
 
     std::string base_frame_;
     std::string costmap_frame_;
 
     std::vector<geometry_msgs::PoseStamped> raw_plan_;
     std::vector<geometry_msgs::PoseStamped> global_plan_;
+    std::vector<geometry_msgs::PoseStamped> staged_patrol_plan_;
+    bool patrol_path_locked_;
+    bool active_plan_is_patrol_;
+    std::uint32_t patrol_path_revision_;
+    std::uint32_t applied_patrol_path_revision_;
+    double patrol_goal_position_tolerance_;
+    double patrol_goal_yaw_tolerance_;
+    mutable std::mutex patrol_path_mutex_;
+
+    // 固定巡检路径专用全向PP：优化路径控制vx/vy，原始巡检线控制航向。
+    bool patrol_pp_enabled_;
+    double patrol_pp_align_tolerance_;
+    double patrol_pp_settle_omega_;
+    int patrol_pp_settle_frames_;
+    double patrol_align_kp_;
+    double patrol_align_max_wz_;
+    double patrol_align_near_angle_;
+    double patrol_align_near_wz_;
+    bool patrol_heading_hold_enabled_;
+    double patrol_heading_kp_;
+    double patrol_heading_max_wz_;
+    double patrol_heading_deadband_;
+    double patrol_heading_acc_lim_;
+    double patrol_pp_lookahead_dist_;
+    double patrol_pp_preview_start_;
+    double patrol_pp_preview_end_;
+    double patrol_pp_lateral_gain_;
+    double patrol_pp_lateral_deadband_;
+    double patrol_pp_max_vy_;
+    double patrol_pp_acc_lim_y_;
+    double patrol_pp_avoid_offset_rate_;
+    double patrol_pp_return_offset_rate_;
+    double patrol_pp_goal_slowdown_distance_;
+    double patrol_pp_goal_position_tolerance_;
+    int patrol_pp_settle_counter_;
+    double patrol_pp_filtered_offset_;
+    // 每次新固定巡检Path（包括停靠后的断点续巡）都必须重新对准。
+    // 该闩锁独立于control_state_，避免异步setPlan/复位时序把对准阶段覆盖掉。
+    bool patrol_pp_alignment_required_;
+    ClearancePathOptimizer clearance_path_optimizer_;
     geometry_msgs::PoseStamped goal_pose_;
     bool has_goal_;
 
@@ -438,6 +523,10 @@ private:
     ros::Publisher raw_global_path_pub_;
     ros::Publisher healed_global_path_pub_;
     ros::Publisher healed_window_path_pub_;
+
+    ros::Subscriber patrol_path_sub_;
+    ros::ServiceServer patrol_path_lock_service_;
+    ros::ServiceServer controller_reset_service_;
 
     int collision_check_lookahead_points_;
     unsigned char collision_cost_threshold_;

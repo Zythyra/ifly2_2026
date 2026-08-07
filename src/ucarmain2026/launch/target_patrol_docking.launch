@@ -1,4 +1,5 @@
 <launch>
+  <!-- IFLY2026_FIXED_PATH_PATROL_V2_NO_WALL_FIT_20260804 -->
   <!-- 目标类别只允许 food、daily、electronic，且两者不能相同。 -->
   <arg name="real_target_category" default="food" />
   <arg name="simulation_target_category" default="daily" />
@@ -39,59 +40,18 @@
     <param name="navigation_timeout" value="180.0" />
 
     <!--
-      四条巡检基准线保持为：
-      y=4.25 → x=4.75 → y=2.75 → x=0.25。
-      每段仅在到达下一条巡检线前5cm提前停车：
-      上段停于x=4.70，右段停于y=2.80，
-      下段停于x=0.30，左段停于y=4.20。
-      转向后linear.x负责向前，现有linear.y守线修正会在行进中
-      将小车带回下一条巡检基准线。
+      巡检不再直接发布速度。主节点按0.02m间隔生成当前投影点到段末的
+      nav_msgs/Path，锁定到MyPlanner，然后异步发送同一终点move_base目标。
+      四条基准线和提前5cm结束的位置保持不变。
     -->
-    <param name="patrol_forward_speed" value="0.55" />
-    <param name="line_hold_kp" value="2.0" />
-    <param name="line_hold_max_speed" value="0.16" />
-    <param name="yaw_hold_kp" value="2.5" />
-    <param name="yaw_hold_max_speed" value="0.30" />
-    <param name="yaw_pause_threshold_deg" value="10.0" />
+    <param name="planner_private_namespace" value="/move_base/MyPlanner" />
+    <param name="patrol_path_spacing" value="0.02" />
+    <param name="patrol_speed_limit" value="0.60" />
+    <param name="normal_navigation_speed_limit" value="1.00" />
+    <param name="patrol_cancel_timeout" value="3.0" />
+    <param name="patrol_interface_timeout" value="3.0" />
     <param name="segment_end_tolerance" value="0.025" />
     <param name="control_rate" value="15.0" />
-
-    <!--
-      巡检直线段优先使用左侧雷达拟合墙面：
-      linear.y保持距左墙0.25m，angular.z保持车头与墙平行。
-      拟合无效时自动回退到上面的map巡检线控制。
-      将patrol_use_lidar_wall_follow改为false即可做原控制方案的A/B测试。
-    -->
-    <param name="patrol_use_lidar_wall_follow" value="true" />
-    <param name="wall_target_distance" value="0.25" />
-    <param name="wall_distance_kp" value="1.8" />
-    <param name="wall_angle_kp" value="2.5" />
-    <param name="wall_max_lateral_speed" value="0.16" />
-    <param name="wall_max_angular_speed" value="0.30" />
-
-    <!-- 左侧50°~130°、0.10~0.70m范围内取点。 -->
-    <param name="wall_scan_min_angle_deg" value="50.0" />
-    <param name="wall_scan_max_angle_deg" value="130.0" />
-    <param name="wall_scan_min_range" value="0.10" />
-    <param name="wall_scan_max_range" value="0.70" />
-    <!-- RANSAC剔除路障/文字板/转角墙，再用PCA精拟合。 -->
-    <param name="wall_fit_inlier_threshold" value="0.025" />
-    <param name="wall_fit_min_points" value="12" />
-    <param name="wall_fit_min_inliers" value="10" />
-    <param name="wall_fit_min_span" value="0.16" />
-    <param name="wall_fit_max_angle_deg" value="30.0" />
-    <param name="wall_fit_max_rms" value="0.030" />
-    <param name="wall_fit_filter_alpha" value="0.35" />
-
-    <!-- 0/-90/180/90度前进朝向换向，并在旋转时保持当前位置。 -->
-    <param name="rotate_kp" value="3.5" />
-    <param name="rotate_min_speed" value="0.15" />
-    <param name="rotate_max_speed" value="0.65" />
-    <param name="rotate_tolerance_deg" value="2.0" />
-    <param name="rotate_stable_frames" value="3" />
-    <param name="rotate_timeout" value="12.0" />
-    <param name="position_hold_kp" value="2.0" />
-    <param name="position_hold_max_speed" value="0.10" />
 
     <!-- NanoDet巡检采用图像左侧三分之二区域；停靠对准仍使用全画面。 -->
     <param name="image_width" value="640" />

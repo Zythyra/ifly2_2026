@@ -1,3 +1,12 @@
+// 版本：寻左线丢线左转 + AMCL定位触发 + 纯PP全向位姿停靠版 V9（2026-08-06）
+// 唯一校验标识：LINE_LEFT_TRUE_MIRROR_AMCL_PP_V9
+// 本文件关键标识：x > 4.25，且距终点(4.75, 0.25) < 0.75m；最终方向0°。
+// 巡线基线：用户此前提供并实测的原始line_left（寻左线、丢线左转）。
+// 保留初始直行找线，并直接沿用原line_left的左线搜索、误差计算和丢线左转逻辑；
+// 已彻底移除原视觉终止判定和旧停车控制模块。
+// 每次巡线服务启动前先向 /initialpose 发布指定AMCL初始位姿；
+// 满足定位触发条件后不发布零速度，直接无缝切入终点纯PP位姿停靠。
+
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <vector>
@@ -6,8 +15,11 @@
 #include <string>
 #include <fstream>
 #include <geometry_msgs/Twist.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <cmath>
 #include <sstream>
+#include <algorithm>
+#include <clocale>
 #include "line_follow/line_follow.h"
 #include "ucarmain2026/getpose_server.h"
 
@@ -31,7 +43,7 @@ struct RaceTrack {
     vector<Point> points;          // 赛道点集
     int direction_change;          // 方向变化次数
     int slope_change_count;        // 斜率变化次数
-    bool right_point;               // 是否为右赛道标志
+    bool right_point;              // 是否为右赛道标志
 };
 
 class LineFollowerNode {
@@ -40,6 +52,7 @@ private:
     ros::NodeHandle nh_;                  // 节点句柄
     ros::ServiceServer line_server_;      // 服务端
     ros::Publisher cmd_pub_;              // 速度发布者
+    ros::Publisher initial_pose_pub_;     // AMCL初始位姿发布者
 
     ros::ServiceClient pose_client_;      // 位姿服务客户端
     ros::ServiceClient reconfigure_client_;// 动态配置客户端
@@ -62,25 +75,64 @@ private:
     Mat map1_, map2_;                     // 去畸变映射表
     int center_distance;
 
+    // 图像局部自适应二值化参数（由 line_left.yaml 配置）
+    int adaptive_block_;                  // 自适应阈值邻域大小，必须为大于1的奇数
+    int adaptive_c_;                      // 自适应阈值常数 C
+    int min_contour_area_;                // 二值化后保留轮廓的最小面积
+
     // 控制参数
     double p_, i_, d_;                    // PID参数
-    double leftpoint_p_, leftpoint_I_, leftpoint_D_; // 右点控制参数
+    double leftpoint_p_, leftpoint_I_, leftpoint_D_; // 右点控制参数（沿用原YAML键名）
     double x_max_, integration_limit_;    // 速度和积分限制
     double out_turn_, out_forward_,out_turn_angel_;       // 旋转和前进参数
     double integration_, pre_error_;      // 积分和前向误差
     double pointx_integration_, pointx_pre_error_; // 右点积分和前向误差
 
+    // AMCL初始位姿参数
+    string map_frame_;
+    string base_frame_;
+    double initial_pose_x_;
+    double initial_pose_y_;
+    double initial_pose_yaw_deg_;
+    double initial_pose_covariance_xy_;
+    double initial_pose_covariance_yaw_;
+    int initial_pose_publish_count_;
+    double initial_pose_publish_interval_;
+
+    // 定位触发与终点纯PP位姿停靠参数
+    double docking_trigger_min_x_;
+    double docking_trigger_distance_;
+    double docking_goal_x_;
+    double docking_goal_y_;
+    double docking_goal_yaw_deg_;
+    double docking_control_rate_;
+    double docking_position_tolerance_;
+    double docking_yaw_tolerance_;
+    double docking_linear_x_gain_;
+    double docking_linear_y_gain_;
+    double docking_angular_gain_;
+    double docking_min_linear_speed_;
+    double docking_min_angular_speed_;
+    double docking_max_vel_x_;
+    double docking_max_vel_y_;
+    double docking_max_vel_theta_;
+    double docking_acc_lim_x_;
+    double docking_acc_lim_y_;
+    double docking_acc_lim_theta_;
+
     // 状态变量
 
     bool double_line_;                    // 双边巡线标志
-    bool right_point_start_;               // 右点追踪标志
+    bool right_point_start_;              // 右点追踪标志
     bool point_forward_;                  // 右点前进标志
     int trace_failed_count_;              // 追踪失败计数
 
 public:
     // 构造函数：初始化所有组件
     LineFollowerNode() : 
-        nh_(""), 
+        nh_(""),
+        tf_listener_(nullptr),
+        ac_(nullptr),
         output_file_("/home/ucar/ucar_ws_copy/src/line_follow/image/line_left.avi"),
         fourcc_(VideoWriter::fourcc('X', 'V', 'I', 'D')),
         roi_(0, 210, 640, 270),
@@ -94,7 +146,7 @@ public:
         pointx_integration_(0),
         pointx_pre_error_(0) {
 
-        ROS_INFO("开始初始化LineFollowerNode...");
+        ROS_INFO("启动 line_left V9（寻左线、丢线左转、AMCL定位触发、纯PP全向位姿停靠）");
 
         // 1. 初始化服务端（优先初始化）
         line_server_ = nh_.advertiseService("line_left", &LineFollowerNode::line_server_callback, this);
@@ -127,7 +179,10 @@ public:
 
     // 运行节点主循环
     void run() {
-        ros::spin();
+        // 服务回调会长时间执行巡线与停靠控制，使用异步Spinner保持ROS通信。
+        ros::AsyncSpinner spinner(2);
+        spinner.start();
+        ros::waitForShutdown();
     }
 
 private:
@@ -145,7 +200,122 @@ private:
         nh_.getParam("/line_left/out_turn", out_turn_);
         nh_.getParam("/line_left/out_turn_angel", out_turn_angel_);
         nh_.getParam("/line_left/center_distance", center_distance);
-        ROS_INFO("参数加载完成: center_distance=%d",center_distance);
+
+        // 图像局部自适应二值化参数
+        // YAML 中未填写时保持原代码默认值：45、-15、250。
+        nh_.param("/line_left/adaptive_block", adaptive_block_, 45);
+        nh_.param("/line_left/adaptive_c", adaptive_c_, -15);
+        nh_.param("/line_left/min_contour_area", min_contour_area_, 250);
+
+        // AMCL初始位姿。每次服务真正启动巡线前都会重新读取并发布。
+        nh_.param<string>("/line_left/map_frame", map_frame_, "map");
+        nh_.param<string>("/line_left/base_frame", base_frame_, "base_link");
+        nh_.param("/line_left/initial_pose_x", initial_pose_x_, 2.50);
+        nh_.param("/line_left/initial_pose_y", initial_pose_y_, 2.60);
+        nh_.param("/line_left/initial_pose_yaw_deg", initial_pose_yaw_deg_, -90.0);
+        nh_.param("/line_left/initial_pose_covariance_xy",
+                  initial_pose_covariance_xy_, 0.01);
+        nh_.param("/line_left/initial_pose_covariance_yaw",
+                  initial_pose_covariance_yaw_, 0.01);
+        nh_.param("/line_left/initial_pose_publish_count",
+                  initial_pose_publish_count_, 3);
+        nh_.param("/line_left/initial_pose_publish_interval",
+                  initial_pose_publish_interval_, 0.10);
+
+        // 巡线终止触发条件与固定终点。
+        nh_.param("/line_left/docking_trigger_min_x",
+                  docking_trigger_min_x_, 4.25);
+        nh_.param("/line_left/docking_trigger_distance",
+                  docking_trigger_distance_, 0.75);
+        nh_.param("/line_left/docking_goal_x", docking_goal_x_, 4.75);
+        nh_.param("/line_left/docking_goal_y", docking_goal_y_, 0.25);
+        nh_.param("/line_left/docking_goal_yaw_deg",
+                  docking_goal_yaw_deg_, 0.0);
+
+        // 终点纯PP位姿控制，参数与已调好的line2_right保持一致。
+        nh_.param("/line_left/docking_control_rate",
+                  docking_control_rate_, 30.0);
+        nh_.param("/line_left/docking_position_tolerance",
+                  docking_position_tolerance_, 0.025);
+        nh_.param("/line_left/docking_yaw_tolerance",
+                  docking_yaw_tolerance_, 0.05);
+        nh_.param("/line_left/docking_linear_x_gain",
+                  docking_linear_x_gain_, 2.50);
+        nh_.param("/line_left/docking_linear_y_gain",
+                  docking_linear_y_gain_, 1.20);
+        nh_.param("/line_left/docking_angular_gain",
+                  docking_angular_gain_, 1.50);
+        nh_.param("/line_left/docking_min_linear_speed",
+                  docking_min_linear_speed_, 0.10);
+        nh_.param("/line_left/docking_min_angular_speed",
+                  docking_min_angular_speed_, 0.010);
+        nh_.param("/line_left/docking_max_vel_x",
+                  docking_max_vel_x_, 0.90);
+        nh_.param("/line_left/docking_max_vel_y",
+                  docking_max_vel_y_, 0.40);
+        nh_.param("/line_left/docking_max_vel_theta",
+                  docking_max_vel_theta_, 0.90);
+        nh_.param("/line_left/docking_acc_lim_x",
+                  docking_acc_lim_x_, 2.00);
+        nh_.param("/line_left/docking_acc_lim_y",
+                  docking_acc_lim_y_, 2.00);
+        nh_.param("/line_left/docking_acc_lim_theta",
+                  docking_acc_lim_theta_, 8.00);
+
+        initial_pose_covariance_xy_ =
+            std::max(0.0, initial_pose_covariance_xy_);
+        initial_pose_covariance_yaw_ =
+            std::max(0.0, initial_pose_covariance_yaw_);
+        initial_pose_publish_count_ =
+            std::max(1, initial_pose_publish_count_);
+        initial_pose_publish_interval_ =
+            std::max(0.0, initial_pose_publish_interval_);
+        docking_trigger_distance_ =
+            std::max(0.0, docking_trigger_distance_);
+        docking_control_rate_ =
+            std::max(1.0, docking_control_rate_);
+        docking_position_tolerance_ =
+            std::max(0.001, docking_position_tolerance_);
+        docking_yaw_tolerance_ =
+            std::max(0.001, docking_yaw_tolerance_);
+        docking_linear_x_gain_ =
+            std::max(0.0, docking_linear_x_gain_);
+        docking_linear_y_gain_ =
+            std::max(0.0, docking_linear_y_gain_);
+        docking_angular_gain_ =
+            std::max(0.0, docking_angular_gain_);
+        docking_min_linear_speed_ =
+            std::max(0.0, docking_min_linear_speed_);
+        docking_min_angular_speed_ =
+            std::max(0.0, docking_min_angular_speed_);
+        docking_max_vel_x_ =
+            std::max(0.001, docking_max_vel_x_);
+        docking_max_vel_y_ =
+            std::max(0.001, docking_max_vel_y_);
+        docking_max_vel_theta_ =
+            std::max(0.001, docking_max_vel_theta_);
+        docking_min_linear_speed_ =
+            std::min(docking_min_linear_speed_,
+                     std::min(docking_max_vel_x_, docking_max_vel_y_));
+        docking_min_angular_speed_ =
+            std::min(docking_min_angular_speed_,
+                     docking_max_vel_theta_);
+        docking_acc_lim_x_ = std::max(0.0, docking_acc_lim_x_);
+        docking_acc_lim_y_ = std::max(0.0, docking_acc_lim_y_);
+        docking_acc_lim_theta_ = std::max(0.0, docking_acc_lim_theta_);
+
+        ROS_INFO(
+            "line_left参数加载完成：center_distance=%d，二值化=(%d,%d,%d)",
+            center_distance,
+            adaptive_block_, adaptive_c_, min_contour_area_);
+        ROS_INFO(
+            "AMCL初始位姿=(%.3f, %.3f, %.1f°)，"
+            "停靠触发：x>%.3f且距(%.3f, %.3f)<%.3fm，最终方向=%.1f°",
+            initial_pose_x_, initial_pose_y_, initial_pose_yaw_deg_,
+            docking_trigger_min_x_,
+            docking_goal_x_, docking_goal_y_,
+            docking_trigger_distance_,
+            docking_goal_yaw_deg_);
     }
 
     // 初始化ROS组件（客户端、发布者等）
@@ -154,7 +324,10 @@ private:
         cmd_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
         ROS_INFO("cmd_vel发布者已初始化");
 
-       
+        initial_pose_pub_ =
+            nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>(
+                "/initialpose", 1, false);
+        ROS_INFO("AMCL初始位姿发布者已初始化：/initialpose");
 
         // 初始化位姿服务客户端
         ROS_INFO("等待坐标获取服务中...");
@@ -284,13 +457,62 @@ private:
     // 服务回调函数（核心逻辑）
     bool line_server_callback(line_follow::line_follow::Request& req, line_follow::line_follow::Response& resp) {
         Mat image, brightness_threshold_image, cropped, gray_img;
+        bool switch_to_docking = false;
+
+        // 每次服务启动时重新读取rosparam，允许运行期间修改坐标与停靠参数。
+        loadParameters();
+
+        // 清除上一次服务调用遗留的巡线状态。
+        double_line_ = false;
+        right_point_start_ = false;
+        point_forward_ = true;
+        trace_failed_count_ = 0;
+        integration_ = 0.0;
+        pre_error_ = 0.0;
+        pointx_integration_ = 0.0;
+        pointx_pre_error_ = 0.0;
+        twist_ = geometry_msgs::Twist();
+
+        // 每次启动巡线服务时，先进入“初始直行找线”状态。
+        // 该状态只会退出一次；检测到有效左边线后，后续丢线执行原line_left的固定左转逻辑。
+        bool initial_straight_mode = true;
+
+        // 小车尚未开始移动时，强制设置本次巡线使用的AMCL初始位姿。
+        publishInitialPose();
+
         // 5. 初始化相机和视频录制
         if (!initCameraAndVideo()) {
             ROS_FATAL("相机或视频初始化失败，节点无法启动");
-            ros::shutdown();
+            stopRobot();
+            return false;
         }
+
+        ROS_INFO("进入初始直行找线状态：以 x_max_=%.3f m/s 直行，检测到有效白线后进入正常巡线",
+                 x_max_);
+
         while (ros::ok()) {
-            
+            // 两项条件同时满足后，在同一控制周期直接切入停靠，不插入零速帧。
+            double robot_x = 0.0;
+            double robot_y = 0.0;
+            double robot_yaw = 0.0;
+            if (getRobotPose(robot_x, robot_y, robot_yaw)) {
+                const double distance_to_goal =
+                    std::hypot(docking_goal_x_ - robot_x,
+                               docking_goal_y_ - robot_y);
+
+                if (robot_x > docking_trigger_min_x_ &&
+                    distance_to_goal < docking_trigger_distance_) {
+                    switch_to_docking = true;
+                    ROS_INFO(
+                        "满足停靠触发条件：当前位置=(%.3f, %.3f)，x>%.3f，"
+                        "距终点=%.3fm<%.3fm；无停顿切入纯PP停靠。",
+                        robot_x, robot_y,
+                        docking_trigger_min_x_,
+                        distance_to_goal,
+                        docking_trigger_distance_);
+                    break;
+                }
+            }
 
             // 读取并预处理图像
             cap_.read(image);
@@ -308,22 +530,32 @@ private:
             // waitKey(0);
             cv::cvtColor(gray_img, cropped, cv::COLOR_GRAY2BGR);
 
+            if (initial_straight_mode) {
+                // 初始阶段复用原line_left的左线识别，但禁止执行“丢线左转”。
+                // 未找到有效左边线时，runNormalTracking() 会强制保持 x_max_ 直行；
+                // 找到后则在当前帧直接输出正常PID巡线速度。
+                if (runNormalTracking(gray_img, cropped, false)) {
+                    initial_straight_mode = false;
+                    trace_failed_count_ = 0;
+                    ROS_INFO("初始直行阶段检测到有效白线，退出初始状态并进入正常巡线");
+                }
+
+                cmd_pub_.publish(twist_);
+                continue;
+            }
+
             // 新场地只保留左边巡线模式。
             // 正常情况下跟踪左侧边线；左线连续丢失后，直接执行固定左转。
-            runNormalTracking(gray_img, cropped);
+            runNormalTracking(gray_img, cropped, true);
 
             // 发布速度指令
             cmd_pub_.publish(twist_);
+        }
 
-            // 停车检测
-            int stop_point_count;
-            if ( stop_car(gray_img, stop_point_count, cropped)) {
-                ROS_INFO("巡线结束，触发停车");
-                twist_.linear.x = 0;
-                twist_.angular.z = 0;
-                cmd_pub_.publish(twist_);
-                break;
-            }
+        if (ros::ok() && switch_to_docking) {
+            runDockingControl();
+        } else {
+            stopRobot();
         }
 
         // 为下一次服务调用复位状态。
@@ -335,6 +567,7 @@ private:
         pre_error_ = 0.0;
         pointx_integration_ = 0.0;
         pointx_pre_error_ = 0.0;
+        twist_ = geometry_msgs::Twist();
         cap_.release();
         out_.release();
         return true;
@@ -368,7 +601,226 @@ private:
         twist_.linear.y = 0;
         twist_.angular.z = 0;
         cmd_pub_.publish(twist_);
-        ros::Duration(0.1).sleep();
+    }
+
+    static double normalizeAngle(double angle) {
+        const double pi = 3.14159265358979323846;
+        while (angle > pi) {
+            angle -= 2.0 * pi;
+        }
+        while (angle < -pi) {
+            angle += 2.0 * pi;
+        }
+        return angle;
+    }
+
+    static double applyMinimumMagnitude(double value, double minimum) {
+        if (std::abs(value) < 1e-9 || minimum <= 0.0) {
+            return value;
+        }
+        return std::copysign(std::max(std::abs(value), minimum), value);
+    }
+
+    void publishInitialPose() {
+        const double pi = 3.14159265358979323846;
+        geometry_msgs::PoseWithCovarianceStamped initial_pose;
+        initial_pose.header.frame_id = map_frame_;
+        initial_pose.pose.pose.position.x = initial_pose_x_;
+        initial_pose.pose.pose.position.y = initial_pose_y_;
+        initial_pose.pose.pose.position.z = 0.0;
+        initial_pose.pose.pose.orientation =
+            tf::createQuaternionMsgFromYaw(initial_pose_yaw_deg_ * pi / 180.0);
+
+        std::fill(initial_pose.pose.covariance.begin(),
+                  initial_pose.pose.covariance.end(),
+                  0.0);
+        initial_pose.pose.covariance[0] = initial_pose_covariance_xy_;
+        initial_pose.pose.covariance[7] = initial_pose_covariance_xy_;
+        initial_pose.pose.covariance[35] = initial_pose_covariance_yaw_;
+
+        for (int i = 0;
+             ros::ok() && i < initial_pose_publish_count_;
+             ++i) {
+            initial_pose.header.stamp = ros::Time::now();
+            initial_pose_pub_.publish(initial_pose);
+
+            if (i + 1 < initial_pose_publish_count_ &&
+                initial_pose_publish_interval_ > 0.0) {
+                ros::Duration(initial_pose_publish_interval_).sleep();
+            }
+        }
+
+        ROS_INFO(
+            "已向/initialpose发布AMCL初始位姿：x=%.3f，y=%.3f，yaw=%.1f°（%d次）",
+            initial_pose_x_, initial_pose_y_, initial_pose_yaw_deg_,
+            initial_pose_publish_count_);
+    }
+
+    bool getRobotPose(double& x, double& y, double& yaw) {
+        if (tf_listener_ == nullptr) {
+            ROS_ERROR_THROTTLE(1.0, "TF监听器尚未初始化，无法读取AMCL定位。");
+            return false;
+        }
+
+        try {
+            tf::StampedTransform transform;
+            tf_listener_->lookupTransform(
+                map_frame_, base_frame_, ros::Time(0), transform);
+
+            x = transform.getOrigin().x();
+            y = transform.getOrigin().y();
+            yaw = tf::getYaw(transform.getRotation());
+            return std::isfinite(x) &&
+                   std::isfinite(y) &&
+                   std::isfinite(yaw);
+        } catch (const tf::TransformException& ex) {
+            ROS_WARN_THROTTLE(
+                1.0,
+                "读取AMCL定位失败（%s -> %s）：%s",
+                map_frame_.c_str(),
+                base_frame_.c_str(),
+                ex.what());
+            return false;
+        }
+    }
+
+    bool computeDockingCommand(
+        double robot_x,
+        double robot_y,
+        double robot_yaw,
+        geometry_msgs::Twist& desired_cmd) {
+        desired_cmd = geometry_msgs::Twist();
+
+        const double dx_map = docking_goal_x_ - robot_x;
+        const double dy_map = docking_goal_y_ - robot_y;
+        const double distance_error = std::hypot(dx_map, dy_map);
+
+        // 将地图坐标系位置误差转换到车体坐标系，与局部规划器终点
+        // final_pose位于base_link中的含义一致。
+        const double cos_yaw = std::cos(robot_yaw);
+        const double sin_yaw = std::sin(robot_yaw);
+        const double x_error =
+            cos_yaw * dx_map + sin_yaw * dy_map;
+        const double y_error =
+            -sin_yaw * dx_map + cos_yaw * dy_map;
+
+        const double pi = 3.14159265358979323846;
+        const double target_yaw =
+            docking_goal_yaw_deg_ * pi / 180.0;
+        const double yaw_error =
+            normalizeAngle(target_yaw - robot_yaw);
+
+        if (distance_error <= docking_position_tolerance_ &&
+            std::abs(yaw_error) <= docking_yaw_tolerance_) {
+            ROS_WARN(
+                "停靠完成：当前位置=(%.3f, %.3f)，位置误差=%.3fm，"
+                "方向误差=%.3frad。",
+                robot_x, robot_y, distance_error, yaw_error);
+            return true;
+        }
+
+        double vx = docking_linear_x_gain_ * x_error;
+        double vy = docking_linear_y_gain_ * y_error;
+        double wz = docking_angular_gain_ * yaw_error;
+
+        if (std::abs(x_error) <=
+            docking_position_tolerance_ * 0.65) {
+            vx = 0.0;
+        }
+        if (std::abs(y_error) <=
+            docking_position_tolerance_ * 0.65) {
+            vy = 0.0;
+        }
+        if (std::abs(yaw_error) <= docking_yaw_tolerance_) {
+            wz = 0.0;
+        }
+
+        vx = applyMinimumMagnitude(vx, docking_min_linear_speed_);
+        vy = applyMinimumMagnitude(vy, docking_min_linear_speed_);
+        wz = applyMinimumMagnitude(wz, docking_min_angular_speed_);
+
+        desired_cmd.linear.x =
+            clamp(vx, -docking_max_vel_x_, docking_max_vel_x_);
+        desired_cmd.linear.y =
+            clamp(vy, -docking_max_vel_y_, docking_max_vel_y_);
+        desired_cmd.angular.z =
+            clamp(wz,
+                  -docking_max_vel_theta_,
+                  docking_max_vel_theta_);
+        return false;
+    }
+
+    void applyDockingAccelerationLimits(
+        const geometry_msgs::Twist& desired_cmd,
+        double dt) {
+        dt = clamp(dt, 0.01, 0.20);
+
+        const double max_delta_x = docking_acc_lim_x_ * dt;
+        const double max_delta_y = docking_acc_lim_y_ * dt;
+        const double max_delta_theta = docking_acc_lim_theta_ * dt;
+
+        // 以巡线最后一次实际指令twist_为初值，保证接管时速度连续，
+        // 不先清零，也不产生人为停顿。
+        twist_.linear.x = docking_acc_lim_x_ > 0.0
+            ? clamp(desired_cmd.linear.x,
+                    twist_.linear.x - max_delta_x,
+                    twist_.linear.x + max_delta_x)
+            : desired_cmd.linear.x;
+        twist_.linear.y = docking_acc_lim_y_ > 0.0
+            ? clamp(desired_cmd.linear.y,
+                    twist_.linear.y - max_delta_y,
+                    twist_.linear.y + max_delta_y)
+            : desired_cmd.linear.y;
+        twist_.angular.z = docking_acc_lim_theta_ > 0.0
+            ? clamp(desired_cmd.angular.z,
+                    twist_.angular.z - max_delta_theta,
+                    twist_.angular.z + max_delta_theta)
+            : desired_cmd.angular.z;
+    }
+
+    bool runDockingControl() {
+        ros::Rate control_rate(docking_control_rate_);
+        ros::Time last_control_time = ros::Time::now();
+
+        while (ros::ok()) {
+            double robot_x = 0.0;
+            double robot_y = 0.0;
+            double robot_yaw = 0.0;
+
+            if (!getRobotPose(robot_x, robot_y, robot_yaw)) {
+                ROS_ERROR("停靠阶段无法获取AMCL定位，安全停车。");
+                stopRobot();
+                return false;
+            }
+
+            geometry_msgs::Twist desired_cmd;
+            if (computeDockingCommand(
+                    robot_x, robot_y, robot_yaw, desired_cmd)) {
+                stopRobot();
+                return true;
+            }
+
+            const ros::Time now = ros::Time::now();
+            double dt = (now - last_control_time).toSec();
+            last_control_time = now;
+            applyDockingAccelerationLimits(desired_cmd, dt);
+            cmd_pub_.publish(twist_);
+
+            ROS_INFO_THROTTLE(
+                0.5,
+                "纯PP停靠中：当前位置=(%.3f, %.3f, %.1f°)，"
+                "cmd=(%.3f, %.3f, %.3f)",
+                robot_x, robot_y,
+                robot_yaw * 180.0 / 3.14159265358979323846,
+                twist_.linear.x,
+                twist_.linear.y,
+                twist_.angular.z);
+
+            control_rate.sleep();
+        }
+
+        stopRobot();
+        return false;
     }
 
     // 双边巡线逻辑
@@ -397,7 +849,7 @@ private:
         out_.write(cropped);
     }
 
-    // 右点追踪逻辑
+    // 右点追踪逻辑：直接沿用原始line_left实现
     void runRightPointTracking(Mat& gray_img, Mat& cropped) {
         displayStream_.str("");
         if (!point_forward_) {
@@ -410,7 +862,7 @@ private:
             // 旋转到位后切换模式
             pose_client_.call(pose_);
             // ROS_INFO("角度%f,位姿%f",out_turn_angel_,pose_.response.pose_at[2]);
-            if (pose_.response.pose_at[2] > -out_turn_angel_) {
+            if (pose_.response.pose_at[2] < out_turn_angel_) {
                 right_point_start_ = false;
                 double_line_ = true;
                 x_max_ = 0.5;
@@ -448,8 +900,9 @@ private:
     }
 
     // 正常巡线逻辑
-    void runNormalTracking(Mat& gray_img, Mat& cropped) {
+    bool runNormalTracking(Mat& gray_img, Mat& cropped, bool enable_lost_turn = true) {
         displayStream_.str("");
+        // 直接沿用原始line_left：从左下区域寻找左侧白线。
         vector<Point> start_points = find_track_edge(gray_img, 300, 70, cropped);
         RaceTrack racetrack;  // 现在RaceTrack已声明，可正常使用
 
@@ -476,29 +929,45 @@ private:
                           << " D: " << diff*d_ 
                           << " 角速度: " << twist_.angular.z;
             putText(cropped, displayStream_.str(), Point(50, 50),FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 1);
+            out_.write(cropped);
+            return true;
         } else {
-            // 保留原来的连续5帧丢线容错，避免单帧识别波动引起误转。
-            trace_failed_count_++;
-            if (trace_failed_count_ > 5) {
-                // ROS约定 angular.z > 0 为逆时针旋转，也就是向左转。
-                // 使用 abs() 后，YAML中的 out_turn 写正值或负值都能保证向左。
-                twist_.linear.x = out_forward_;
+            if (!enable_lost_turn) {
+                // 初始找线阶段视野内没有线是正常情况，不能累计丢线次数，
+                // 也不能触发固定左转；始终以x_max_保持正向直行。
+                trace_failed_count_ = 0;
+                twist_.linear.x = x_max_;
                 twist_.linear.y = 0.0;
-                twist_.angular.z = std::abs(out_turn_);
+                twist_.angular.z = 0.0;
 
-                if (trace_failed_count_ == 6) {
-                    ROS_INFO("左线连续丢失，开始固定左转：线速度=%.3f，角速度=%.3f",
-                             twist_.linear.x, twist_.angular.z);
-                }
-
-                displayStream_ << "左线丢失，固定左转"
-                               << " 线速度: " << twist_.linear.x
-                               << " 角速度: " << twist_.angular.z;
+                displayStream_ << "初始直行找线"
+                               << " 线速度: " << twist_.linear.x;
                 putText(cropped, displayStream_.str(), Point(50, 50),
-                        FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 165, 255), 1);
+                        FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 255), 1);
+            } else {
+                // 保留原来的连续5帧丢线容错，避免单帧识别波动引起误转。
+                trace_failed_count_++;
+                if (trace_failed_count_ > 5) {
+                    // 原始line_left逻辑：angular.z > 0，丢线后固定左转。
+                    twist_.linear.x = out_forward_;
+                    twist_.linear.y = 0.0;
+                    twist_.angular.z = std::abs(out_turn_);
+
+                    if (trace_failed_count_ == 6) {
+                        ROS_INFO("左线连续丢失，开始固定左转：线速度=%.3f，角速度=%.3f",
+                                 twist_.linear.x, twist_.angular.z);
+                    }
+
+                    displayStream_ << "左线丢失，固定左转"
+                                   << " 线速度: " << twist_.linear.x
+                                   << " 角速度: " << twist_.angular.z;
+                    putText(cropped, displayStream_.str(), Point(50, 50),
+                            FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 165, 255), 1);
+                }
             }
         }
         out_.write(cropped);
+        return false;
     }
 
     // 工具函数：数值 clamping
@@ -509,45 +978,37 @@ private:
 
     // 图像处理：阈值化
     void threshold_image(Mat& gray) {
-        int adaptive_block = 45;
-        int adaptive_c = -15;
-        int min_contour_area = 250;
-
         Mat binary;
-        adaptiveThreshold(gray, binary, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY, adaptive_block, adaptive_c);
+        adaptiveThreshold(
+            gray,
+            binary,
+            255,
+            ADAPTIVE_THRESH_MEAN_C,
+            THRESH_BINARY,
+            adaptive_block_,
+            adaptive_c_
+        );
+
         vector<vector<Point>> contours;
         vector<Vec4i> hierarchy;
         findContours(binary, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
         Mat denoised = Mat::zeros(binary.size(), CV_8UC1);
         for (size_t i = 0; i < contours.size(); i++) {
-            if (contourArea(contours[i]) > min_contour_area) {
+            if (contourArea(contours[i]) > min_contour_area_) {
                 drawContours(denoised, contours, i, Scalar(255), FILLED);
             }
         }
+
         gray = denoised.clone();
     }
 
-    // 停车检测
-    bool stop_car(Mat& gray, int& point, Mat& visual_img) {
-        int white_count = 0;
-        for (int y = 254; y >= 227; y--) {
-            for (int x = 1; x < 639; x++) {
-                if (gray.at<uchar>(y, x) == 255) {
-                    white_count++;
-                    circle(visual_img, Point(x, y), 2, Scalar(0, 0, 0), -1);
-                }
-            }
-        }
-        point = white_count;
-        return white_count > 2058;
-    }
-
     // 寻找赛道边缘起点
-    vector<Point> find_track_edge(Mat& gray_img, int bottom_trace_end, int right_trace_end, Mat& visual_img) {
+    vector<Point> find_track_edge(Mat& gray_img, int bottom_trace_end, int left_trace_end, Mat& visual_img) {
         bool is_now_white = false;
         vector<Point> maybe_start_point;
 
-        // 底部寻找
+        // 原始line_left：从左向右寻找左侧白线的右边缘。
         for (int i = 1; i < bottom_trace_end; i++) {
             if (!is_now_white && gray_img.at<uchar>(269, i) == 255) {
                 is_now_white = true;
@@ -559,9 +1020,9 @@ private:
             }
         }
 
-        // 左部寻找
+        // 原始line_left：同时从图像左边界寻找起点。
         is_now_white = true;
-        for (int i = 269; i > right_trace_end; i--) {
+        for (int i = 269; i > left_trace_end; i--) {
             if (is_now_white && gray_img.at<uchar>(i, 1) == 0) {
                 is_now_white = false;
             }
@@ -594,10 +1055,11 @@ private:
                     bool left_check = (cand_x2 > 1);
                     bool right_check = (cand_x < width - 1);
 
+                    // 原始line_left：记录左侧白线的右边缘。
                     if (right_check && gray_img.at<uchar>(center_y, cand_x) == 255 && gray_img.at<uchar>(center_y, cand_x + 1) == 0) {
                         racetracks[idx].points.emplace_back(cand_x, center_y);
-                        left_found = false;
                         right_found = true;
+                        left_found = false;
                         center_x = cand_x;
                         break;
                     }
@@ -669,7 +1131,7 @@ private:
         return false;
     }
 
-    // 寻找右边缘
+    // 寻找右边缘：直接沿用原始line_left实现
     bool find_right_edge(Mat gray_img, Point& right_point, Mat& visualizeImg) {
         bool is_now_white = false;
         vector<Point> maybe_right_point;
@@ -843,7 +1305,7 @@ private:
             double center_offset =
                 center_distance + (y - 140.0) * 1.40;
 
-            // 根据左侧边线推算赛道中线
+            // 原始line_left：根据左侧边线向右推算赛道中线
             double estimated_center_x =
                 traced_points[i].x + center_offset;
 

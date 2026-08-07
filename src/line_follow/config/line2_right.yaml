@@ -1,0 +1,81 @@
+# line2_right 独立参数
+# 由 line_dependence.launch 加载到 /line2_right 命名空间。
+
+# ==================== 视觉巡线 ====================
+center_distance: 240
+
+right_P: 0.015
+right_I: 0.05
+right_D: 0.04
+integration_limit: 150.0
+
+leftpoint_p: 0.004
+leftpoint_I: 0.05
+leftpoint_D: 0.017
+
+double_P: 0.004
+double_I: 0.055
+double_D: 0.020
+
+out_turn_angel: -1.3
+x_max_: 1.0
+out_forward: 0.45  # 丢线右转时的前进速度
+out_turn: 1.5      # 固定右转角速度大小，代码内部取负值
+
+adaptive_block: 45
+adaptive_c: -22
+min_contour_area: 250
+
+# 相机标定文件；需要时可直接修改
+calibration_file: /home/ucar/ucar_ws_copy/src/line_follow/camera_info/pinhole.yaml
+
+# ==================== AMCL 初始位姿 ====================
+# 每次 line2_right 服务开始巡线前，向 /initialpose 连续发布该位姿。
+map_frame: map
+base_frame: base_link
+
+initial_pose_x: 2.50
+initial_pose_y: 2.60
+initial_pose_yaw_deg: -90.0
+initial_pose_covariance_xy: 0.01
+initial_pose_covariance_yaw: 0.01
+initial_pose_publish_count: 3
+initial_pose_publish_interval: 0.10
+
+# ==================== AMCL 停靠触发条件 ====================
+# 两项同时满足后，视觉巡线无停顿切换为终点纯 PP 位姿停靠：
+# 1. 当前 AMCL x < docking_trigger_max_x
+# 2. 当前点到停靠终点的距离 < docking_trigger_distance
+docking_trigger_max_x: 0.75
+docking_trigger_distance: 0.75
+
+# 固定停靠终点及最终方向
+docking_goal_x: 0.22
+docking_goal_y: 0.25
+docking_goal_yaw_deg: -90.0
+
+# ==================== 纯 PP 位姿停靠 ====================
+docking_control_rate: 30.0
+
+# 到点判定容差；角度单位为 rad
+docking_position_tolerance: 0.025
+docking_yaw_tolerance: 0.05
+
+# 地图系误差转换到 base_link 后的 vx、vy、wz 增益
+docking_linear_x_gain: 2.50
+docking_linear_y_gain: 1.20
+docking_angular_gain: 1.50
+
+# 克服底盘死区的最小非零速度
+docking_min_linear_speed: 0.10
+docking_min_angular_speed: 0.010
+
+# 停靠阶段速度上限
+docking_max_vel_x: 0.90
+docking_max_vel_y: 0.40
+docking_max_vel_theta: 0.90
+
+# 从巡线末帧速度平滑衔接到停靠速度，不插入零速帧
+docking_acc_lim_x: 2.00
+docking_acc_lim_y: 2.00
+docking_acc_lim_theta: 8.00

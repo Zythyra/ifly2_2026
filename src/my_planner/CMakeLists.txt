@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   nav_msgs
   std_msgs
+  std_srvs
 )
 
 
@@ -133,7 +134,11 @@ message(STATUS "OSQP头文件目录：${OSQP_INCLUDE_DIR}")
 ## LIBRARIES: libraries you create in this project that dependent projects also need
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
-catkin_package()
+catkin_package(
+  CATKIN_DEPENDS nav_core pluginlib roscpp tf2 tf2_ros tf2_geometry_msgs
+                 visualization_msgs costmap_2d geometry_msgs nav_msgs
+                 std_msgs std_srvs
+)
 
 ###########
 ## Build ##
@@ -152,6 +157,7 @@ include_directories(
 add_library(my_planner
   src/my_planner.cpp
   src/mpc_controller.cpp
+  src/clearance_path_optimizer.cpp
 )
 
 find_package(Threads REQUIRED)

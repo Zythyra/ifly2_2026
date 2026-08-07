@@ -33,10 +33,17 @@ double_D: 0.020
 out_turn_angel: -1.3
 out_forward: 0.075
 out_turn: -1.0
-x_max_: 0.95
+x_max_: 0.85
 
-out_forward: 0.32   # 丢线右转时的前进速度
-out_turn: 1.5       # 固定右转角速度的大小
+out_turn: 2.0   # 固定右转角速度的大小
+out_forward: 0.4  # 丢线右转时的前进速度
+out_turn: 1.8 # 固定右转角速度的大小
+
+# 图像局部自适应二值化参数（由 line.yaml 配置）
+adaptive_c: -22           # 局部自适应阈值常数C；当前为-22，数值越负阈值越高，通常越能抑制反光区域被误识别成白色
+# 这两个基本不用动
+adaptive_block: 45        # 局部自适应阈值的邻域窗口大小；必须是大于1的奇数，如31、45、51；越大越看重较大范围的局部亮度
+min_contour_area: 250     # 二值化后保留轮廓的最小面积；小于该面积的白色区域会被当作噪声删除，越大去除小反光/噪点越强
 
 # ============================================================
 # 本次新增：检测到停车白线后使用的雷达跟随与停车参数
@@ -70,7 +77,7 @@ lidar_max_invalid_scans: 3        # 连续无效帧达到该值时结束雷达�
 
 start_straight_distance: 0.14 # 从起始停止线向前行驶的距离，单位 m
 start_turn_angular_speed: 1.3 # 进入右半圆前的转弯角速度大小，保持正数
-start_rotate_angle_deg: 60.0       # 前进完成后先原地右转的角度，单位 °
+start_rotate_angle_deg: 60.0       # 原地右转的角度，单位 °
 start_straight_speed: 0.5
 
 # right_P: 0.007

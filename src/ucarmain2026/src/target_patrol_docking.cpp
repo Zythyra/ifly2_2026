@@ -1,12 +1,16 @@
+// 交付构建标识：IFLY2026_FIXED_PATH_PATROL_V8_ALIGN_CENTER_CROSSING_20260805
 #include <ros/ros.h>
 
 #include <actionlib/client/simple_action_client.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <move_base_msgs/MoveBaseAction.h>
+#include <nav_msgs/Path.h>
 #include <ros_nanodet/detect_result_srv.h>
 #include <ros_nanodet/ocr_result_srv.h>
 #include <sensor_msgs/LaserScan.h>
+#include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -17,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <clocale>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
@@ -66,23 +71,17 @@ public:
         pnh_.param("start_yaw_deg", start_yaw_deg_, 0.0);
         pnh_.param("navigation_timeout", navigation_timeout_, 180.0);
 
-        pnh_.param("patrol_forward_speed", patrol_forward_speed_, 0.25);
-        pnh_.param("line_hold_kp", line_hold_kp_, 2.0);
-        pnh_.param("line_hold_max_speed", line_hold_max_speed_, 0.16);
-        pnh_.param("yaw_hold_kp", yaw_hold_kp_, 2.5);
-        pnh_.param("yaw_hold_max_speed", yaw_hold_max_speed_, 0.30);
-        pnh_.param("yaw_pause_threshold_deg", yaw_pause_threshold_deg_, 10.0);
+        pnh_.param("planner_private_namespace", planner_private_namespace_,
+                   std::string("/move_base/MyPlanner"));
+        pnh_.param("patrol_path_spacing", patrol_path_spacing_, 0.02);
+        pnh_.param("patrol_speed_limit", patrol_speed_limit_, 0.60);
+        pnh_.param("normal_navigation_speed_limit",
+                   normal_navigation_speed_limit_, 1.00);
+        pnh_.param("patrol_cancel_timeout", patrol_cancel_timeout_, 3.0);
+        pnh_.param("patrol_interface_timeout", patrol_interface_timeout_, 3.0);
+
         pnh_.param("segment_end_tolerance", segment_end_tolerance_, 0.025);
         pnh_.param("control_rate", control_rate_, 15.0);
-
-        pnh_.param("rotate_kp", rotate_kp_, 3.5);
-        pnh_.param("rotate_min_speed", rotate_min_speed_, 0.15);
-        pnh_.param("rotate_max_speed", rotate_max_speed_, 0.65);
-        pnh_.param("rotate_tolerance_deg", rotate_tolerance_deg_, 2.0);
-        pnh_.param("rotate_stable_frames", rotate_stable_frames_, 3);
-        pnh_.param("rotate_timeout", rotate_timeout_, 12.0);
-        pnh_.param("position_hold_kp", position_hold_kp_, 2.0);
-        pnh_.param("position_hold_max_speed", position_hold_max_speed_, 0.10);
 
         pnh_.param("image_width", image_width_, 640);
         pnh_.param("camera_fx", camera_fx_, 554.256);
@@ -91,11 +90,31 @@ public:
         pnh_.param("settle_time", settle_time_, 0.25);
         pnh_.param("ocr_attempts", ocr_attempts_, 3);
         pnh_.param("ocr_retry_interval", ocr_retry_interval_, 0.12);
+        pnh_.param("ocr_recovery_turn_deg", ocr_recovery_turn_deg_, 30.0);
+        pnh_.param("ocr_recovery_turn_kp", ocr_recovery_turn_kp_, 2.0);
+        pnh_.param("ocr_recovery_turn_min_speed",
+                   ocr_recovery_turn_min_speed_, 0.18);
+        pnh_.param("ocr_recovery_turn_max_speed",
+                   ocr_recovery_turn_max_speed_, 0.45);
+        pnh_.param("ocr_recovery_turn_tolerance_deg",
+                   ocr_recovery_turn_tolerance_deg_, 1.5);
+        pnh_.param("ocr_recovery_turn_stable_frames",
+                   ocr_recovery_turn_stable_frames_, 3);
+        pnh_.param("ocr_recovery_turn_timeout",
+                   ocr_recovery_turn_timeout_, 5.0);
+        pnh_.param("ocr_recovery_settle_time",
+                   ocr_recovery_settle_time_, 0.35);
         pnh_.param("max_detection_duration", max_detection_duration_, 0.50);
         pnh_.param("duplicate_coordinate_distance",
                    duplicate_coordinate_distance_, 0.50);
         pnh_.param("max_track_jump_px", max_track_jump_px_, 140.0);
         pnh_.param("max_lost_frames", max_lost_frames_, 4);
+        pnh_.param("docking_recovery_turn_deg",
+                   docking_recovery_turn_deg_, 30.0);
+        pnh_.param("docking_recovery_detection_attempts",
+                   docking_recovery_detection_attempts_, 3);
+        pnh_.param("docking_recovery_detection_interval",
+                   docking_recovery_detection_interval_, 0.15);
 
         pnh_.param("retreat_line_tolerance", retreat_line_tolerance_, 0.025);
         pnh_.param("retreat_slow_distance", retreat_slow_distance_, 0.15);
@@ -132,6 +151,12 @@ public:
             nh_.serviceClient<ros_nanodet::ocr_result_srv>("/nanodet_ocr");
         set_speed_client_ =
             nh_.serviceClient<ucarmain2026::set_speed>("/set_speed");
+        patrol_path_publisher_ = nh_.advertise<nav_msgs::Path>(
+            planner_private_namespace_ + "/patrol_path", 1, true);
+        patrol_path_lock_client_ = nh_.serviceClient<std_srvs::SetBool>(
+            planner_private_namespace_ + "/lock_patrol_path");
+        controller_reset_client_ = nh_.serviceClient<std_srvs::Trigger>(
+            planner_private_namespace_ + "/reset_controller_state");
         scan_subscriber_ =
             nh_.subscribe(scan_topic_, 1, &TargetPatrolDocking::scanCallback, this);
         ROS_INFO("车头向前左侧三分之二画面找板：现实目标=%s，仿真目标=%s",
@@ -142,6 +167,20 @@ public:
                  "停靠导航点距墙%.2fm",
                  room_min_x_, room_max_x_, room_min_y_, room_max_y_,
                  docking_standoff_);
+        ROS_WARN("IFLY2026_FIXED_PATH_PATROL_V8_ALIGN_CENTER_CROSSING_20260805："
+                 "target_patrol_docking 固定move_base路线巡检版已启动。"
+                 "巡检速度=%.2f，普通导航速度=%.2f，路径间距=%.3f。",
+                 patrol_speed_limit_, normal_navigation_speed_limit_,
+                 patrol_path_spacing_);
+        ROS_INFO("OCR单字分类：食→食品，日/用→日用品，"
+                 "电/子/产/生→电子产品；"
+                 "仅识别到品/加/工/车/间时逆时针转%.1f度复识一次。",
+                 ocr_recovery_turn_deg_);
+        ROS_INFO("停靠点视觉恢复：首次完全看不到板时，"
+                 "按到点朝向依次扫描左侧+%.1f度和右侧-%.1f度；"
+                 "找到后覆盖旧坐标并重新停靠。",
+                 docking_recovery_turn_deg_,
+                 docking_recovery_turn_deg_);
     }
 
     ~TargetPatrolDocking() {
@@ -158,29 +197,26 @@ public:
                             "初始巡检点")) {
             return false;
         }
+        setShadowModeActiveOnce();
         if (!openCamera()) return false;
 
         for (std::size_t index = 0; index < segments_.size() && ros::ok();) {
             current_segment_index_ = static_cast<int>(index);
-            const Segment& segment = segments_[index];
-
-            if (!rotateToYaw(segment.travel_yaw)) {
-                ROS_ERROR("进入第%zu段前无法固定车头朝向", index + 1);
-                return false;
-            }
-
             const SegmentResult result = patrolSegment(index);
             if (result == SEGMENT_MISSION_COMPLETE) {
+                finishPatrolMode();
                 printSummary(true);
                 return true;
             }
             if (result == SEGMENT_ABORTED) {
+                finishPatrolMode();
                 printSummary(false);
                 return false;
             }
             ++index;
         }
 
+        finishPatrolMode();
         stopRobot();
         closeCamera();
         const bool success = real_docked_ && simulation_docked_;
@@ -268,6 +304,16 @@ private:
             : valid(false), segment_index(-1), category("unknown") {}
     };
 
+    struct PatrolCheckpoint {
+        bool valid;
+        int segment_index;
+        double stopped_progress;
+        Pose2D stopped_pose;
+
+        PatrolCheckpoint()
+            : valid(false), segment_index(-1), stopped_progress(0.0) {}
+    };
+
     struct BoardBoundaryEstimate {
         bool valid;
         WallType wall;
@@ -290,19 +336,40 @@ private:
         DETECTION_ABORT
     };
 
+    enum PatrolStartResult {
+        PATROL_STARTED,
+        PATROL_ALREADY_COMPLETE,
+        PATROL_START_FAILED
+    };
+
     static bool isValidCategory(const std::string& category) {
         return category == "food" || category == "daily" ||
                category == "electronic";
     }
 
     static std::string classifyText(const std::string& text) {
-        if (text.find("食品") != std::string::npos) return "food";
-        if (text.find("日用品") != std::string::npos) return "daily";
-        if (text.find("电子") != std::string::npos ||
-            text.find("生产") != std::string::npos) {
+        // OCR可能因为停车过晚只读到类别名称中的一部分，因此三个类别
+        // 都按任意一个关键字命中。优先级保持为食品、日用品、电子产品。
+        if (text.find("食") != std::string::npos) return "food";
+        if (text.find("日") != std::string::npos ||
+            text.find("用") != std::string::npos) {
+            return "daily";
+        }
+        if (text.find("电") != std::string::npos ||
+            text.find("子") != std::string::npos ||
+            text.find("产") != std::string::npos ||
+            text.find("生") != std::string::npos) {
             return "electronic";
         }
         return "unknown";
+    }
+
+    static bool hasWorkshopFragment(const std::string& text) {
+        return text.find("品") != std::string::npos ||
+               text.find("加") != std::string::npos ||
+               text.find("工") != std::string::npos ||
+               text.find("车") != std::string::npos ||
+               text.find("间") != std::string::npos;
     }
 
     static const char* categoryChinese(const std::string& category) {
@@ -313,19 +380,44 @@ private:
     }
 
     void normalizeParameters() {
-        patrol_forward_speed_ = std::fabs(patrol_forward_speed_);
-        line_hold_kp_ = std::fabs(line_hold_kp_);
-        line_hold_max_speed_ = std::fabs(line_hold_max_speed_);
-        yaw_hold_kp_ = std::fabs(yaw_hold_kp_);
-        yaw_hold_max_speed_ = std::fabs(yaw_hold_max_speed_);
-        rotate_kp_ = std::fabs(rotate_kp_);
-        rotate_min_speed_ = std::fabs(rotate_min_speed_);
-        rotate_max_speed_ =
-            std::max(std::fabs(rotate_max_speed_), rotate_min_speed_);
-        position_hold_kp_ = std::fabs(position_hold_kp_);
-        position_hold_max_speed_ = std::fabs(position_hold_max_speed_);
+        if (!planner_private_namespace_.empty() &&
+            planner_private_namespace_[0] != '/') {
+            planner_private_namespace_ = "/" + planner_private_namespace_;
+        }
+        while (planner_private_namespace_.size() > 1 &&
+               planner_private_namespace_.back() == '/') {
+            planner_private_namespace_.pop_back();
+        }
+        patrol_path_spacing_ = std::max(0.005, std::fabs(patrol_path_spacing_));
+        patrol_speed_limit_ = std::max(0.05, std::fabs(patrol_speed_limit_));
+        normal_navigation_speed_limit_ =
+            std::max(0.05, std::fabs(normal_navigation_speed_limit_));
+        patrol_cancel_timeout_ = std::max(0.5, patrol_cancel_timeout_);
+        patrol_interface_timeout_ = std::max(0.5, patrol_interface_timeout_);
         duplicate_coordinate_distance_ =
             std::fabs(duplicate_coordinate_distance_);
+        ocr_recovery_turn_deg_ = clampValue(
+            std::fabs(ocr_recovery_turn_deg_), 1.0, 180.0);
+        ocr_recovery_turn_kp_ = std::fabs(ocr_recovery_turn_kp_);
+        ocr_recovery_turn_min_speed_ =
+            std::fabs(ocr_recovery_turn_min_speed_);
+        ocr_recovery_turn_max_speed_ = std::max(
+            std::fabs(ocr_recovery_turn_max_speed_),
+            ocr_recovery_turn_min_speed_);
+        ocr_recovery_turn_tolerance_deg_ = std::max(
+            0.2, std::fabs(ocr_recovery_turn_tolerance_deg_));
+        ocr_recovery_turn_stable_frames_ =
+            std::max(1, ocr_recovery_turn_stable_frames_);
+        ocr_recovery_turn_timeout_ =
+            std::max(1.0, ocr_recovery_turn_timeout_);
+        ocr_recovery_settle_time_ =
+            std::max(0.0, ocr_recovery_settle_time_);
+        docking_recovery_turn_deg_ = clampValue(
+            std::fabs(docking_recovery_turn_deg_), 1.0, 90.0);
+        docking_recovery_detection_attempts_ =
+            std::max(1, docking_recovery_detection_attempts_);
+        docking_recovery_detection_interval_ =
+            std::max(0.0, docking_recovery_detection_interval_);
         camera_fx_ = std::fabs(camera_fx_);
         docking_standoff_ = std::fabs(docking_standoff_);
         retreat_line_tolerance_ = std::fabs(retreat_line_tolerance_);
@@ -343,7 +435,6 @@ private:
         docking_yaw_kp_ = std::fabs(docking_yaw_kp_);
         docking_yaw_max_speed_ = std::fabs(docking_yaw_max_speed_);
         front_lidar_half_window_ = std::max(0, front_lidar_half_window_);
-        rotate_stable_frames_ = std::max(1, rotate_stable_frames_);
         lateral_stable_frames_ = std::max(1, lateral_stable_frames_);
     }
 
@@ -352,8 +443,8 @@ private:
         // 四条巡检基准线保持不变：
         // y=4.25、x=4.75、y=2.75、x=0.25。
         // 5cm仅用于当前巡检段的末端：在到达下一条巡检线前提前停车。
-        // 转向后，publishPatrolCommand()现有的linear.y守线修正会让小车
-        // 一边沿新方向前进，一边横移回到下一条巡检基准线上。
+        // 每一段都由外部固定Path和move_base启动，换向及重新贴线由
+        // MyPlanner的初始对准和路径跟踪完成。
         addSegment("上墙巡检", 0.25, 4.25, 4.70, 4.25,
                    0.0, 0.5 * kPi, WALL_TOP);
         addSegment("右墙巡检", 4.75, 4.25, 4.75, 2.80,
@@ -400,6 +491,7 @@ private:
             return false;
         }
         if (max_detection_duration_ <= 0.0 ||
+            planner_private_namespace_.empty() ||
             camera_fx_ <= 0.0 ||
             docking_standoff_ <= 0.0 ||
             duplicate_coordinate_distance_ <= 0.0 ||
@@ -421,7 +513,7 @@ private:
     }
 
     bool waitForDependencies() {
-        ROS_INFO("等待move_base、NanoDet、OCR和运动控制服务...");
+        ROS_INFO("等待move_base、NanoDet、OCR、运动控制和固定巡检路径接口...");
         while (ros::ok() && !move_base_.waitForServer(ros::Duration(3.0))) {
             ROS_INFO("仍在等待move_base");
         }
@@ -439,6 +531,27 @@ private:
         if (!ros::service::waitForService("/set_speed",
                                           ros::Duration(20.0))) {
             ROS_ERROR("等待/set_speed超时");
+            return false;
+        }
+        if (!patrol_path_lock_client_.waitForExistence(ros::Duration(20.0))) {
+            ROS_ERROR("等待%s/lock_patrol_path超时",
+                      planner_private_namespace_.c_str());
+            return false;
+        }
+        if (!controller_reset_client_.waitForExistence(ros::Duration(20.0))) {
+            ROS_ERROR("等待%s/reset_controller_state超时",
+                      planner_private_namespace_.c_str());
+            return false;
+        }
+        const ros::WallTime subscriber_deadline =
+            ros::WallTime::now() + ros::WallDuration(5.0);
+        while (ros::ok() && patrol_path_publisher_.getNumSubscribers() == 0 &&
+               ros::WallTime::now() < subscriber_deadline) {
+            ros::Duration(0.05).sleep();
+        }
+        if (patrol_path_publisher_.getNumSubscribers() == 0) {
+            ROS_ERROR("固定巡检路径话题%s/patrol_path没有订阅者",
+                      planner_private_namespace_.c_str());
             return false;
         }
         return true;
@@ -472,6 +585,219 @@ private:
         y = clampValue(y, room_min_y_, room_max_y_);
     }
 
+    std::string plannerParameter(const std::string& name) const {
+        return planner_private_namespace_ + "/" + name;
+    }
+
+    void setPlannerRuntimeParameters(bool patrol_mode) {
+        const double speed = patrol_mode
+                                 ? patrol_speed_limit_
+                                 : normal_navigation_speed_limit_;
+        ros::param::set(plannerParameter("c2_max_reference_speed"), speed);
+        ros::param::set(plannerParameter("mpc_max_vx"), speed);
+        ros::param::set(
+            plannerParameter("mpc_max_translational_speed"), speed);
+        ros::param::set(plannerParameter("max_vel_x"), speed);
+        ros::param::set(
+            plannerParameter("enable_path_replanning"), !patrol_mode);
+        ROS_WARN("局部规划器已切换为%s参数：四项速度=%.2f，"
+                 "enable_path_replanning=%s。",
+                 patrol_mode ? "巡检" : "普通导航",
+                 speed, patrol_mode ? "false" : "true");
+    }
+
+    void setShadowModeActiveOnce() {
+        if (shadow_mode_has_been_disabled_) return;
+        ros::param::set(
+            plannerParameter("clearance_optimizer/shadow_mode"), false);
+        shadow_mode_has_been_disabled_ = true;
+        ROS_WARN("已到达第一条路线起点：shadow_mode=false；"
+                 "本次任务后续不再修改该参数。");
+    }
+
+    bool requestPatrolPathLock(bool lock_path) {
+        std_srvs::SetBool service;
+        service.request.data = lock_path;
+        if (!patrol_path_lock_client_.call(service)) {
+            ROS_ERROR("调用%s/lock_patrol_path失败",
+                      planner_private_namespace_.c_str());
+            return false;
+        }
+        if (!service.response.success) {
+            ROS_WARN("%s固定巡检路径暂未成功：%s",
+                     lock_path ? "锁定" : "解除",
+                     service.response.message.c_str());
+            return false;
+        }
+        patrol_path_locked_ = lock_path;
+        return true;
+    }
+
+    bool resetPlannerControllerState() {
+        std_srvs::Trigger service;
+        if (!controller_reset_client_.call(service) ||
+            !service.response.success) {
+            ROS_ERROR("复位局部规划器控制状态失败：%s",
+                      service.response.message.c_str());
+            return false;
+        }
+        ROS_INFO("局部规划器控制状态已复位：%s",
+                 service.response.message.c_str());
+        return true;
+    }
+
+    bool cancelPatrolGoalAndWait() {
+        if (!patrol_goal_active_) return true;
+
+        move_base_.cancelGoal();
+        const bool terminal = move_base_.waitForResult(
+            ros::Duration(patrol_cancel_timeout_));
+        const std::string state = move_base_.getState().toString();
+        patrol_goal_active_ = false;
+        stopRobot();
+
+        if (!terminal) {
+            ROS_ERROR("取消巡检move_base目标超时，当前状态=%s",
+                      state.c_str());
+            return false;
+        }
+        ROS_INFO("巡检move_base目标已停止：%s", state.c_str());
+        return true;
+    }
+
+    void finishPatrolMode() {
+        if (patrol_goal_active_) {
+            cancelPatrolGoalAndWait();
+        }
+        if (patrol_path_locked_) {
+            requestPatrolPathLock(false);
+        }
+        setPlannerRuntimeParameters(false);
+    }
+
+    bool prepareNormalNavigation() {
+        if (patrol_goal_active_ && !cancelPatrolGoalAndWait()) {
+            return false;
+        }
+        if (patrol_path_locked_ && !requestPatrolPathLock(false)) {
+            return false;
+        }
+        setPlannerRuntimeParameters(false);
+        return resetPlannerControllerState();
+    }
+
+    nav_msgs::Path buildRemainingPatrolPath(
+            const Segment& segment,
+            const Pose2D& pose,
+            double& start_progress,
+            double& remaining_distance) {
+        start_progress = clampValue(
+            segmentProgress(segment, pose), 0.0, segment.length);
+        if (patrol_checkpoint_.valid &&
+            patrol_checkpoint_.segment_index == current_segment_index_) {
+            // 停靠导航可能使车辆沿巡检线方向产生少量回退。剩余路线的
+            // 起点不得退到停车断点之前，避免重复巡检已经扫过的区域。
+            start_progress = std::max(
+                start_progress,
+                clampValue(patrol_checkpoint_.stopped_progress,
+                           0.0, segment.length));
+        }
+        remaining_distance = segment.length - start_progress;
+
+        nav_msgs::Path path;
+        path.header.frame_id = map_frame_;
+        path.header.stamp = ros::Time::now();
+        path.header.seq = ++patrol_path_sequence_;
+
+        if (remaining_distance <= segment_end_tolerance_) {
+            return path;
+        }
+
+        const int intervals = std::max(
+            1, static_cast<int>(
+                   std::ceil(remaining_distance / patrol_path_spacing_)));
+        path.poses.reserve(static_cast<std::size_t>(intervals + 1));
+        tf2::Quaternion quaternion;
+        quaternion.setRPY(0.0, 0.0, segment.travel_yaw);
+
+        for (int i = 0; i <= intervals; ++i) {
+            const double ratio =
+                static_cast<double>(i) / static_cast<double>(intervals);
+            const double progress =
+                start_progress + ratio * remaining_distance;
+            geometry_msgs::PoseStamped point;
+            point.header = path.header;
+            point.pose.position.x =
+                segment.start_x + progress * segment.dir_x;
+            point.pose.position.y =
+                segment.start_y + progress * segment.dir_y;
+            point.pose.orientation = tf2::toMsg(quaternion);
+            path.poses.push_back(point);
+        }
+        return path;
+    }
+
+    PatrolStartResult startPatrolFromPose(
+            const Segment& segment,
+            const Pose2D& pose) {
+        double start_progress = 0.0;
+        double remaining_distance = 0.0;
+        nav_msgs::Path path = buildRemainingPatrolPath(
+            segment, pose, start_progress, remaining_distance);
+        if (remaining_distance <= segment_end_tolerance_) {
+            ROS_INFO("%s剩余距离仅%.3fm，直接判定本段完成。",
+                     segment.name.c_str(), remaining_distance);
+            return PATROL_ALREADY_COMPLETE;
+        }
+
+        // 每次开始或断点恢复都先解除旧锁。规划器解除锁时会清空旧的
+        // 暂存路线，因此随后SetBool(true)成功必然对应本次新发布的Path。
+        if (patrol_path_locked_ && !requestPatrolPathLock(false)) {
+            return PATROL_START_FAILED;
+        }
+        if (!resetPlannerControllerState()) {
+            return PATROL_START_FAILED;
+        }
+        setPlannerRuntimeParameters(true);
+
+        const ros::WallTime deadline =
+            ros::WallTime::now() + ros::WallDuration(patrol_interface_timeout_);
+        bool locked = false;
+        do {
+            path.header.stamp = ros::Time::now();
+            for (std::size_t i = 0; i < path.poses.size(); ++i) {
+                path.poses[i].header = path.header;
+            }
+            patrol_path_publisher_.publish(path);
+            ros::Duration(0.08).sleep();
+            locked = requestPatrolPathLock(true);
+            if (!locked) ros::Duration(0.08).sleep();
+        } while (ros::ok() && !locked &&
+                 ros::WallTime::now() < deadline);
+
+        if (!locked) {
+            setPlannerRuntimeParameters(false);
+            ROS_ERROR("%s固定路线未能在%.1f秒内被局部规划器确认",
+                      segment.name.c_str(), patrol_interface_timeout_);
+            return PATROL_START_FAILED;
+        }
+
+        move_base_msgs::MoveBaseGoal goal;
+        goal.target_pose = path.poses.back();
+        goal.target_pose.header.stamp = ros::Time::now();
+        move_base_.sendGoal(goal);
+        patrol_goal_active_ = true;
+        patrol_checkpoint_.valid = false;
+        ROS_INFO("%s已异步启动：断点进度=%.3f/%.3fm，剩余=%.3fm，"
+                 "固定路径点数=%zu，终点=(%.3f, %.3f, %.1f度)。",
+                 segment.name.c_str(), start_progress, segment.length,
+                 remaining_distance, path.poses.size(),
+                 goal.target_pose.pose.position.x,
+                 goal.target_pose.pose.position.y,
+                 segment.travel_yaw * 180.0 / kPi);
+        return PATROL_STARTED;
+    }
+
     bool navigateToPose(double x, double y, double yaw,
                         const std::string& purpose) {
         clampToRoom(x, y);
@@ -481,6 +807,7 @@ private:
             return false;
         }
 
+        if (!prepareNormalNavigation()) return false;
         stopRobot();
 
         move_base_msgs::MoveBaseGoal goal;
@@ -514,96 +841,9 @@ private:
         return true;
     }
 
-    bool rotateToYaw(double desired_yaw) {
-        Pose2D anchor;
-        if (!getRobotPose(anchor)) return false;
-        const ros::WallTime deadline =
-            ros::WallTime::now() + ros::WallDuration(rotate_timeout_);
-        int stable_frames = 0;
-        ros::Rate rate(20.0);
-
-        while (ros::ok() && ros::WallTime::now() < deadline) {
-            Pose2D pose;
-            if (!getRobotPose(pose)) {
-                publishVelocity(0.0, 0.0, 0.0);
-                rate.sleep();
-                continue;
-            }
-            const double yaw_error = normalizeAngle(desired_yaw - pose.yaw);
-            const double world_error_x = anchor.x - pose.x;
-            const double world_error_y = anchor.y - pose.y;
-            const double base_error_x =
-                std::cos(pose.yaw) * world_error_x +
-                std::sin(pose.yaw) * world_error_y;
-            const double base_error_y =
-                -std::sin(pose.yaw) * world_error_x +
-                std::cos(pose.yaw) * world_error_y;
-
-            double angular_z =
-                clampValue(rotate_kp_ * yaw_error,
-                           -rotate_max_speed_, rotate_max_speed_);
-            if (std::fabs(yaw_error) >
-                    rotate_tolerance_deg_ * kPi / 180.0 &&
-                std::fabs(angular_z) < rotate_min_speed_) {
-                angular_z = angular_z >= 0.0
-                                ? rotate_min_speed_ : -rotate_min_speed_;
-            }
-            const double linear_x =
-                clampValue(position_hold_kp_ * base_error_x,
-                           -position_hold_max_speed_,
-                           position_hold_max_speed_);
-            const double linear_y =
-                clampValue(position_hold_kp_ * base_error_y,
-                           -position_hold_max_speed_,
-                           position_hold_max_speed_);
-
-            if (std::fabs(yaw_error) <=
-                rotate_tolerance_deg_ * kPi / 180.0) {
-                ++stable_frames;
-                angular_z = 0.0;
-                if (stable_frames >= rotate_stable_frames_) {
-                    stopRobot();
-                    ROS_INFO("车头已固定为%.1f度",
-                             desired_yaw * 180.0 / kPi);
-                    return true;
-                }
-            } else {
-                stable_frames = 0;
-            }
-            publishVelocity(linear_x, linear_y, angular_z);
-            rate.sleep();
-        }
-        stopRobot();
-        ROS_ERROR("旋转至%.1f度超时", desired_yaw * 180.0 / kPi);
-        return false;
-    }
-
     double segmentProgress(const Segment& segment, const Pose2D& pose) const {
         return (pose.x - segment.start_x) * segment.dir_x +
                (pose.y - segment.start_y) * segment.dir_y;
-    }
-
-    void publishPatrolCommand(const Segment& segment, const Pose2D& pose) {
-        // 顺时针巡检时墙始终位于左侧，因此左法向就是巡检线法向。
-        const double normal_x = -segment.dir_y;
-        const double normal_y = segment.dir_x;
-        const double line_error =
-            (segment.start_x - pose.x) * normal_x +
-            (segment.start_y - pose.y) * normal_y;
-        const double yaw_error =
-            normalizeAngle(segment.travel_yaw - pose.yaw);
-        double linear_x = patrol_forward_speed_;
-        const double linear_y =
-            clampValue(line_hold_kp_ * line_error,
-                       -line_hold_max_speed_, line_hold_max_speed_);
-        const double angular_z =
-            clampValue(yaw_hold_kp_ * yaw_error,
-                       -yaw_hold_max_speed_, yaw_hold_max_speed_);
-        if (std::fabs(yaw_error) >
-            yaw_pause_threshold_deg_ * kPi / 180.0) {
-            linear_x = 0.0;
-        }
-        publishVelocity(linear_x, linear_y, angular_z);
     }
 
     static const char* wallName(WallType wall) {
@@ -765,53 +1005,81 @@ private:
         return selected;
     }
 
+    SegmentResult completePatrolSegment(std::size_t segment_index) {
+        const Segment& segment = segments_[segment_index];
+        patrol_checkpoint_.valid = false;
+        finishPatrolMode();
+        ROS_INFO("%s完成；已恢复普通导航速度%.1f和路径重规划。",
+                 segment.name.c_str(), normal_navigation_speed_limit_);
+        if (hasDeferredRealTargetAfterSegment(segment_index)) {
+            const DetectionResult deferred_result =
+                dockDeferredRealTargetAfterSegment(segment_index);
+            if (deferred_result == DETECTION_MISSION_COMPLETE) {
+                return SEGMENT_MISSION_COMPLETE;
+            }
+            if (deferred_result == DETECTION_ABORT) {
+                return SEGMENT_ABORTED;
+            }
+        }
+        return SEGMENT_COMPLETE;
+    }
+
     SegmentResult patrolSegment(std::size_t segment_index) {
         const Segment& segment = segments_[segment_index];
         ROS_INFO("开始%s：(%.2f, %.2f)→(%.2f, %.2f)，"
-                 "前进朝向%.1f度，墙在车体左侧",
+                 "固定路径由move_base和MyPlanner跟踪；不使用/set_speed巡检。",
                  segment.name.c_str(), segment.start_x, segment.start_y,
-                 segment.end_x, segment.end_y,
-                 segment.travel_yaw * 180.0 / kPi);
-        ros::Rate rate(control_rate_);
+                 segment.end_x, segment.end_y);
 
+        Pose2D start_pose;
+        if (!getRobotPose(start_pose)) return SEGMENT_ABORTED;
+        PatrolStartResult start_result =
+            startPatrolFromPose(segment, start_pose);
+        if (start_result == PATROL_ALREADY_COMPLETE) {
+            return completePatrolSegment(segment_index);
+        }
+        if (start_result == PATROL_START_FAILED) {
+            finishPatrolMode();
+            return SEGMENT_ABORTED;
+        }
+
+        ros::Rate rate(control_rate_);
         while (ros::ok()) {
             ros::spinOnce();
 
-            // 正常情况下，现实目标停靠成功后会立即处理此前记录的
-            // 仿真目标。这里再做一层状态兜底：即使控制流意外返回
-            // 巡检循环，也必须先消费待停靠目标，不能继续沿路线探测。
             if (hasPendingSimulationTarget()) {
                 ROS_INFO("检测到待停靠的已记录仿真目标，暂停巡检并立即前往");
+                if (!cancelPatrolGoalAndWait()) {
+                    finishPatrolMode();
+                    return SEGMENT_ABORTED;
+                }
+                finishPatrolMode();
                 if (!dockPendingSimulationTarget()) {
                     return SEGMENT_ABORTED;
                 }
                 return SEGMENT_MISSION_COMPLETE;
             }
 
+            const actionlib::SimpleClientGoalState state =
+                move_base_.getState();
+            if (state == actionlib::SimpleClientGoalState::SUCCEEDED) {
+                patrol_goal_active_ = false;
+                return completePatrolSegment(segment_index);
+            }
+            if (state.isDone()) {
+                patrol_goal_active_ = false;
+                const std::string state_text = state.toString();
+                finishPatrolMode();
+                ROS_ERROR("%s的move_base目标异常结束：%s",
+                          segment.name.c_str(), state_text.c_str());
+                return SEGMENT_ABORTED;
+            }
+
             Pose2D pose;
             if (!getRobotPose(pose)) {
-                publishVelocity(0.0, 0.0, 0.0);
                 rate.sleep();
                 continue;
             }
-            const double progress = segmentProgress(segment, pose);
-            if (progress >= segment.length - segment_end_tolerance_) {
-                stopRobot();
-                ROS_INFO("%s完成", segment.name.c_str());
-                if (hasDeferredRealTargetAfterSegment(segment_index)) {
-                    const DetectionResult deferred_result =
-                        dockDeferredRealTargetAfterSegment(segment_index);
-                    if (deferred_result == DETECTION_MISSION_COMPLETE) {
-                        return SEGMENT_MISSION_COMPLETE;
-                    }
-                    if (deferred_result == DETECTION_ABORT) {
-                        return SEGMENT_ABORTED;
-                    }
-                }
-                return SEGMENT_COMPLETE;
-            }
-
-            publishPatrolCommand(segment, pose);
 
             std::vector<Box> boxes;
             const bool detection_ok = detectBoxes(boxes);
@@ -820,30 +1088,70 @@ private:
                 continue;
             }
 
-            const int selected =
-                chooseNewBoardBox(boxes, pose);
+            const int selected = chooseNewBoardBox(boxes, pose);
             if (selected < 0) {
                 ROS_INFO_THROTTLE(
                     1.0,
                     "当前NanoDet框均在图像右侧三分之一区域，"
-                    "或位于已记录板的"
-                    "%.2f米重复范围内",
+                    "或位于已记录板的%.2f米重复范围内",
                     duplicate_coordinate_distance_);
                 rate.sleep();
                 continue;
             }
-            const DetectionResult detection_result =
-                handleDetectedBoard(segment_index, segment, pose,
-                                    boxes[static_cast<std::size_t>(selected)]);
-            if (detection_result == DETECTION_MISSION_COMPLETE) {
-                return SEGMENT_MISSION_COMPLETE;
-            }
-            if (detection_result == DETECTION_ABORT) {
+
+            const Box trigger_box =
+                boxes[static_cast<std::size_t>(selected)];
+            if (!cancelPatrolGoalAndWait()) {
+                finishPatrolMode();
                 return SEGMENT_ABORTED;
             }
 
+            Pose2D stopped_pose = pose;
+            getRobotPose(stopped_pose);
+            patrol_checkpoint_.valid = true;
+            patrol_checkpoint_.segment_index =
+                static_cast<int>(segment_index);
+            patrol_checkpoint_.stopped_progress = clampValue(
+                segmentProgress(segment, stopped_pose),
+                0.0, segment.length);
+            patrol_checkpoint_.stopped_pose = stopped_pose;
+            ROS_INFO("已在%s中断点停车：进度=%.3f/%.3fm。",
+                     segment.name.c_str(),
+                     patrol_checkpoint_.stopped_progress,
+                     segment.length);
+
+            const DetectionResult detection_result =
+                handleDetectedBoard(segment_index, segment,
+                                    stopped_pose, trigger_box);
+            if (detection_result == DETECTION_MISSION_COMPLETE) {
+                finishPatrolMode();
+                return SEGMENT_MISSION_COMPLETE;
+            }
+            if (detection_result == DETECTION_ABORT) {
+                finishPatrolMode();
+                return SEGMENT_ABORTED;
+            }
+
+            Pose2D resume_pose;
+            if (!getRobotPose(resume_pose)) {
+                finishPatrolMode();
+                return SEGMENT_ABORTED;
+            }
+            start_result = startPatrolFromPose(segment, resume_pose);
+            if (start_result == PATROL_ALREADY_COMPLETE) {
+                return completePatrolSegment(segment_index);
+            }
+            if (start_result == PATROL_START_FAILED) {
+                finishPatrolMode();
+                return SEGMENT_ABORTED;
+            }
+            ROS_INFO("不执行额外朝向恢复；MyPlanner将按剩余固定路径"
+                     "自行完成初始姿态对准并继续%s。",
+                     segment.name.c_str());
             rate.sleep();
         }
+
+        finishPatrolMode();
         return SEGMENT_ABORTED;
     }
 
@@ -882,6 +1190,47 @@ private:
         OcrRecord ocr = recognizeStaticTarget(trigger_box);
         // 与已经实测稳定的target_scan_test保持一致：以可分类关键词为准。
         // 某些OCR服务版本即使返回了有效文字，success字段也可能未置true。
+        // 若只读到车间名称的通用残片，说明车辆可能因速度较快越过了
+        // 类别文字。此时只执行一次逆时针30度补偿旋转和一次完整OCR。
+        // 复识成功后必须刷新map位姿，保证后面的相机射线使用新朝向。
+        if (ocr.category == "unknown" && hasWorkshopFragment(ocr.text)) {
+            ROS_WARN("OCR只识别到车间通用残片“%s”，"
+                     "未命中类别关键字；准备原地逆时针转%.1f度复识一次",
+                     ocr.text.c_str(), ocr_recovery_turn_deg_);
+
+            Pose2D recovery_pose;
+            if (!rotateCounterClockwiseForOcr(recovery_pose)) {
+                ROS_WARN("OCR补偿旋转失败，本次不再复识，继续%s",
+                         segment.name.c_str());
+                return DETECTION_CONTINUE;
+            }
+            stopped_pose = recovery_pose;
+
+            // 旋转后目标在图像中的位置会变化。优先用新一帧NanoDet框
+            // 作为OCR关联参考；若该帧未返回框，OCR服务仍用上次框尝试。
+            Box retry_reference = ocr.box;
+            std::vector<Box> retry_boxes;
+            if (detectBoxes(retry_boxes) && !retry_boxes.empty()) {
+                const int retry_index = chooseClosestCenterBox(retry_boxes);
+                if (retry_index >= 0) {
+                    retry_reference = retry_boxes[
+                        static_cast<std::size_t>(retry_index)];
+                }
+            } else {
+                ROS_WARN("补偿旋转后NanoDet未返回文字框，"
+                         "仍调用OCR完成唯一一次复识");
+            }
+
+            ocr = recognizeStaticTarget(retry_reference);
+            if (ocr.category == "unknown") {
+                ROS_WARN("补偿旋转后的唯一一次复识仍无法分类：%s；"
+                         "继续%s",
+                         ocr.text.c_str(), segment.name.c_str());
+                return DETECTION_CONTINUE;
+            }
+            ROS_INFO("补偿旋转复识成功：%s，分类=%s",
+                     ocr.text.c_str(), categoryChinese(ocr.category));
+        }
         if (ocr.category == "unknown") {
             ROS_WARN("本次文字无法分类，忽略并继续%s", segment.name.c_str());
             return DETECTION_CONTINUE;
@@ -1008,7 +1357,7 @@ private:
                                 "前往现实目标停靠导航点")) {
                 return DETECTION_ABORT;
             }
-            if (!dockTarget(observation, "现实目标", true)) {
+            if (!dockTarget(real_observation_, "现实目标", true)) {
                 return DETECTION_ABORT;
             }
             real_docked_ = true;
@@ -1027,12 +1376,9 @@ private:
             if (!retreatToPatrolLine(segment)) {
                 return DETECTION_ABORT;
             }
-            if (!rotateToYaw(segment.travel_yaw)) {
-                ROS_ERROR("回到巡检线后无法恢复前进朝向");
-                return DETECTION_ABORT;
-            }
             if (!openCamera()) return DETECTION_ABORT;
-            ROS_INFO("已回到%s，继续寻找仿真目标",
+            ROS_INFO("已回到%s；不额外恢复前进朝向，"
+                     "后续由局部规划器根据剩余路径自行对准",
                      segment.name.c_str());
             return DETECTION_CONTINUE;
         }
@@ -1099,10 +1445,6 @@ private:
                 if (!retreatToPatrolLine(next_segment)) {
                     return DETECTION_ABORT;
                 }
-                if (!rotateToYaw(next_segment.travel_yaw)) {
-                    ROS_ERROR("回到下一条巡检线后无法恢复前进朝向");
-                    return DETECTION_ABORT;
-                }
             } else {
                 ROS_WARN("延后现实目标不在紧邻的下一面墙，"
                          "改用move_base返回下一段起点");
@@ -1161,15 +1503,246 @@ private:
         return true;
     }
 
-    bool dockTarget(const TargetObservation& observation,
+    bool rotateToDockingRecoveryYaw(double target_yaw,
+                                    const std::string& action_name) {
+        const double tolerance =
+            ocr_recovery_turn_tolerance_deg_ * kPi / 180.0;
+        const ros::WallTime deadline = ros::WallTime::now() +
+            ros::WallDuration(ocr_recovery_turn_timeout_);
+        int stable_frames = 0;
+        ros::Rate rate(20.0);
+
+        ROS_INFO("%s：目标朝向=%.1f度",
+                 action_name.c_str(), target_yaw * 180.0 / kPi);
+        while (ros::ok() && ros::WallTime::now() < deadline) {
+            ros::spinOnce();
+            Pose2D pose;
+            if (!getRobotPose(pose)) {
+                publishVelocity(0.0, 0.0, 0.0);
+                stable_frames = 0;
+                rate.sleep();
+                continue;
+            }
+
+            const double yaw_error = normalizeAngle(target_yaw - pose.yaw);
+            if (std::fabs(yaw_error) <= tolerance) {
+                publishVelocity(0.0, 0.0, 0.0);
+                ++stable_frames;
+                if (stable_frames >= ocr_recovery_turn_stable_frames_) {
+                    stopRobot();
+                    ros::Duration(ocr_recovery_settle_time_).sleep();
+                    Pose2D settled_pose = pose;
+                    getRobotPose(settled_pose);
+                    ROS_INFO("%s完成：最终朝向=%.1f度，误差=%.2f度",
+                             action_name.c_str(),
+                             settled_pose.yaw * 180.0 / kPi,
+                             normalizeAngle(
+                                 target_yaw - settled_pose.yaw) *
+                                 180.0 / kPi);
+                    return true;
+                }
+            } else {
+                stable_frames = 0;
+                double angular_z = clampValue(
+                    ocr_recovery_turn_kp_ * yaw_error,
+                    -ocr_recovery_turn_max_speed_,
+                    ocr_recovery_turn_max_speed_);
+                if (std::fabs(angular_z) <
+                    ocr_recovery_turn_min_speed_) {
+                    angular_z = yaw_error >= 0.0
+                                    ? ocr_recovery_turn_min_speed_
+                                    : -ocr_recovery_turn_min_speed_;
+                }
+                publishVelocity(0.0, 0.0, angular_z);
+                ROS_INFO_THROTTLE(
+                    0.5,
+                    "%s：剩余角度=%.2f度，angular.z=%.3f",
+                    action_name.c_str(),
+                    yaw_error * 180.0 / kPi, angular_z);
+            }
+            rate.sleep();
+        }
+
+        stopRobot();
+        ROS_ERROR("%s在%.1f秒内未完成",
+                  action_name.c_str(), ocr_recovery_turn_timeout_);
+        return false;
+    }
+
+    bool detectDockingRecoveryObservation(
+            const TargetObservation& old_observation,
+            const std::string& scan_name,
+            TargetObservation& recovered_observation) {
+        for (int attempt = 0;
+             attempt < docking_recovery_detection_attempts_ && ros::ok();
+             ++attempt) {
+            ros::spinOnce();
+            std::vector<Box> boxes;
+            const bool detection_ok = detectBoxes(boxes);
+            if (!detection_ok || boxes.empty()) {
+                ROS_WARN("%s第%d/%d次未检测到文字板",
+                         scan_name.c_str(), attempt + 1,
+                         docking_recovery_detection_attempts_);
+                ros::Duration(
+                    docking_recovery_detection_interval_).sleep();
+                continue;
+            }
+
+            Pose2D pose;
+            if (!getRobotPose(pose)) {
+                ROS_WARN("%s第%d/%d次检测到框，但无法读取机器人位姿",
+                         scan_name.c_str(), attempt + 1,
+                         docking_recovery_detection_attempts_);
+                ros::Duration(
+                    docking_recovery_detection_interval_).sleep();
+                continue;
+            }
+
+            // 优先使用最接近画面中心、且能生成有效墙面交点的框。
+            std::vector<bool> used(boxes.size(), false);
+            for (std::size_t candidate = 0;
+                 candidate < boxes.size(); ++candidate) {
+                int selected = -1;
+                double best_error =
+                    std::numeric_limits<double>::infinity();
+                for (std::size_t i = 0; i < boxes.size(); ++i) {
+                    if (used[i]) continue;
+                    const double error = std::fabs(
+                        boxes[i].centerX() - 0.5 * image_width_);
+                    if (error < best_error) {
+                        best_error = error;
+                        selected = static_cast<int>(i);
+                    }
+                }
+                if (selected < 0) break;
+                used[static_cast<std::size_t>(selected)] = true;
+
+                BoardBoundaryEstimate board_estimate;
+                if (!estimateBoardBoundary(
+                        pose,
+                        boxes[static_cast<std::size_t>(selected)],
+                        board_estimate)) {
+                    continue;
+                }
+                const int segment_index =
+                    segmentIndexForWall(board_estimate.wall);
+                if (segment_index < 0 ||
+                    !makeDockingObservation(
+                        segment_index,
+                        old_observation.category,
+                        board_estimate,
+                        recovered_observation)) {
+                    continue;
+                }
+
+                ROS_INFO("%s找到文字板：框中心=(%.1f, %.1f)，"
+                         "新墙面坐标=%s(%.3f, %.3f)",
+                         scan_name.c_str(),
+                         boxes[static_cast<std::size_t>(selected)].centerX(),
+                         boxes[static_cast<std::size_t>(selected)].centerY(),
+                         wallName(board_estimate.wall),
+                         board_estimate.x, board_estimate.y);
+                return true;
+            }
+
+            ROS_WARN("%s第%d/%d次虽然检测到%d个框，"
+                     "但都无法生成有效停靠点",
+                     scan_name.c_str(), attempt + 1,
+                     docking_recovery_detection_attempts_,
+                     static_cast<int>(boxes.size()));
+            ros::Duration(
+                docking_recovery_detection_interval_).sleep();
+        }
+        return false;
+    }
+
+    bool recoverDockingObservation(TargetObservation& observation,
+                                   const std::string& target_name) {
+        const TargetObservation old_observation = observation;
+        const double center_yaw = old_observation.pose.yaw;
+        const double turn = docking_recovery_turn_deg_ * kPi / 180.0;
+        const double scan_yaws[2] = {
+            normalizeAngle(center_yaw + turn),
+            normalizeAngle(center_yaw - turn)};
+        const char* scan_names[2] = {
+            "左侧恢复识别", "右侧恢复识别"};
+
+        ROS_WARN("%s在旧停靠点完全看不到板，开始左右视野恢复；"
+                 "基准朝向=%.1f度",
+                 target_name.c_str(), center_yaw * 180.0 / kPi);
+        for (int side = 0; side < 2 && ros::ok(); ++side) {
+            if (!rotateToDockingRecoveryYaw(
+                    scan_yaws[side], scan_names[side])) {
+                ROS_WARN("%s旋转失败，继续尝试下一恢复方向",
+                         scan_names[side]);
+                continue;
+            }
+
+            TargetObservation recovered;
+            if (!detectDockingRecoveryObservation(
+                    old_observation, scan_names[side], recovered)) {
+                ROS_WARN("%s未找到文字板", scan_names[side]);
+                continue;
+            }
+
+            observation = recovered;
+            ROS_WARN("%s恢复识别成功，覆盖旧停靠点："
+                     "旧=(%.3f, %.3f, %.1f度)，"
+                     "新=(%.3f, %.3f, %.1f度)",
+                     target_name.c_str(),
+                     old_observation.pose.x,
+                     old_observation.pose.y,
+                     old_observation.pose.yaw * 180.0 / kPi,
+                     observation.pose.x,
+                     observation.pose.y,
+                     observation.pose.yaw * 180.0 / kPi);
+
+            if (!navigateToPose(observation.pose.x,
+                                observation.pose.y,
+                                observation.pose.yaw,
+                                target_name +
+                                    "恢复识别后重新前往停靠点")) {
+                ROS_ERROR("%s新停靠点导航失败", target_name.c_str());
+                return false;
+            }
+            return true;
+        }
+
+        stopRobot();
+        ROS_ERROR("%s左右%.1f度恢复识别均未找到文字板，"
+                  "保持原失败处理流程",
+                  target_name.c_str(), docking_recovery_turn_deg_);
+        return false;
+    }
+
+    bool dockTarget(TargetObservation& observation,
                     const std::string& target_name,
                     bool camera_is_already_open) {
         if (!camera_is_already_open && !openCamera()) return false;
         ROS_INFO("%s开始二段式停靠：先横移视觉居中，再雷达直线逼近",
                  target_name.c_str());
-        if (!alignBoardLaterally(observation.pose.yaw)) {
-            ROS_ERROR("%s横移居中失败", target_name.c_str());
-            return false;
+        bool board_seen = false;
+        if (!alignBoardLaterally(observation.pose.yaw, board_seen)) {
+            if (board_seen) {
+                ROS_ERROR("%s横移居中失败；过程中已经看到目标板，"
+                          "不触发坐标恢复",
+                          target_name.c_str());
+                return false;
+            }
+            if (!recoverDockingObservation(observation, target_name)) {
+                ROS_ERROR("%s横移居中失败", target_name.c_str());
+                return false;
+            }
+
+            bool recovered_board_seen = false;
+            ROS_INFO("%s已到达更新后的停靠点，重新执行横移视觉居中",
+                     target_name.c_str());
+            if (!alignBoardLaterally(
+                    observation.pose.yaw, recovered_board_seen)) {
+                ROS_ERROR("%s更新坐标后横移居中仍失败",
+                          target_name.c_str());
+                return false;
+            }
         }
         closeCamera();
         if (!approachBoardWithLidar(observation.pose.yaw)) {
@@ -1240,6 +1813,83 @@ private:
 
         stopRobot();
         ROS_ERROR("直线后退至%s超时", segment.name.c_str());
+        return false;
+    }
+
+    bool rotateCounterClockwiseForOcr(Pose2D& pose_after_rotation) {
+        Pose2D start_pose;
+        if (!getRobotPose(start_pose)) {
+            ROS_ERROR("OCR补偿旋转前无法读取机器人位姿");
+            return false;
+        }
+
+        const double target_yaw = normalizeAngle(
+            start_pose.yaw + ocr_recovery_turn_deg_ * kPi / 180.0);
+        const double tolerance =
+            ocr_recovery_turn_tolerance_deg_ * kPi / 180.0;
+        const ros::WallTime deadline = ros::WallTime::now() +
+            ros::WallDuration(ocr_recovery_turn_timeout_);
+        int stable_frames = 0;
+        ros::Rate rate(20.0);
+
+        ROS_INFO("OCR补偿旋转开始：当前朝向=%.1f度，"
+                 "目标朝向=%.1f度（逆时针%.1f度）",
+                 start_pose.yaw * 180.0 / kPi,
+                 target_yaw * 180.0 / kPi,
+                 ocr_recovery_turn_deg_);
+
+        while (ros::ok() && ros::WallTime::now() < deadline) {
+            ros::spinOnce();
+            Pose2D pose;
+            if (!getRobotPose(pose)) {
+                publishVelocity(0.0, 0.0, 0.0);
+                stable_frames = 0;
+                rate.sleep();
+                continue;
+            }
+
+            const double yaw_error = normalizeAngle(target_yaw - pose.yaw);
+            if (std::fabs(yaw_error) <= tolerance) {
+                publishVelocity(0.0, 0.0, 0.0);
+                ++stable_frames;
+                if (stable_frames >= ocr_recovery_turn_stable_frames_) {
+                    stopRobot();
+                    pose_after_rotation = pose;
+                    ros::Duration(ocr_recovery_settle_time_).sleep();
+                    // 静止后再读一次最终位姿；短暂TF失败时保留最后一帧。
+                    getRobotPose(pose_after_rotation);
+                    ROS_INFO("OCR补偿旋转完成：最终朝向=%.1f度，"
+                             "目标误差=%.2f度",
+                             pose_after_rotation.yaw * 180.0 / kPi,
+                             normalizeAngle(
+                                 target_yaw - pose_after_rotation.yaw) *
+                                 180.0 / kPi);
+                    return true;
+                }
+            } else {
+                stable_frames = 0;
+                double angular_z = clampValue(
+                    ocr_recovery_turn_kp_ * yaw_error,
+                    -ocr_recovery_turn_max_speed_,
+                    ocr_recovery_turn_max_speed_);
+                if (std::fabs(angular_z) <
+                    ocr_recovery_turn_min_speed_) {
+                    angular_z = yaw_error >= 0.0
+                                    ? ocr_recovery_turn_min_speed_
+                                    : -ocr_recovery_turn_min_speed_;
+                }
+                publishVelocity(0.0, 0.0, angular_z);
+                ROS_INFO_THROTTLE(
+                    0.5,
+                    "OCR补偿旋转中：剩余角度=%.2f度，angular.z=%.3f",
+                    yaw_error * 180.0 / kPi, angular_z);
+            }
+            rate.sleep();
+        }
+
+        stopRobot();
+        ROS_ERROR("OCR补偿旋转在%.1f秒内未完成",
+                  ocr_recovery_turn_timeout_);
         return false;
     }
 
@@ -1460,7 +2110,8 @@ private:
         return result;
     }
 
-    bool alignBoardLaterally(double desired_yaw) {
+    bool alignBoardLaterally(double desired_yaw, bool& board_seen) {
+        board_seen = false;
         if (!openCamera()) return false;
         ROS_INFO("横移居中：保持朝向%.1f度",
                  desired_yaw * 180.0 / kPi);
@@ -1469,6 +2120,10 @@ private:
             ros::WallTime::now() + ros::WallDuration(lateral_align_timeout_);
         bool have_tracked_box = false;
         Box tracked_box{0, 0, 0, 0, 0};
+        // -1表示首次有效框中心位于左半屏，+1表示位于右半屏。
+        // 横移期间一旦跨越屏幕中线，就立即停车并判定已经对准，
+        // 防止底盘因最小横移速度和制动距离而在中线两侧来回修正。
+        int initial_target_half = 0;
         int stable_frames = 0;
         int lost_frames = 0;
         ros::Rate rate(15.0);
@@ -1482,6 +2137,7 @@ private:
                                ? associateSelectedBox(boxes, tracked_box)
                                : chooseClosestCenterBox(boxes);
             }
+            if (selected >= 0) board_seen = true;
             Pose2D pose;
             if (!getRobotPose(pose)) {
                 publishVelocity(0.0, 0.0, 0.0);
@@ -1525,18 +2181,52 @@ private:
             const double pixel_error =
                 image_center - tracked_box.centerX();
 
+            const int current_target_half =
+                tracked_box.centerX() < image_center
+                    ? -1
+                    : (tracked_box.centerX() > image_center ? 1 : 0);
+            if (initial_target_half == 0 && current_target_half != 0) {
+                initial_target_half = current_target_half;
+                ROS_INFO("横移居中：首次目标框位于屏幕%s半边，"
+                         "中心x=%.1f，屏幕中线x=%.1f",
+                         initial_target_half < 0 ? "左" : "右",
+                         tracked_box.centerX(), image_center);
+            } else if (current_target_half != 0 &&
+                       current_target_half != initial_target_half) {
+                // 必须在计算并发布下一次反向横移命令之前停车。
+                stopRobot();
+                ROS_INFO("横移居中完成：目标框已从屏幕%s半边跨越到%s半边，"
+                         "立即停车；目标中心x=%.1f，屏幕中线x=%.1f，"
+                         "像素误差=%.1fpx",
+                         initial_target_half < 0 ? "左" : "右",
+                         current_target_half < 0 ? "左" : "右",
+                         tracked_box.centerX(), image_center, pixel_error);
+                return true;
+            }
+
             if (std::fabs(pixel_error) <=
                 lateral_center_tolerance_px_) {
                 publishVelocity(0.0, 0.0, angular_z);
-                if (std::fabs(yaw_error) <= 2.0 * kPi / 180.0) {
-                    ++stable_frames;
-                } else {
-                    stable_frames = 0;
-                }
+                // 横移阶段的任务是让文字框在画面中稳定居中。此前这里
+                // 还要求map朝向误差同时小于2度；move_base到点后若残留
+                // 几度误差，而小角速度又不足以克服底盘静摩擦，就会出现
+                // NanoDet持续有框、像素已经居中，却一直等到15秒超时。
+                // 朝向保持仍通过angular_z继续执行，但不再把它作为视觉
+                // 居中的成功门槛。后续雷达逼近阶段仍会持续修正朝向。
+                ++stable_frames;
+                ROS_INFO_THROTTLE(
+                    0.5,
+                    "横移居中稳定中：目标x=%.1f，像素误差=%.1fpx，"
+                    "朝向误差=%.2f度，稳定帧=%d/%d",
+                    tracked_box.centerX(), pixel_error,
+                    yaw_error * 180.0 / kPi,
+                    stable_frames, lateral_stable_frames_);
                 if (stable_frames >= lateral_stable_frames_) {
                     stopRobot();
-                    ROS_INFO("横移居中完成：目标中心x=%.1f",
-                             tracked_box.centerX());
+                    ROS_INFO("横移居中完成：目标中心x=%.1f，"
+                             "最终像素误差=%.1fpx，朝向误差=%.2f度",
+                             tracked_box.centerX(), pixel_error,
+                             yaw_error * 180.0 / kPi);
                     return true;
                 }
             } else {
@@ -1750,6 +2440,9 @@ private:
     ros::ServiceClient detect_client_;
     ros::ServiceClient ocr_client_;
     ros::ServiceClient set_speed_client_;
+    ros::ServiceClient patrol_path_lock_client_;
+    ros::ServiceClient controller_reset_client_;
+    ros::Publisher patrol_path_publisher_;
     ros::Subscriber scan_subscriber_;
 
     std::string real_target_category_;
@@ -1766,23 +2459,15 @@ private:
     double start_y_;
     double start_yaw_deg_;
     double navigation_timeout_;
+    std::string planner_private_namespace_;
+    double patrol_path_spacing_;
+    double patrol_speed_limit_;
+    double normal_navigation_speed_limit_;
+    double patrol_cancel_timeout_;
+    double patrol_interface_timeout_;
 
-    double patrol_forward_speed_;
-    double line_hold_kp_;
-    double line_hold_max_speed_;
-    double yaw_hold_kp_;
-    double yaw_hold_max_speed_;
-    double yaw_pause_threshold_deg_;
     double segment_end_tolerance_;
     double control_rate_;
-    double rotate_kp_;
-    double rotate_min_speed_;
-    double rotate_max_speed_;
-    double rotate_tolerance_deg_;
-    int rotate_stable_frames_;
-    double rotate_timeout_;
-    double position_hold_kp_;
-    double position_hold_max_speed_;
 
     int image_width_;
     double camera_fx_;
@@ -1791,10 +2476,21 @@ private:
     double settle_time_;
     int ocr_attempts_;
     double ocr_retry_interval_;
+    double ocr_recovery_turn_deg_;
+    double ocr_recovery_turn_kp_;
+    double ocr_recovery_turn_min_speed_;
+    double ocr_recovery_turn_max_speed_;
+    double ocr_recovery_turn_tolerance_deg_;
+    int ocr_recovery_turn_stable_frames_;
+    double ocr_recovery_turn_timeout_;
+    double ocr_recovery_settle_time_;
     double max_detection_duration_;
     double duplicate_coordinate_distance_;
     double max_track_jump_px_;
     int max_lost_frames_;
+    double docking_recovery_turn_deg_;
+    int docking_recovery_detection_attempts_;
+    double docking_recovery_detection_interval_;
     double retreat_line_tolerance_;
     double retreat_slow_distance_;
     double retreat_min_speed_;
@@ -1829,6 +2525,11 @@ private:
     int real_target_defer_segment_index_ = -1;
     bool simulation_target_pending_ = false;
     int current_segment_index_ = 0;
+    PatrolCheckpoint patrol_checkpoint_;
+    bool patrol_goal_active_ = false;
+    bool patrol_path_locked_ = false;
+    bool shadow_mode_has_been_disabled_ = false;
+    std::uint32_t patrol_path_sequence_ = 0;
     std::vector<BoardBoundaryEstimate> seen_board_coordinates_;
 
     sensor_msgs::LaserScan latest_scan_;

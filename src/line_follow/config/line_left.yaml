@@ -1,0 +1,134 @@
+# line_left 寻左线丢线左转 + AMCL + 纯PP停靠参数（V9，2026-08-06）
+# 唯一校验标识：LINE_LEFT_TRUE_MIRROR_AMCL_PP_V9
+# 触发：当前x > 4.25，且距终点(4.75, 0.25) < 0.75m；最终方向0°。
+
+center_distance: 240
+# right_P: 0.015
+# right_I: 0.05
+# right_D: 0.06
+# integration_limit: 150.0
+
+# leftpoint_p: 0.004
+# leftpoint_I: 0.05
+# leftpoint_D: 0.017
+
+# double_P: 0.005
+# double_I: 0.05
+# double_D: 0.017
+
+# out_turn_angel: -1.3
+# out_forward: 0.075
+# out_turn: -1.0
+# x_max_: 0.9
+
+right_P: 0.015
+right_I: 0.05
+right_D: 0.04
+integration_limit: 150.0
+
+leftpoint_p: 0.004
+leftpoint_I: 0.05
+leftpoint_D: 0.017
+
+double_P: 0.004
+double_I: 0.055
+double_D: 0.020
+
+out_turn_angel: -1.3
+out_forward: 0.075
+out_turn: -1.0
+x_max_: 0.8
+
+out_forward: 0.32 # 左线丢失后固定左转时的前进速度
+out_turn: 2.0     # 固定左转角速度大小；CPP中统一取正值
+
+# 图像局部自适应二值化参数（由 line_left.yaml 配置）
+adaptive_c: -22           # 局部自适应阈值常数C；当前为-22，数值越负阈值越高，通常越能抑制反光区域被误识别成白色
+# 这两个基本不用动
+adaptive_block: 45        # 局部自适应阈值的邻域窗口大小；必须是大于1的奇数，如31、45、51；越大越看重较大范围的局部亮度
+min_contour_area: 250     # 二值化后保留轮廓的最小面积；小于该面积的白色区域会被当作噪声删除，越大去除小反光/噪点越强
+
+# 相机标定文件；需要时可直接修改
+calibration_file: /home/ucar/ucar_ws_copy/src/line_follow/camera_info/pinhole.yaml
+
+# ==================== AMCL 初始位姿 ====================
+# 每次 line_left 服务开始巡线前，向 /initialpose 连续发布该位姿。
+map_frame: map
+base_frame: base_link
+
+initial_pose_x: 2.50
+initial_pose_y: 2.60
+initial_pose_yaw_deg: -90.0
+initial_pose_covariance_xy: 0.01
+initial_pose_covariance_yaw: 0.01
+initial_pose_publish_count: 3
+initial_pose_publish_interval: 0.10
+
+# ==================== AMCL 停靠触发条件 ====================
+# 两项同时满足后，视觉巡线无停顿切换为终点纯 PP 位姿停靠：
+# 1. 当前 AMCL x > docking_trigger_min_x
+# 2. 当前点到停靠终点的距离 < docking_trigger_distance
+docking_trigger_min_x: 4.25
+docking_trigger_distance: 0.75
+
+# 固定停靠终点及最终方向
+docking_goal_x: 4.75
+docking_goal_y: 0.25
+docking_goal_yaw_deg: 0.0
+
+# ==================== 纯 PP 位姿停靠 ====================
+docking_control_rate: 30.0
+
+# 到点判定容差；角度单位为 rad
+docking_position_tolerance: 0.025
+docking_yaw_tolerance: 0.05
+
+# 地图系误差转换到 base_link 后的 vx、vy、wz 增益
+docking_linear_x_gain: 2.50
+docking_linear_y_gain: 1.20
+docking_angular_gain: 1.50
+
+# 克服底盘死区的最小非零速度
+docking_min_linear_speed: 0.10
+docking_min_angular_speed: 0.010
+
+# 停靠阶段速度上限
+docking_max_vel_x: 0.90
+docking_max_vel_y: 0.40
+docking_max_vel_theta: 0.90
+
+# 从巡线末帧速度平滑衔接到停靠速度，不插入零速帧
+docking_acc_lim_x: 2.00
+docking_acc_lim_y: 2.00
+docking_acc_lim_theta: 8.00
+
+start_straight_distance: 0.14 # 从起始停止线向前行驶的距离，单位 m
+start_turn_angular_speed: 1.3 # 保留原参数，当前CPP未读取
+start_rotate_angle_deg: 60.0  # 保留原参数，当前CPP未读取
+start_straight_speed: 0.5
+
+# right_P: 0.007
+# right_I: 0.05
+# right_D: 0.017
+# integration_limit: 150.0
+# righty_P: 0.001
+# righty_I: 0.0
+# righty_D: 0.0
+
+# leftpoint_p: 0.004
+# leftpoint_I: 0.05
+# leftpoint_D: 0.017
+
+# double_P: 0.005
+# double_I: 0.05
+# double_D: 0.017
+
+# out_forward: 0.075
+# out_turn: -1.0
+# x_max_: 0.5
+
+# # 慢速版
+# x_max_: 0.7
+
+# out_forward: 0.35   # 丢线左转时的前进速度
+# out_turn: 1.2       # 固定左转角速度大小

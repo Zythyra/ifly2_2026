@@ -474,7 +474,7 @@ bool MyPlanner::buildMpcReferenceTrajectory(
         }
         resampled[i].speed_limit = clampValue(
             speed_limit,
-            c2_min_curve_speed_,
+            std::min(c2_min_curve_speed_, c2_max_reference_speed_),
             c2_max_reference_speed_);
     }
 
