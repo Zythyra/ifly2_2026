@@ -1,25 +1,10 @@
-# line_left 寻左线丢线左转 + AMCL + 纯PP停靠参数（V9，2026-08-06）
-# 唯一校验标识：LINE_LEFT_TRUE_MIRROR_AMCL_PP_V9
-# 触发：当前x > 4.25，且距终点(4.75, 0.25) < 0.75m；最终方向0°。
+# line_left V15 配套参数（与 line_right V14 同一结构）
+# 唯一校验标识：LINE_LEFT_V15_GOAL_4P75_0P20_TRIGGER_Y_LT_0P75
+# 触发：当前 y < 0.75，且距终点 (4.75, 0.20) < 0.75m；最终方向 0°。
 
+# ==================== 左线巡线参数 ====================
+# 为兼容现有代码与参数文件，PID键名继续使用 right_P/right_I/right_D。
 center_distance: 240
-# right_P: 0.015
-# right_I: 0.05
-# right_D: 0.06
-# integration_limit: 150.0
-
-# leftpoint_p: 0.004
-# leftpoint_I: 0.05
-# leftpoint_D: 0.017
-
-# double_P: 0.005
-# double_I: 0.05
-# double_D: 0.017
-
-# out_turn_angel: -1.3
-# out_forward: 0.075
-# out_turn: -1.0
-# x_max_: 0.9
 
 right_P: 0.015
 right_I: 0.05
@@ -35,24 +20,35 @@ double_I: 0.055
 double_D: 0.020
 
 out_turn_angel: -1.3
-out_forward: 0.075
-out_turn: -1.0
 x_max_: 0.8
 
-out_forward: 0.32 # 左线丢失后固定左转时的前进速度
-out_turn: 2.0     # 固定左转角速度大小；CPP中统一取正值
+# 左线丢失后的镜像漂移：前进 + 向右横移 + 左转。
+out_forward: 0.35
+out_turn: 1.3
+out_right_speed: 0.08
 
-# 图像局部自适应二值化参数（由 line_left.yaml 配置）
-adaptive_c: -22           # 局部自适应阈值常数C；当前为-22，数值越负阈值越高，通常越能抑制反光区域被误识别成白色
-# 这两个基本不用动
-adaptive_block: 45        # 局部自适应阈值的邻域窗口大小；必须是大于1的奇数，如31、45、51；越大越看重较大范围的局部亮度
-min_contour_area: 250     # 二值化后保留轮廓的最小面积；小于该面积的白色区域会被当作噪声删除，越大去除小反光/噪点越强
+# ==================== 图像二值化 ====================
+adaptive_c: -25
+adaptive_block: 45
+min_contour_area: 250
 
-# 相机标定文件；需要时可直接修改
 calibration_file: /home/ucar/ucar_ws_copy/src/line_follow/camera_info/pinhole.yaml
+
+# ==================== 启动视觉屏蔽与定向直行 ====================
+# 启动设置与 line_right 完全一致。
+start_straight_speed: 0.50
+start_straight_distance: 0.14
+start_heading_yaw_deg: -90.0
+start_heading_kp: 2.5
+start_heading_max_angular_speed: 0.60
+start_heading_deadband_deg: 0.5
+start_heading_pause_error_deg: 6.0
+start_control_rate: 30.0
+start_line_confirm_frames: 3
 
 # ==================== AMCL 初始位姿 ====================
 # 每次 line_left 服务开始巡线前，向 /initialpose 连续发布该位姿。
+# 数值与 line_right 完全一致。
 map_frame: map
 base_frame: base_link
 
@@ -65,13 +61,13 @@ initial_pose_publish_count: 3
 initial_pose_publish_interval: 0.10
 
 # ==================== AMCL 停靠触发条件 ====================
-# 两项同时满足后，视觉巡线无停顿切换为终点纯 PP 位姿停靠：
-# 1. 当前 AMCL x > docking_trigger_min_x
-# 2. 当前点到停靠终点的距离 < docking_trigger_distance
-docking_trigger_min_x: 4.25
+# 两项必须同时满足，随后视觉巡线无停顿切换为纯PP位姿停靠：
+# 1. 当前 AMCL y < docking_trigger_max_y
+# 2. 当前点到 (4.75, 0.20) 的距离 < docking_trigger_distance
+docking_trigger_max_y: 0.75
 docking_trigger_distance: 0.75
 
-# 固定停靠终点及最终方向
+# 固定停靠终点与最终朝向
 docking_goal_x: 4.75
 docking_goal_y: 0.25
 docking_goal_yaw_deg: 0.0
@@ -97,38 +93,23 @@ docking_max_vel_x: 0.90
 docking_max_vel_y: 0.40
 docking_max_vel_theta: 0.90
 
-# 从巡线末帧速度平滑衔接到停靠速度，不插入零速帧
+# 从巡线末帧平滑衔接到停靠速度，不插入零速帧
 docking_acc_lim_x: 2.00
 docking_acc_lim_y: 2.00
 docking_acc_lim_theta: 8.00
 
-start_straight_distance: 0.14 # 从起始停止线向前行驶的距离，单位 m
-start_turn_angular_speed: 1.3 # 保留原参数，当前CPP未读取
-start_rotate_angle_deg: 60.0  # 保留原参数，当前CPP未读取
-start_straight_speed: 0.5
+# ==================== 丢线判定与漂移恢复状态机 ====================
+# 第n次失败时：
+# vx = x_max_ - n * (x_max_ - out_forward) / lost_confirm_frames
+# 第 lost_confirm_frames 次失败时，vx 恰好降至 out_forward 并进入锁存漂移。
+lost_confirm_frames: 4
 
-# right_P: 0.007
-# right_I: 0.05
-# right_D: 0.017
-# integration_limit: 150.0
-# righty_P: 0.001
-# righty_I: 0.0
-# righty_D: 0.0
+# 疑似丢线后，必须连续识别到这么多帧左线才取消怀疑。
+lost_cancel_confirm_frames: 2
 
-# leftpoint_p: 0.004
-# leftpoint_I: 0.05
-# leftpoint_D: 0.017
+# 进入漂移后，必须连续识别到这么多帧左线才完全恢复PID。
+drift_recover_confirm_frames: 2
 
-# double_P: 0.005
-# double_I: 0.05
-# double_D: 0.017
-
-# out_forward: 0.075
-# out_turn: -1.0
-# x_max_: 0.5
-
-# # 慢速版
-# x_max_: 0.7
-
-# out_forward: 0.35   # 丢线左转时的前进速度
-# out_turn: 1.2       # 固定左转角速度大小
+# 疑似丢线阶段只逐帧降低vx，默认不横移、不转向。
+lost_confirm_linear_y: 0.0
+lost_confirm_angular_z: 0.0

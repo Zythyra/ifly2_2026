@@ -19,9 +19,9 @@ import rospy
 # 【标准规范】：引入咱们刚刚亲手在 ucarmain2026 里编译出来的自定义服务！
 from ucarmain2026.srv import GetTaskSemantics, GetTaskSemanticsResponse
 
-APPID = "49973726"
-APISecret = "YTE2MDNjNjdlZjU5NzE4ZDUzZTJmOTVi"
-APIKey = "a96d7ffe156859dc325d186a3bb20e17"
+APPID = "070ad4bf"
+APISecret = "Mjk0NGYwNTI4YTMxMjg5NmNkZmJjMmE2"
+APIKey = "9816cf9d021c8432283dec7f604477e9"
 AUDIO_FILE = "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav"
 
 # “品”是三个类别中的公共字，不能用于分类；其余任意一个字都可触发类别。

@@ -1,7 +1,9 @@
-// 交付构建标识：IFLY2026_FIXED_PATH_PATROL_V9_HEADING_HOLD_20260806
-// 局部规划器基线：MYPLANNER_MPC_C4_1_4_EXTERNAL_FIXED_PATROL_PATH
+// 交付构建标识：IFLY2026_C5_4_PATROL_REFERENCE_MASTER_C5_R2_20260812
+// Patrol-R2：固定巡检Reference强所有权 + master costmap C5 + optimized path Patrol PP。
+// 巡检Reference完全忽略GlobalPlanner/inflation几何；C5仍直接读取master costmap（含墙体inflation与真实路障）。
+// 局部规划器基线：MYPLANNER_MPC_C5_4_REPLAN_POLICY_STABILIZATION_PATROL_REFERENCE_MASTER_C5_R2
 // 保留控制器基线标识：MYPLANNER_MPC_C4_0_4_ORIGINAL_FINAL_POSE_CONTROL
-// 基于C4.1.2：增加分区域动态旁路、四项运行时速度参数和重规划热开关。
+// 保留C5.3几何优化、导航/MPC/巡检框架；修复末端重规划和过度重规划。
 #include "my_planner.h"
 
 #include <pluginlib/class_list_macros.h>
@@ -25,8 +27,10 @@ MyPlanner::MyPlanner()
     : initialized_(false),
       tf_listener_(NULL),
       costmap_ros_(NULL),
-      runtime_shadow_mode_(true),
       enable_path_replanning_(true),
+      collision_replan_confirm_counter_(0),
+      c5_failure_replan_confirm_counter_(0),
+      c5_failure_replan_candidate_(false),
       runtime_parameters_initialized_(false),
       patrol_path_locked_(false),
       active_plan_is_patrol_(false),
@@ -35,29 +39,29 @@ MyPlanner::MyPlanner()
       patrol_goal_position_tolerance_(0.05),
       patrol_goal_yaw_tolerance_(0.15),
       patrol_pp_enabled_(true),
-      patrol_pp_align_tolerance_(1.0 * M_PI / 180.0),
+      patrol_pp_align_tolerance_(1.5 * M_PI / 180.0),
       patrol_pp_settle_omega_(0.03),
       patrol_pp_settle_frames_(4),
       patrol_align_kp_(1.50),
       patrol_align_max_wz_(0.40),
-      patrol_align_near_angle_(5.0 * M_PI / 180.0),
-      patrol_align_near_wz_(0.06),
+      patrol_align_near_angle_(10.0 * M_PI / 180.0),
+      patrol_align_near_wz_(0.18),
       patrol_heading_hold_enabled_(true),
-      patrol_heading_kp_(1.20),
-      patrol_heading_max_wz_(0.18),
+      patrol_heading_kp_(1.50),
+      patrol_heading_max_wz_(0.30),
       patrol_heading_deadband_(0.5 * M_PI / 180.0),
-      patrol_heading_acc_lim_(0.60),
+      patrol_heading_acc_lim_(1.50),
       patrol_pp_lookahead_dist_(0.35),
-      patrol_pp_preview_start_(0.20),
-      patrol_pp_preview_end_(0.80),
-      patrol_pp_lateral_gain_(1.80),
+      patrol_pp_preview_start_(0.15),
+      patrol_pp_preview_end_(0.90),
+      patrol_pp_lateral_gain_(2.80),
       patrol_pp_lateral_deadband_(0.01),
-      patrol_pp_max_vy_(0.20),
-      patrol_pp_acc_lim_y_(0.80),
-      patrol_pp_avoid_offset_rate_(0.35),
+      patrol_pp_max_vy_(0.40),
+      patrol_pp_acc_lim_y_(1.60),
+      patrol_pp_avoid_offset_rate_(0.50),
       patrol_pp_return_offset_rate_(0.15),
       patrol_pp_goal_slowdown_distance_(0.30),
-      patrol_pp_goal_position_tolerance_(0.04),
+      patrol_pp_goal_position_tolerance_(0.015),
       patrol_pp_settle_counter_(0),
       patrol_pp_filtered_offset_(0.0),
       patrol_pp_alignment_required_(false),
@@ -315,9 +319,6 @@ void MyPlanner::initialize(std::string name,
 
     ros::NodeHandle private_nh("~/" + name);
     private_nh_ = private_nh;
-    clearance_optimizer_nh_ = ros::NodeHandle(
-        private_nh_, "clearance_optimizer");
-
     // -------------------------------------------------------------------------
     // Stage 0.1：基础类 PP，并恢复全向底盘横移纠偏
     // -------------------------------------------------------------------------
@@ -362,9 +363,9 @@ void MyPlanner::initialize(std::string name,
     // 固定巡检Path专用全向PP。普通导航和停靠仍由controller_mode决定，
     // 这些参数只在“固定路径已锁定且当前setPlan确实套用了该路径”时生效。
     private_nh.param("patrol_pp_enabled", patrol_pp_enabled_, true);
-    double patrol_pp_align_tolerance_deg = 1.0;
+    double patrol_pp_align_tolerance_deg = 1.5;
     private_nh.param("patrol_pp_align_tolerance_deg",
-                     patrol_pp_align_tolerance_deg, 1.0);
+                     patrol_pp_align_tolerance_deg, 1.5);
     private_nh.param("patrol_pp_settle_omega",
                      patrol_pp_settle_omega_, 0.03);
     private_nh.param("patrol_pp_settle_frames",
@@ -373,50 +374,58 @@ void MyPlanner::initialize(std::string name,
                      patrol_align_kp_, 1.50);
     private_nh.param("patrol_align_max_wz",
                      patrol_align_max_wz_, 0.40);
-    double patrol_align_near_angle_deg = 5.0;
+    double patrol_align_near_angle_deg = 10.0;
     private_nh.param("patrol_align_near_angle_deg",
-                     patrol_align_near_angle_deg, 5.0);
+                     patrol_align_near_angle_deg, 10.0);
     private_nh.param("patrol_align_near_wz",
-                     patrol_align_near_wz_, 0.06);
+                     patrol_align_near_wz_, 0.18);
     private_nh.param("patrol_heading_hold_enabled",
                      patrol_heading_hold_enabled_, true);
     private_nh.param("patrol_heading_kp",
-                     patrol_heading_kp_, 1.20);
+                     patrol_heading_kp_, 1.50);
     private_nh.param("patrol_heading_max_wz",
-                     patrol_heading_max_wz_, 0.18);
+                     patrol_heading_max_wz_, 0.30);
     double patrol_heading_deadband_deg = 0.5;
     private_nh.param("patrol_heading_deadband_deg",
                      patrol_heading_deadband_deg, 0.5);
     private_nh.param("patrol_heading_acc_lim",
-                     patrol_heading_acc_lim_, 0.60);
+                     patrol_heading_acc_lim_, 1.50);
     private_nh.param("patrol_pp_lookahead_dist",
                      patrol_pp_lookahead_dist_, 0.35);
     private_nh.param("patrol_pp_preview_start",
-                     patrol_pp_preview_start_, 0.20);
+                     patrol_pp_preview_start_, 0.15);
     private_nh.param("patrol_pp_preview_end",
-                     patrol_pp_preview_end_, 0.80);
+                     patrol_pp_preview_end_, 0.90);
     private_nh.param("patrol_pp_lateral_gain",
-                     patrol_pp_lateral_gain_, 1.80);
+                     patrol_pp_lateral_gain_, 2.80);
     private_nh.param("patrol_pp_lateral_deadband",
                      patrol_pp_lateral_deadband_, 0.01);
     private_nh.param("patrol_pp_max_vy",
-                     patrol_pp_max_vy_, 0.20);
+                     patrol_pp_max_vy_, 0.40);
     private_nh.param("patrol_pp_acc_lim_y",
-                     patrol_pp_acc_lim_y_, 0.80);
+                     patrol_pp_acc_lim_y_, 1.60);
     private_nh.param("patrol_pp_avoid_offset_rate",
-                     patrol_pp_avoid_offset_rate_, 0.35);
+                     patrol_pp_avoid_offset_rate_, 0.50);
     private_nh.param("patrol_pp_return_offset_rate",
                      patrol_pp_return_offset_rate_, 0.15);
     private_nh.param("patrol_pp_goal_slowdown_distance",
                      patrol_pp_goal_slowdown_distance_, 0.30);
     private_nh.param("patrol_pp_goal_position_tolerance",
-                     patrol_pp_goal_position_tolerance_, 0.04);
-    private_nh.param("collision_check_lookahead_points",
-                     collision_check_lookahead_points_, 10);
+                     patrol_pp_goal_position_tolerance_, 0.015);
+    // C5.4：全局重规划与C5 active path继续解耦。
+    // raw path仅以真正LETHAL(254)为默认拓扑重规划触发；253继续交给C5局部优化。
+    private_nh.param("collision_check_lookahead_distance",
+                     collision_check_lookahead_distance_, 0.60);
+    private_nh.param("collision_replan_confirm_frames",
+                     collision_replan_confirm_frames_, 2);
+    private_nh.param("collision_replan_on_unknown",
+                     collision_replan_on_unknown_, false);
+    private_nh.param("c5_failure_replan_confirm_frames",
+                     c5_failure_replan_confirm_frames_, 3);
 
-    int collision_cost_threshold = 253;
+    int collision_cost_threshold = 254;
     private_nh.param("collision_cost_threshold",
-                     collision_cost_threshold, 253);
+                     collision_cost_threshold, 254);
     collision_cost_threshold =
         std::max(1, std::min(collision_cost_threshold, 255));
     collision_cost_threshold_ =
@@ -627,8 +636,16 @@ void MyPlanner::initialize(std::string name,
         std::max(1e-6, path_healing_gradient_scale_);
     path_healing_debug_publish_rate_ = clampValue(
         path_healing_debug_publish_rate_, 0.2, 30.0);
-    collision_check_lookahead_points_ =
-        std::max(1, collision_check_lookahead_points_);
+    collision_check_lookahead_distance_ =
+        std::max(0.05, collision_check_lookahead_distance_);
+    collision_replan_confirm_frames_ =
+        std::max(1, collision_replan_confirm_frames_);
+    c5_failure_replan_confirm_frames_ =
+        std::max(1, c5_failure_replan_confirm_frames_);
+    collision_replan_confirm_counter_ = 0;
+    c5_failure_replan_confirm_counter_ = 0;
+    c5_failure_replan_candidate_ = false;
+    c5_failure_replan_reason_.clear();
     lateral_search_points_ = std::max(0, lateral_search_points_);
 
     if (controller_mode_ != "mpc" && controller_mode_ != "pp")
@@ -805,6 +822,11 @@ void MyPlanner::initialize(std::string name,
     healed_window_path_pub_ =
         private_nh.advertise<nav_msgs::Path>("healed_window_path", 1, true);
 
+    // Patrol-R2：这是巡检真正的“全局参考线”。它由外部固定Path直接给出，
+    // 完全不经过move_base GlobalPlanner或path healing，因此RViz中应始终是理论直线。
+    patrol_reference_path_pub_ =
+        private_nh.advertise<nav_msgs::Path>("patrol_reference_path", 1, true);
+
     patrol_path_sub_ = private_nh.subscribe<nav_msgs::Path>(
         "patrol_path", 1, &MyPlanner::patrolPathCallback, this);
     patrol_path_lock_service_ = private_nh.advertiseService(
@@ -814,16 +836,18 @@ void MyPlanner::initialize(std::string name,
         &MyPlanner::resetControllerStateCallback,
         this);
 
-    // 独立模块只处理几何路径。默认shadow模式不会替换global_plan_，
-    // 不发布cmd_vel，也没有停车或请求重规划的权限。
+    // Patrol-R2继续复用唯一C5实例：普通导航与巡检都直接读取master costmap。
+    // 区别只在Reference来源：普通导航来自move_base；巡检来自staged直线Path并跳过path healing。
     clearance_path_optimizer_.initialize(
         private_nh, costmap_ros_->getCostmap(), costmap_frame_);
-    runtime_shadow_mode_ = clearance_path_optimizer_.shadowMode();
     runtime_parameters_initialized_ = true;
 
-    ROS_INFO("路径重规划开关：%s；可运行时修改参数 "
+    ROS_INFO("路径重规划开关：%s（raw路径前视%.2fm，确认%d帧，阈值=%u）；可运行时修改参数 "
              "/move_base/%s/enable_path_replanning。",
              enable_path_replanning_ ? "开启" : "关闭",
+             collision_check_lookahead_distance_,
+             collision_replan_confirm_frames_,
+             static_cast<unsigned int>(collision_cost_threshold_),
              name.c_str());
 
     ROS_INFO("固定巡检路径接口已启动：patrol_path、lock_patrol_path、"
@@ -831,13 +855,16 @@ void MyPlanner::initialize(std::string name,
              patrol_goal_position_tolerance_,
              patrol_goal_yaw_tolerance_ * 180.0 / M_PI);
 
-    ROS_INFO("固定巡检全向PP：%s；对准阈值=%.1f度，停稳角速度=%.3frad/s×%d帧，"
+    ROS_WARN("Patrol-R2巡检路径链：staged直线Reference -> master costmap C5(保留墙体inflation) "
+             "-> optimized path -> Patrol PP；巡检跳过GlobalPlanner几何和path healing。\n"
+             "RViz权威直线参考：~patrol_reference_path；C5结果：~clearance_optimizer/c5_optimized_path。");
+
+    ROS_INFO("固定巡检全向PP：%s；快速对准接管阈值=%.1f度（不停车等待停稳），"
              "对准Kp/max/near=%.2f/%.2f/%.2frad/s，"
              "航向保持=%s(Kp=%.2f，max=%.2frad/s，死区=%.1f度)，"
              "前视=%.2fm，横向窗口=%.2f~%.2fm，max_vy=%.2fm/s。",
              patrol_pp_enabled_ ? "启用" : "关闭",
              patrol_pp_align_tolerance_ * 180.0 / M_PI,
-             patrol_pp_settle_omega_, patrol_pp_settle_frames_,
              patrol_align_kp_, patrol_align_max_wz_, patrol_align_near_wz_,
              patrol_heading_hold_enabled_ ? "启用" : "关闭",
              patrol_heading_kp_, patrol_heading_max_wz_,
@@ -853,7 +880,7 @@ void MyPlanner::initialize(std::string name,
 
     initialized_ = true;
 
-    ROS_WARN("IFLY2026_FIXED_PATH_PATROL_V9_HEADING_HOLD_20260806："
+    ROS_WARN("IFLY2026_FIXED_PATH_PATROL_V11_PRECISE_CORNER_DEADZONE_FIX_20260808："
              "MyPlanner MPC-C4.1.4 FIXED-PATROL-PATH 启动："
              "mode=%s，路径合速度=%.2f~%.2fm/s，N=%d，dt=%.3fs；"
              "odom=%s topic=%s timeout=%.2fs，input_delay=%.3fs，tau(v/w)=%.3f/%.3fs；"
@@ -959,9 +986,12 @@ void MyPlanner::transitionTo(
 bool MyPlanner::isPatrolPpActive() const
 {
     std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+    // Patrol-R2：固定巡检是否生效只由“PP启用 + Path锁定 + staged Reference有效”决定。
+    // 不再依赖active_plan_is_patrol_。后者只保留为诊断状态，避免第二段以后
+    // 因setPlan()/lock回调时序交错而错误掉回普通C5路径链。
     return patrol_pp_enabled_
         && patrol_path_locked_
-        && active_plan_is_patrol_;
+        && staged_patrol_plan_.size() >= 2;
 }
 
 bool MyPlanner::isPatrolPpAlignmentRequired() const
@@ -1107,6 +1137,10 @@ bool MyPlanner::shouldEnterInitialAlign(double angle_error) const
 void MyPlanner::resetForNewGoal()
 {
     target_index_ = 0;
+    collision_replan_confirm_counter_ = 0;
+    c5_failure_replan_confirm_counter_ = 0;
+    c5_failure_replan_candidate_ = false;
+    c5_failure_replan_reason_.clear();
     goal_reached_ = false;
     control_state_ = ControlState::WAITING_FOR_PLAN;
     last_control_time_ = ros::Time(0);
@@ -1136,6 +1170,7 @@ void MyPlanner::patrolPathCallback(
     const std::string default_frame = message->header.frame_id.empty()
         ? costmap_frame_ : message->header.frame_id;
 
+    const ros::Time publish_stamp = ros::Time::now();
     for (std::size_t i = 0; i < candidate.size(); ++i)
     {
         geometry_msgs::PoseStamped& pose = candidate[i];
@@ -1151,14 +1186,32 @@ void MyPlanner::patrolPathCallback(
         pose.header.stamp = ros::Time(0);
     }
 
-    std::lock_guard<std::mutex> lock(patrol_path_mutex_);
-    staged_patrol_plan_.swap(candidate);
-    ++patrol_path_revision_;
-    ROS_INFO("已暂存外部巡检路径：修订号=%u，点数=%zu，终点=(%.3f, %.3f)。",
-             static_cast<unsigned int>(patrol_path_revision_),
-             staged_patrol_plan_.size(),
-             staged_patrol_plan_.back().pose.position.x,
-             staged_patrol_plan_.back().pose.position.y);
+    // Patrol-R2：单独发布权威直线Reference，避免把move_base GlobalPlanner/plan
+    // （它仍可能被墙体inflation推弯）误认为实际巡检参考线。
+    nav_msgs::Path reference_msg;
+    reference_msg.header.frame_id = default_frame;
+    reference_msg.header.stamp = publish_stamp;
+    reference_msg.poses = candidate;
+    for (std::size_t i = 0; i < reference_msg.poses.size(); ++i)
+        reference_msg.poses[i].header.stamp = publish_stamp;
+    patrol_reference_path_pub_.publish(reference_msg);
+
+    {
+        std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+        staged_patrol_plan_.swap(candidate);
+        ++patrol_path_revision_;
+        if (patrol_path_locked_)
+        {
+            // 固定Path在锁保持期间更新时，新Reference立即取得所有权。
+            active_plan_is_patrol_ = true;
+            patrol_pp_alignment_required_ = true;
+        }
+        ROS_INFO("已暂存巡检直线Reference：修订号=%u，点数=%zu，终点=(%.3f, %.3f)。",
+                 static_cast<unsigned int>(patrol_path_revision_),
+                 staged_patrol_plan_.size(),
+                 staged_patrol_plan_.back().pose.position.x,
+                 staged_patrol_plan_.back().pose.position.y);
+    }
 }
 
 bool MyPlanner::lockPatrolPathCallback(
@@ -1175,9 +1228,13 @@ bool MyPlanner::lockPatrolPathCallback(
             return true;
         }
         patrol_path_locked_ = true;
+        // Patrol-R2：锁定本身就是Reference所有权声明，不再等待后续某次setPlan()
+        // 才把active_plan_is_patrol_置true。控制循环会每周期再次强制同步
+        // staged_patrol_plan_，因此move_base后续下发的普通全局路线无法覆盖它。
+        active_plan_is_patrol_ = true;
         // 不能只依赖外部reset_controller_state切换控制状态。服务回调、
         // setPlan和控制循环可能异步交错，因此每次重新锁定固定Path时
-        // 使用独立闩锁强制执行一次“精确对准->停稳”。
+        // 使用独立闩锁强制执行一次“快速旋转到5度内->边走边纠偏”。
         patrol_pp_alignment_required_ = true;
         response.success = true;
         response.message = "固定巡检路径已锁定";
@@ -1279,12 +1336,17 @@ bool MyPlanner::setPlan(
             if (goal_distance > patrol_goal_position_tolerance_
                 || goal_yaw_error > patrol_goal_yaw_tolerance_)
             {
-                ROS_ERROR("拒绝套用固定巡检路径：move_base终点与巡检终点差"
-                          "%.3fm/%.1f度，阈值为%.3fm/%.1f度。",
-                          goal_distance, goal_yaw_error * 180.0 / M_PI,
-                          patrol_goal_position_tolerance_,
-                          patrol_goal_yaw_tolerance_ * 180.0 / M_PI);
-                return false;
+                // Patrol-R2：锁定固定巡检Reference后，move_base的setPlan只负责维持
+                // BaseLocalPlanner控制循环，不再拥有巡检几何路径的覆盖权。
+                // 因此即使某次全局重规划/时序交错导致其终点暂时不匹配，
+                // 也只记录告警，仍强制使用当前staged patrol Path。
+                ROS_WARN_THROTTLE(
+                    1.0,
+                    "Patrol-R2固定Reference强锁：忽略move_base路径终点差异"
+                    "%.3fm/%.1f度，继续强制使用staged patrol Path终点(%.3f, %.3f)。",
+                    goal_distance, goal_yaw_error * 180.0 / M_PI,
+                    patrol_goal.pose.position.x,
+                    patrol_goal.pose.position.y);
             }
 
             effective_plan = staged_patrol_plan_;
@@ -1303,15 +1365,27 @@ bool MyPlanner::setPlan(
 
     raw_plan_ = effective_plan;
     global_plan_ = effective_plan;
-    clearance_path_optimizer_.reset();
+    // 同一目标的move_base全局路径更新保留C5 warm start；
+    // 只有真正新目标/新固定巡检Path才清空上一条轨迹历史。
+    if (new_goal)
+        clearance_path_optimizer_.reset();
     goal_pose_ = effective_plan.back();
     has_goal_ = true;
 
     if (using_patrol_path)
         applied_patrol_path_revision_ = patrol_revision;
 
-    // 新路径的点索引从头建立；同目标重规划不重置控制阶段。
-    target_index_ = 0;
+    // Patrol-R2：普通导航setPlan仍从新raw plan重新建立索引；固定巡检锁定期间，
+    // move_base即使重复setPlan也不能打断当前固定Path进度。只有staged patrol
+    // Path修订号真正变化时才把target_index和确认状态重新从头建立。
+    if (!using_patrol_path || patrol_path_changed)
+    {
+        target_index_ = 0;
+        collision_replan_confirm_counter_ = 0;
+        c5_failure_replan_confirm_counter_ = 0;
+        c5_failure_replan_candidate_ = false;
+        c5_failure_replan_reason_.clear();
+    }
 
     if (new_goal)
     {
@@ -1333,101 +1407,150 @@ bool MyPlanner::setPlan(
     return true;
 }
 
+
 void MyPlanner::refreshRuntimeParameters()
 {
-    // getParamCached首次读取后会订阅参数更新；后续控制周期不需要反复访问
-    // ROS master，但rosparam set的变化仍会在下一个控制周期生效。
-    bool requested_shadow_mode = runtime_shadow_mode_;
-    bool requested_enable_path_replanning = enable_path_replanning_;
-    double requested_c2_max_reference_speed = c2_max_reference_speed_;
-    double requested_mpc_max_vx = mpc_max_vx_;
+    // C5.4不再读取clearance_optimizer/shadow_mode：
+    // C5为唯一轨迹优化器，旧巡检脚本即使继续rosparam set shadow_mode也不会旁路C5。
+    bool requested_enable_path_replanning =
+        enable_path_replanning_;
+    double requested_c2_max_reference_speed =
+        c2_max_reference_speed_;
+    double requested_mpc_max_vx =
+        mpc_max_vx_;
     double requested_mpc_max_translational_speed =
         mpc_max_translational_speed_;
-    double requested_max_vel_x = max_vel_x_;
+    double requested_max_vel_x =
+        max_vel_x_;
 
-    clearance_optimizer_nh_.getParamCached(
-        "shadow_mode", requested_shadow_mode);
     private_nh_.getParamCached(
-        "enable_path_replanning", requested_enable_path_replanning);
+        "enable_path_replanning",
+        requested_enable_path_replanning);
     private_nh_.getParamCached(
-        "c2_max_reference_speed", requested_c2_max_reference_speed);
-    private_nh_.getParamCached("mpc_max_vx", requested_mpc_max_vx);
+        "c2_max_reference_speed",
+        requested_c2_max_reference_speed);
+    private_nh_.getParamCached(
+        "mpc_max_vx",
+        requested_mpc_max_vx);
     private_nh_.getParamCached(
         "mpc_max_translational_speed",
         requested_mpc_max_translational_speed);
-    private_nh_.getParamCached("max_vel_x", requested_max_vel_x);
+    private_nh_.getParamCached(
+        "max_vel_x",
+        requested_max_vel_x);
 
-    // 非法浮点参数不进入控制器，继续沿用上一控制周期的有效值。
-    if (!std::isfinite(requested_c2_max_reference_speed))
-        requested_c2_max_reference_speed = c2_max_reference_speed_;
-    if (!std::isfinite(requested_mpc_max_vx))
-        requested_mpc_max_vx = mpc_max_vx_;
-    if (!std::isfinite(requested_mpc_max_translational_speed))
+    if (!std::isfinite(
+            requested_c2_max_reference_speed))
+    {
+        requested_c2_max_reference_speed =
+            c2_max_reference_speed_;
+    }
+
+    if (!std::isfinite(
+            requested_mpc_max_vx))
+    {
+        requested_mpc_max_vx =
+            mpc_max_vx_;
+    }
+
+    if (!std::isfinite(
+            requested_mpc_max_translational_speed))
+    {
         requested_mpc_max_translational_speed =
             mpc_max_translational_speed_;
-    if (!std::isfinite(requested_max_vel_x))
-        requested_max_vel_x = max_vel_x_;
+    }
 
-    // 先在临时变量内统一约束，最后一次性提交，避免连续执行多条
-    // rosparam set时把成员变量留在互相矛盾的中间状态。
-    const double new_max_vel_x = std::max(0.05, requested_max_vel_x);
-    const double new_c2_max_reference_speed = clampValue(
-        requested_c2_max_reference_speed, 0.05, new_max_vel_x);
-    const double new_mpc_max_vx = std::max(
-        mpc_min_vx_, requested_mpc_max_vx);
+    if (!std::isfinite(
+            requested_max_vel_x))
+    {
+        requested_max_vel_x =
+            max_vel_x_;
+    }
 
-    const double maximum_mpc_translational_capability = std::hypot(
-        new_mpc_max_vx,
-        std::max(std::abs(mpc_min_vy_), std::abs(mpc_max_vy_)));
-    const double new_mpc_max_translational_speed = std::max(
-        0.05,
-        std::min(requested_mpc_max_translational_speed,
-                 maximum_mpc_translational_capability));
+    const double new_max_vel_x =
+        std::max(
+            0.05,
+            requested_max_vel_x);
+
+    const double new_c2_max_reference_speed =
+        clampValue(
+            requested_c2_max_reference_speed,
+            0.05,
+            new_max_vel_x);
+
+    const double new_mpc_max_vx =
+        std::max(
+            mpc_min_vx_,
+            requested_mpc_max_vx);
+
+    const double maximum_mpc_translational_capability =
+        std::hypot(
+            new_mpc_max_vx,
+            std::max(
+                std::abs(mpc_min_vy_),
+                std::abs(mpc_max_vy_)));
+
+    const double new_mpc_max_translational_speed =
+        std::max(
+            0.05,
+            std::min(
+                requested_mpc_max_translational_speed,
+                maximum_mpc_translational_capability));
 
     const bool speed_changed =
-        std::abs(new_c2_max_reference_speed
-                 - c2_max_reference_speed_) > 1.0e-9
-        || std::abs(new_mpc_max_vx - mpc_max_vx_) > 1.0e-9
-        || std::abs(new_mpc_max_translational_speed
-                    - mpc_max_translational_speed_) > 1.0e-9
-        || std::abs(new_max_vel_x - max_vel_x_) > 1.0e-9;
+        std::abs(
+            new_c2_max_reference_speed
+            - c2_max_reference_speed_) > 1.0e-9
+        || std::abs(
+            new_mpc_max_vx
+            - mpc_max_vx_) > 1.0e-9
+        || std::abs(
+            new_mpc_max_translational_speed
+            - mpc_max_translational_speed_) > 1.0e-9
+        || std::abs(
+            new_max_vel_x
+            - max_vel_x_) > 1.0e-9;
 
-    c2_max_reference_speed_ = new_c2_max_reference_speed;
-    mpc_max_vx_ = new_mpc_max_vx;
-    mpc_max_translational_speed_ = new_mpc_max_translational_speed;
-    max_vel_x_ = new_max_vel_x;
+    c2_max_reference_speed_ =
+        new_c2_max_reference_speed;
+    mpc_max_vx_ =
+        new_mpc_max_vx;
+    mpc_max_translational_speed_ =
+        new_mpc_max_translational_speed;
+    max_vel_x_ =
+        new_max_vel_x;
 
     if (speed_changed)
     {
-        ROS_WARN("运行时速度参数已更新："
-                 "c2_max_reference_speed=%.3f，mpc_max_vx=%.3f，"
-                 "mpc_max_translational_speed=%.3f，max_vel_x=%.3f。",
-                 c2_max_reference_speed_, mpc_max_vx_,
-                 mpc_max_translational_speed_, max_vel_x_);
+        ROS_WARN(
+            "运行时速度参数已更新："
+            "c2_max_reference_speed=%.3f，"
+            "mpc_max_vx=%.3f，"
+            "mpc_max_translational_speed=%.3f，"
+            "max_vel_x=%.3f。",
+            c2_max_reference_speed_,
+            mpc_max_vx_,
+            mpc_max_translational_speed_,
+            max_vel_x_);
     }
 
-    if (requested_enable_path_replanning != enable_path_replanning_)
+    if (requested_enable_path_replanning
+        != enable_path_replanning_)
     {
-        enable_path_replanning_ = requested_enable_path_replanning;
-        ROS_WARN("运行时路径重规划已%s：%s",
-                 enable_path_replanning_ ? "开启" : "关闭",
-                 enable_path_replanning_
-                     ? "从本周期起，前方路径进入死区时停车并请求全局重规划。"
-                     : "从本周期起，跳过死区触发重规划检查，继续跟踪当前路径。");
-    }
+        enable_path_replanning_ =
+            requested_enable_path_replanning;
+        collision_replan_confirm_counter_ = 0;
+        c5_failure_replan_confirm_counter_ = 0;
+        c5_failure_replan_candidate_ = false;
+        c5_failure_replan_reason_.clear();
 
-    if (!runtime_parameters_initialized_
-        || requested_shadow_mode != runtime_shadow_mode_)
-    {
-        runtime_shadow_mode_ = requested_shadow_mode;
-        clearance_path_optimizer_.setShadowMode(runtime_shadow_mode_);
-        resetMpcState();
-
-        ROS_WARN("路径优化器运行时模式切换为：%s。%s",
-                 runtime_shadow_mode_ ? "BYPASS（走廊）" : "ACTIVE（路障区）",
-                 runtime_shadow_mode_
-                     ? "本周期起跳过净空优化并清空历史缓存。"
-                     : "本周期起从当前原始路径重新生成优化路径。");
+        ROS_WARN(
+            "运行时路径重规划已%s：%s",
+            enable_path_replanning_
+                ? "开启" : "关闭",
+            enable_path_replanning_
+                ? "从本周期起独立检查raw global path死区；C5 active path继续负责soft inflation。"
+                : "跳过raw global path死区确认，继续跟踪C5 active path。");
     }
 
     runtime_parameters_initialized_ = true;
@@ -1573,59 +1696,106 @@ void MyPlanner::updateHealedPath()
     publishPathHealingDebug(heal_start, heal_end);
 }
 
+
 void MyPlanner::updateClearanceOptimizedPath()
 {
-    // 本版把shadow_mode定义为真正的旁路模式：走廊中不计算优化路径，
-    // global_plan_保持updateHealedPath()刚生成的原始/治愈路径。
-    if (runtime_shadow_mode_)
-        return;
+    // 每个控制周期先清本周期C5失败候选。只有明确的“无安全active path”状态
+    // 才参与C5连续失败重规划确认；TF/地图快照/普通数值波动不触发global replan。
+    c5_failure_replan_candidate_ = false;
+    c5_failure_replan_reason_.clear();
 
-    if (!clearance_path_optimizer_.enabled() || global_plan_.size() < 3)
+    if (!clearance_path_optimizer_.enabled()
+        || global_plan_.size() < 3)
+    {
         return;
+    }
 
-    // 优化器内部只接受costmap坐标，避免把TF职责扩散到独立算法模块。
-    std::vector<geometry_msgs::PoseStamped> plan_costmap;
-    plan_costmap.reserve(global_plan_.size());
-    for (std::size_t i = 0; i < global_plan_.size(); ++i)
+    // 每周期global_plan_刚由updateHealedPath()恢复到当前raw plan。
+    // C5生成的optimized_full_path就是本周期唯一active path。
+    std::vector<geometry_msgs::PoseStamped>
+        plan_costmap;
+    plan_costmap.reserve(
+        global_plan_.size());
+
+    for (std::size_t i = 0;
+         i < global_plan_.size();
+         ++i)
     {
         geometry_msgs::PoseStamped transformed;
-        if (!transformPose(costmap_frame_, global_plan_[i], transformed))
+
+        if (!transformPose(
+                costmap_frame_,
+                global_plan_[i],
+                transformed))
         {
             ROS_WARN_THROTTLE(
                 1.0,
-                "C4.1路径优化器输入路径TF失败；本周期继续使用原路径。");
+                "C5.4输入路径TF失败；"
+                "本周期保留raw path并等待下一周期。");
             return;
         }
-        transformed.header.frame_id = costmap_frame_;
-        transformed.header.stamp = ros::Time(0);
-        plan_costmap.push_back(transformed);
+
+        transformed.header.frame_id =
+            costmap_frame_;
+        transformed.header.stamp =
+            ros::Time(0);
+
+        plan_costmap.push_back(
+            transformed);
     }
 
     geometry_msgs::PoseStamped robot_origin;
-    robot_origin.header.frame_id = base_frame_;
-    robot_origin.header.stamp = ros::Time(0);
-    robot_origin.pose.orientation.w = 1.0;
+    robot_origin.header.frame_id =
+        base_frame_;
+    robot_origin.header.stamp =
+        ros::Time(0);
+    robot_origin.pose.orientation.w =
+        1.0;
 
     geometry_msgs::PoseStamped robot_costmap;
-    if (!transformPose(costmap_frame_, robot_origin, robot_costmap))
+
+    if (!transformPose(
+            costmap_frame_,
+            robot_origin,
+            robot_costmap))
     {
         ROS_WARN_THROTTLE(
             1.0,
-            "C4.1路径优化器机器人位姿TF失败；本周期继续使用原路径。");
+            "C5.4机器人位姿TF失败；"
+            "本周期保留raw path并等待下一周期。");
         return;
     }
 
     ClearancePathOptimizer::Output output;
-    if (!clearance_path_optimizer_.optimize(
-            plan_costmap, robot_costmap, output)
-        || !output.valid)
+
+    const bool optimized =
+        clearance_path_optimizer_.optimize(
+            plan_costmap,
+            robot_costmap,
+            output);
+
+    if (!optimized || !output.valid)
     {
-        // 这里绝不返回false给move_base。优化器失败与控制/重规划解耦。
+        // 只有C5明确确认“fresh/HOLD/reuse均无安全active path”的状态，
+        // 才作为第二条global replan触发源。普通优化数值失败、TF失败、
+        // 局部窗口末端不足等情况不应通过重新跑global planner来掩盖。
+        const std::string& status = output.report.status;
+        if (status == "HARD_FAIL"
+            || status == "SAFETY_VALIDATION_FAILED")
+        {
+            c5_failure_replan_candidate_ = true;
+            c5_failure_replan_reason_ = status;
+        }
         return;
     }
 
-    // 输出与输入点数相同，target_index_的语义保持不变。
-    global_plan_ = output.optimized_full_path;
+    // 一旦当前周期重新取得安全active path，立即清掉C5失败确认。
+    c5_failure_replan_confirm_counter_ = 0;
+
+    // 输出点数与输入完全一致，target_index_、MPC、最终姿态和
+    // 固定巡检状态机的索引语义全部保持不变。
+    global_plan_ =
+        output.optimized_full_path;
 }
 
 void MyPlanner::publishPathDebug(
@@ -1722,61 +1892,185 @@ void MyPlanner::publishPathHealingDebug(int heal_start, int heal_end)
 
 bool MyPlanner::checkPathCollision()
 {
-    if (global_plan_.empty())
+    // C5.4职责分离：
+    // - C5 active path负责局部soft inflation规避；
+    // - move_base全局重规划只看raw_plan_是否真正进入死区。
+    // 不能再检查global_plan_，否则C5把路径推出障碍后会“吃掉”重规划触发条件。
+    if (raw_plan_.empty())
+    {
+        collision_replan_confirm_counter_ = 0;
         return false;
+    }
 
     costmap_2d::Costmap2D* costmap = costmap_ros_->getCostmap();
     if (costmap == NULL)
-        return false;
-
-    target_index_ = std::max(
-        0,
-        std::min(target_index_,
-                 static_cast<int>(global_plan_.size()) - 1));
-
-    const int check_end =
-        std::min(target_index_ + collision_check_lookahead_points_,
-                 static_cast<int>(global_plan_.size()));
-
-    for (int i = target_index_; i < check_end; ++i)
     {
+        collision_replan_confirm_counter_ = 0;
+        return false;
+    }
+
+    const int raw_size = static_cast<int>(raw_plan_.size());
+    const int check_start = std::max(
+        0,
+        std::min(target_index_, raw_size - 1));
+
+    bool collision_found = false;
+    int collision_index = -1;
+    unsigned int collision_cost = 0;
+    double collision_arc_distance = 0.0;
+    double accumulated_distance = 0.0;
+
+    for (int i = check_start; i < raw_size; ++i)
+    {
+        if (i > check_start)
+        {
+            const double dx =
+                raw_plan_[i].pose.position.x
+                - raw_plan_[i - 1].pose.position.x;
+            const double dy =
+                raw_plan_[i].pose.position.y
+                - raw_plan_[i - 1].pose.position.y;
+            accumulated_distance += std::hypot(dx, dy);
+
+            if (accumulated_distance
+                > collision_check_lookahead_distance_)
+            {
+                break;
+            }
+        }
+
         geometry_msgs::PoseStamped point_costmap;
         if (!transformPose(costmap_frame_,
-                           global_plan_[i],
+                           raw_plan_[i],
                            point_costmap))
         {
+            // TF偶发失败不能凭空制造一次重规划确认。
             continue;
         }
 
         unsigned int mx = 0;
         unsigned int my = 0;
-
-        if (!costmap->worldToMap(point_costmap.pose.position.x,
-                                 point_costmap.pose.position.y,
-                                 mx,
-                                 my))
-        {
-            continue;
-        }
-
         unsigned char cost = 0;
+
         {
             boost::unique_lock<costmap_2d::Costmap2D::mutex_t>
                 lock(*(costmap->getMutex()));
+
+            if (!costmap->worldToMap(
+                    point_costmap.pose.position.x,
+                    point_costmap.pose.position.y,
+                    mx,
+                    my))
+            {
+                // rolling local costmap边界外不是障碍，不用于触发全局重规划。
+                continue;
+            }
+
             cost = costmap->getCost(mx, my);
         }
 
-        if (cost >= collision_cost_threshold_)
+        const bool is_unknown =
+            cost == costmap_2d::NO_INFORMATION;
+        const bool is_replan_collision =
+            (!is_unknown && cost >= collision_cost_threshold_)
+            || (is_unknown && collision_replan_on_unknown_);
+
+        if (is_replan_collision)
         {
-            ROS_WARN("前方全局路径检测到障碍物，停止并请求重新规划。"
-                     "index=%d，cost=%u。",
-                     i,
-                     static_cast<unsigned int>(cost));
-            return false;
+            collision_found = true;
+            collision_index = i;
+            collision_cost = static_cast<unsigned int>(cost);
+            collision_arc_distance = accumulated_distance;
+            break;
         }
     }
 
-    return true;
+    if (!collision_found)
+    {
+        if (collision_replan_confirm_counter_ > 0)
+        {
+            ROS_INFO_THROTTLE(
+                1.0,
+                "C5.4 raw路径LETHAL候选已消失；取消全局重规划确认。");
+        }
+        collision_replan_confirm_counter_ = 0;
+        return true;
+    }
+
+    collision_replan_confirm_counter_ = std::min(
+        collision_replan_confirm_counter_ + 1,
+        collision_replan_confirm_frames_);
+
+    if (collision_replan_confirm_counter_
+        < collision_replan_confirm_frames_)
+    {
+        ROS_WARN_THROTTLE(
+            0.5,
+            "C5.4检测到raw全局路径LETHAL候选：index=%d，前视弧长=%.3fm，"
+            "cost=%u，确认=%d/%d；本周期继续使用安全C5 active path。",
+            collision_index,
+            collision_arc_distance,
+            collision_cost,
+            collision_replan_confirm_counter_,
+            collision_replan_confirm_frames_);
+        return true;
+    }
+
+    ROS_WARN(
+        "C5.4确认raw全局路径进入LETHAL，停止并请求move_base全局重规划："
+        "index=%d，前视弧长=%.3fm，cost=%u，确认=%d/%d。",
+        collision_index,
+        collision_arc_distance,
+        collision_cost,
+        collision_replan_confirm_counter_,
+        collision_replan_confirm_frames_);
+
+    // 保持计数饱和，直到setPlan收到新raw plan；避免旧路径上又从1/2重新等待。
+    collision_replan_confirm_counter_ = collision_replan_confirm_frames_;
+    return false;
+}
+
+bool MyPlanner::checkC5FailureReplan()
+{
+    if (!c5_failure_replan_candidate_)
+    {
+        if (c5_failure_replan_confirm_counter_ > 0)
+        {
+            ROS_INFO_THROTTLE(
+                1.0,
+                "C5.4安全active path已恢复；取消C5失败全局重规划确认。");
+        }
+        c5_failure_replan_confirm_counter_ = 0;
+        return true;
+    }
+
+    c5_failure_replan_confirm_counter_ = std::min(
+        c5_failure_replan_confirm_counter_ + 1,
+        c5_failure_replan_confirm_frames_);
+
+    if (c5_failure_replan_confirm_counter_
+        < c5_failure_replan_confirm_frames_)
+    {
+        ROS_WARN_THROTTLE(
+            0.5,
+            "C5.4连续无安全active path候选：reason=%s，确认=%d/%d；"
+            "本周期不立即重规划，等待短时恢复/下一周期C5重新求解。",
+            c5_failure_replan_reason_.c_str(),
+            c5_failure_replan_confirm_counter_,
+            c5_failure_replan_confirm_frames_);
+        return true;
+    }
+
+    ROS_WARN(
+        "C5.4确认C5连续无法提供安全active path，停止并请求move_base全局重规划："
+        "reason=%s，确认=%d/%d。",
+        c5_failure_replan_reason_.c_str(),
+        c5_failure_replan_confirm_counter_,
+        c5_failure_replan_confirm_frames_);
+
+    c5_failure_replan_confirm_counter_ =
+        c5_failure_replan_confirm_frames_;
+    return false;
 }
 
 bool MyPlanner::selectTrackingTarget(
@@ -1897,12 +2191,13 @@ double MyPlanner::computeLateralDeviation(
     return lateral_deviation;
 }
 
+
 bool MyPlanner::computePatrolPreviewErrors(
     double& raw_lateral_error,
-    double& optimized_lateral_offset)
+    double& optimized_lateral_error)
 {
     raw_lateral_error = 0.0;
-    optimized_lateral_offset = patrol_pp_filtered_offset_;
+    optimized_lateral_error = 0.0;
 
     if (raw_plan_.size() < 2
         || global_plan_.size() != raw_plan_.size())
@@ -1910,23 +2205,29 @@ bool MyPlanner::computePatrolPreviewErrors(
         return false;
     }
 
-    std::string raw_frame = raw_plan_.front().header.frame_id;
+    std::string raw_frame =
+        raw_plan_.front().header.frame_id;
     if (raw_frame.empty())
         raw_frame = costmap_frame_;
 
-    std::string optimized_frame = global_plan_.front().header.frame_id;
+    std::string optimized_frame =
+        global_plan_.front().header.frame_id;
     if (optimized_frame.empty())
         optimized_frame = costmap_frame_;
 
     tf::StampedTransform raw_to_base;
     tf::StampedTransform optimized_to_base;
+
     try
     {
         if (raw_frame == base_frame_)
             raw_to_base.setIdentity();
         else
             tf_listener_->lookupTransform(
-                base_frame_, raw_frame, ros::Time(0), raw_to_base);
+                base_frame_,
+                raw_frame,
+                ros::Time(0),
+                raw_to_base);
 
         if (optimized_frame == raw_frame)
             optimized_to_base = raw_to_base;
@@ -1934,50 +2235,86 @@ bool MyPlanner::computePatrolPreviewErrors(
             optimized_to_base.setIdentity();
         else
             tf_listener_->lookupTransform(
-                base_frame_, optimized_frame, ros::Time(0),
+                base_frame_,
+                optimized_frame,
+                ros::Time(0),
                 optimized_to_base);
     }
     catch (const tf::TransformException& ex)
     {
         ROS_WARN_THROTTLE(
-            1.0, "巡检PP前视窗口TF查询失败：%s", ex.what());
+            1.0,
+            "巡检C5预瞄窗口TF查询失败：%s",
+            ex.what());
         return false;
     }
 
     std::vector<PathPoint2D> raw_local;
     raw_local.reserve(raw_plan_.size());
-    for (std::size_t i = 0; i < raw_plan_.size(); ++i)
+
+    for (std::size_t i = 0;
+         i < raw_plan_.size();
+         ++i)
     {
-        const geometry_msgs::PoseStamped& pose = raw_plan_[i];
-        const std::string frame = pose.header.frame_id.empty()
-            ? raw_frame : pose.header.frame_id;
+        const geometry_msgs::PoseStamped& pose =
+            raw_plan_[i];
+
+        const std::string frame =
+            pose.header.frame_id.empty()
+                ? raw_frame
+                : pose.header.frame_id;
 
         PathPoint2D point;
+
         if (frame == raw_frame)
         {
             const tf::Vector3 source(
-                pose.pose.position.x, pose.pose.position.y, 0.0);
-            const tf::Vector3 result = raw_to_base * source;
+                pose.pose.position.x,
+                pose.pose.position.y,
+                0.0);
+
+            const tf::Vector3 result =
+                raw_to_base * source;
+
             point.x = result.x();
             point.y = result.y();
         }
         else
         {
             geometry_msgs::PoseStamped point_base;
-            if (!transformPose(base_frame_, pose, point_base))
+            if (!transformPose(
+                    base_frame_,
+                    pose,
+                    point_base))
+            {
                 return false;
-            point.x = point_base.pose.position.x;
-            point.y = point_base.pose.position.y;
+            }
+
+            point.x =
+                point_base.pose.position.x;
+            point.y =
+                point_base.pose.position.y;
         }
-        point.source_index = static_cast<int>(i);
+
+        point.source_index =
+            static_cast<int>(i);
+
         raw_local.push_back(point);
     }
 
     std::size_t closest = 0;
-    double closest_distance = std::numeric_limits<double>::max();
-    for (std::size_t i = 0; i < raw_local.size(); ++i)
+    double closest_distance =
+        std::numeric_limits<double>::max();
+
+    for (std::size_t i = 0;
+         i < raw_local.size();
+         ++i)
     {
-        const double distance = std::hypot(raw_local[i].x, raw_local[i].y);
+        const double distance =
+            std::hypot(
+                raw_local[i].x,
+                raw_local[i].y);
+
         if (distance < closest_distance)
         {
             closest_distance = distance;
@@ -1985,126 +2322,196 @@ bool MyPlanner::computePatrolPreviewErrors(
         }
     }
 
-    raw_lateral_error = raw_local[closest].y;
+    raw_lateral_error =
+        raw_local[closest].y;
 
     double accumulated = 0.0;
-    double weighted_offset_sum = 0.0;
+    double weighted_optimized_y_sum = 0.0;
     double weight_sum = 0.0;
-    const double preview_center =
-        0.5 * (patrol_pp_preview_start_ + patrol_pp_preview_end_);
-    const double preview_half_width = std::max(
-        1.0e-3,
-        0.5 * (patrol_pp_preview_end_ - patrol_pp_preview_start_));
 
-    for (std::size_t i = closest; i < raw_local.size(); ++i)
+    const double preview_center =
+        0.5
+        * (patrol_pp_preview_start_
+           + patrol_pp_preview_end_);
+
+    const double preview_half_width =
+        std::max(
+            1.0e-3,
+            0.5
+            * (patrol_pp_preview_end_
+               - patrol_pp_preview_start_));
+
+    for (std::size_t i = closest;
+         i < raw_local.size();
+         ++i)
     {
         if (i > closest)
         {
             accumulated += std::hypot(
-                raw_local[i].x - raw_local[i - 1].x,
-                raw_local[i].y - raw_local[i - 1].y);
+                raw_local[i].x
+                    - raw_local[i - 1].x,
+                raw_local[i].y
+                    - raw_local[i - 1].y);
         }
 
-        if (accumulated > patrol_pp_preview_end_)
+        if (accumulated
+            > patrol_pp_preview_end_)
+        {
             break;
-        if (accumulated < patrol_pp_preview_start_)
-            continue;
+        }
 
-        const geometry_msgs::PoseStamped& optimized_pose = global_plan_[i];
-        const std::string frame = optimized_pose.header.frame_id.empty()
-            ? optimized_frame : optimized_pose.header.frame_id;
+        if (accumulated
+            < patrol_pp_preview_start_)
+        {
+            continue;
+        }
+
+        const geometry_msgs::PoseStamped&
+            optimized_pose =
+                global_plan_[i];
+
+        const std::string frame =
+            optimized_pose.header.frame_id.empty()
+                ? optimized_frame
+                : optimized_pose.header.frame_id;
 
         double optimized_y = 0.0;
+
         if (frame == optimized_frame)
         {
             const tf::Vector3 source(
                 optimized_pose.pose.position.x,
                 optimized_pose.pose.position.y,
                 0.0);
-            const tf::Vector3 result = optimized_to_base * source;
+
+            const tf::Vector3 result =
+                optimized_to_base * source;
+
             optimized_y = result.y();
         }
         else
         {
             geometry_msgs::PoseStamped point_base;
-            if (!transformPose(base_frame_, optimized_pose, point_base))
+
+            if (!transformPose(
+                    base_frame_,
+                    optimized_pose,
+                    point_base))
+            {
                 continue;
-            optimized_y = point_base.pose.position.y;
+            }
+
+            optimized_y =
+                point_base.pose.position.y;
         }
 
-        // 两条路径使用相同索引，差值只代表优化器要求的横向避障偏移，
-        // 不包含车辆自身已经偏离原始巡检线的误差。
-        const double offset = optimized_y - raw_local[i].y;
-        const double normalized_distance = std::abs(
-            accumulated - preview_center) / preview_half_width;
-        const double weight = std::max(0.50, 1.0 - 0.50 * normalized_distance);
-        weighted_offset_sum += weight * offset;
+        const double normalized_distance =
+            std::abs(
+                accumulated
+                - preview_center)
+            / preview_half_width;
+
+        const double weight =
+            std::max(
+                0.50,
+                1.0
+                - 0.50
+                * normalized_distance);
+
+        // Patrol-R2直接对master-costmap C5 active path在车体坐标系中的y误差做预瞄加权。
+        weighted_optimized_y_sum +=
+            weight * optimized_y;
         weight_sum += weight;
     }
 
     if (weight_sum <= 1.0e-9)
         return false;
 
-    optimized_lateral_offset = weighted_offset_sum / weight_sum;
+    optimized_lateral_error =
+        weighted_optimized_y_sum
+        / weight_sum;
+
     return std::isfinite(raw_lateral_error)
-        && std::isfinite(optimized_lateral_offset);
+        && std::isfinite(
+            optimized_lateral_error);
 }
+
 
 void MyPlanner::computePatrolPurePursuitCommand(
     const geometry_msgs::PoseStamped& target_pose,
     double control_dt,
     geometry_msgs::Twist& desired_cmd,
     double& raw_lateral_error,
-    double& requested_lateral_offset,
+    double& optimized_lateral_error,
     double& lateral_error)
 {
     desired_cmd = geometry_msgs::Twist();
 
     if (!computePatrolPreviewErrors(
-            raw_lateral_error, requested_lateral_offset))
+            raw_lateral_error,
+            optimized_lateral_error))
     {
-        // 短暂TF或优化器输出异常时保持上一避障偏移，不突然回线。
-        raw_lateral_error = target_pose.pose.position.y
-            - patrol_pp_filtered_offset_;
-        requested_lateral_offset = patrol_pp_filtered_offset_;
+        // C5预瞄暂时不可用时，直接使用已经由
+        // selectPatrolTrackingTarget()从global_plan_(C5 optimized path)
+        // 取得的前视点y，仍然不回到旧raw-offset滤波模型。
+        raw_lateral_error =
+            target_pose.pose.position.y;
+        optimized_lateral_error =
+            target_pose.pose.position.y;
     }
 
-    const double offset_delta =
-        requested_lateral_offset - patrol_pp_filtered_offset_;
-    const bool moving_farther_from_raw_line =
-        requested_lateral_offset * patrol_pp_filtered_offset_ >= 0.0
-        && std::abs(requested_lateral_offset)
-               > std::abs(patrol_pp_filtered_offset_) + 1.0e-6;
-    const double offset_rate = moving_farther_from_raw_line
-        ? patrol_pp_avoid_offset_rate_
-        : patrol_pp_return_offset_rate_;
-    const double max_offset_step = offset_rate * control_dt;
-    patrol_pp_filtered_offset_ += clampValue(
-        offset_delta, -max_offset_step, max_offset_step);
+    lateral_error =
+        optimized_lateral_error;
 
-    lateral_error = raw_lateral_error + patrol_pp_filtered_offset_;
-    if (std::abs(lateral_error) < patrol_pp_lateral_deadband_)
+    if (std::abs(lateral_error)
+        < patrol_pp_lateral_deadband_)
+    {
         lateral_error = 0.0;
+    }
 
     double vy = clampValue(
-        patrol_pp_lateral_gain_ * lateral_error,
-        -patrol_pp_max_vy_, patrol_pp_max_vy_);
+        patrol_pp_lateral_gain_
+            * lateral_error,
+        -patrol_pp_max_vy_,
+        patrol_pp_max_vy_);
 
-    const double speed_cap = std::max(
-        0.05,
-        std::min(c2_max_reference_speed_,
-                 std::min(mpc_max_translational_speed_, max_vel_x_)));
+    const double speed_cap =
+        std::max(
+            0.05,
+            std::min(
+                c2_max_reference_speed_,
+                std::min(
+                    mpc_max_translational_speed_,
+                    max_vel_x_)));
+
     if (std::abs(vy) > speed_cap)
         vy = std::copysign(speed_cap, vy);
 
-    const double vx_speed_circle = std::sqrt(std::max(
-        0.0, speed_cap * speed_cap - vy * vy));
-    const double vx_pp = std::max(
-        0.0, target_pose.pose.position.x * path_linear_x_gain_);
+    const double vx_speed_circle =
+        std::sqrt(
+            std::max(
+                0.0,
+                speed_cap * speed_cap
+                    - vy * vy));
 
-    desired_cmd.linear.x = std::min(vx_pp, vx_speed_circle);
+    const double vx_pp =
+        std::max(
+            0.0,
+            target_pose.pose.position.x
+                * path_linear_x_gain_);
+
+    desired_cmd.linear.x =
+        std::min(
+            vx_pp,
+            vx_speed_circle);
+
     desired_cmd.linear.y = vy;
     desired_cmd.angular.z = 0.0;
+
+    (void)control_dt;
+    // Patrol-R2继续删除位置参考的二次offset滤波；
+    // 横向动作平滑仍由applyPatrolVelocityLimits中的vy加速度限制负责。
+    patrol_pp_filtered_offset_ = 0.0;
 }
 
 bool MyPlanner::computePatrolFinalPositionCommand(
@@ -2195,8 +2602,8 @@ bool MyPlanner::computeInitialRotationCommand(
     desired_cmd = geometry_msgs::Twist();
 
     const bool patrol_pp_active = isPatrolPpActive();
-    // 普通导航仍服从enable_initial_rotation_；固定巡检PP必须完成对准，
-    // 否则随后wz=0会把停靠后的歪车头永久锁住。
+    // 普通导航仍服从enable_initial_rotation_；固定巡检PP先快速旋转到
+    // 约5度内，随后不停车，由行进中的raw_plan_航向闭环继续收敛。
     if (!enable_initial_rotation_ && !patrol_pp_active)
         return false;
 
@@ -2208,10 +2615,11 @@ bool MyPlanner::computeInitialRotationCommand(
     {
         if (patrol_pp_active)
         {
-            patrol_pp_settle_counter_ = 0;
+            markPatrolPpAlignmentComplete();
             transitionTo(
-                ControlState::PATROL_SETTLING,
-                "巡检车头已精确对准原始路径，等待旋转完全停止");
+                ControlState::PATH_TRACKING,
+                "巡检车头已进入5度接管范围，立即开始行进中航向纠偏");
+            ROS_WARN("巡检快速对准完成：不停车等待停稳，优化路径vx/vy与原始线航向保持立即接管。" );
         }
         else
         {
@@ -2222,26 +2630,15 @@ bool MyPlanner::computeInitialRotationCommand(
         return false;
     }
 
-    double angular_speed = 0.0;
-    if (patrol_pp_active)
-    {
-        // 巡检对准不使用普通导航的最小角速度。越接近目标，指令自然越小；
-        // 进入near区域后再限一次速度，避免越过目标后产生大角度超调。
-        angular_speed = std::min(
-            std::abs(angle_error) * patrol_align_kp_,
-            patrol_align_max_wz_);
-        if (std::abs(angle_error) <= patrol_align_near_angle_)
-            angular_speed = std::min(angular_speed, patrol_align_near_wz_);
-    }
-    else
-    {
-        angular_speed =
-            std::abs(angle_error) * initial_angular_gain_;
-        angular_speed =
-            clampValue(angular_speed,
-                       initial_min_angular_speed_,
-                       initial_max_angular_speed_);
-    }
+    // V11：固定巡检与普通导航使用完全相同的纯比例初始姿态调整。
+    // tolerance只负责判定“是否已经对准”；只要还在tolerance外，
+    // 就通过普通导航已有的最小角速度跨过底盘死区。
+    double angular_speed =
+        std::abs(angle_error) * initial_angular_gain_;
+    angular_speed =
+        clampValue(angular_speed,
+                   initial_min_angular_speed_,
+                   initial_max_angular_speed_);
 
     desired_cmd.angular.z =
         std::copysign(angular_speed, angle_error);
@@ -2257,9 +2654,17 @@ double MyPlanner::computePatrolHeadingHoldCommand(double angle_error) const
         return 0.0;
     }
 
-    return clampValue(
+    double wz = clampValue(
         patrol_heading_kp_ * angle_error,
         -patrol_heading_max_wz_, patrol_heading_max_wz_);
+
+    // V11：deadband外必须跨过底盘实际角速度死区。
+    // 复用普通导航initial_min_angular_speed_，避免再维护一套重复参数。
+    if (std::abs(wz) < initial_min_angular_speed_)
+        wz = std::copysign(initial_min_angular_speed_, angle_error);
+
+    return clampValue(
+        wz, -patrol_heading_max_wz_, patrol_heading_max_wz_);
 }
 
 bool MyPlanner::computeFinalPoseCommand(
@@ -2363,15 +2768,63 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 {
     cmd_vel = geometry_msgs::Twist();
 
-    if (!initialized_
-        || raw_plan_.empty()
-        || costmap_ros_ == NULL)
-    {
+    if (!initialized_ || costmap_ros_ == NULL)
         return false;
-    }
 
     // 所有运行时参数在路径处理和MPC求解前刷新，保证同一控制周期生效。
     refreshRuntimeParameters();
+
+    bool patrol_pp_active = false;
+    std::vector<geometry_msgs::PoseStamped> forced_patrol_plan;
+    std::uint32_t forced_revision = 0;
+    {
+        // Patrol-R2：在同一把互斥锁内完成“是否巡检 + Reference快照”，避免路线切换时
+        // lock/unlock与控制循环交错造成一帧状态不一致。
+        std::lock_guard<std::mutex> lock(patrol_path_mutex_);
+        patrol_pp_active = patrol_pp_enabled_
+            && patrol_path_locked_
+            && staged_patrol_plan_.size() >= 2;
+        if (patrol_pp_active)
+        {
+            forced_patrol_plan = staged_patrol_plan_;
+            forced_revision = patrol_path_revision_;
+            active_plan_is_patrol_ = true;
+        }
+    }
+
+    // Patrol-R2：固定巡检Reference具有最高路径所有权。只要锁开启且staged Path有效，
+    // 每个控制周期都从staged_patrol_plan_重新取得权威直线Reference，并覆盖raw_plan_。
+    // move_base即使下发一条沿墙体inflation外侧的弯曲GlobalPlanner路线，也只能
+    // 作为控制循环“外壳”；真正的巡检Reference始终由staged Path决定。
+    if (patrol_pp_active)
+    {
+        const bool revision_changed =
+            forced_revision != applied_patrol_path_revision_;
+
+        raw_plan_ = forced_patrol_plan;
+        global_plan_ = forced_patrol_plan;
+        goal_pose_ = forced_patrol_plan.back();
+        has_goal_ = true;
+
+        if (revision_changed)
+        {
+            applied_patrol_path_revision_ = forced_revision;
+            target_index_ = 0;
+            collision_replan_confirm_counter_ = 0;
+            c5_failure_replan_confirm_counter_ = 0;
+            c5_failure_replan_candidate_ = false;
+            c5_failure_replan_reason_.clear();
+            resetPatrolPpState();
+            ROS_WARN(
+                "Patrol-R2巡检Reference切换：修订号=%u，点数=%zu，"
+                "raw/reference已强制使用理论直线；后续几何优化只交给C5。",
+                static_cast<unsigned int>(forced_revision),
+                forced_patrol_plan.size());
+        }
+    }
+
+    if (raw_plan_.empty())
+        return false;
 
     const ros::Time now = ros::Time::now();
 
@@ -2392,18 +2845,13 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
             dt, mpc_dt_);
     }
 
-    // 1. 路径预处理保持独立。旧路径治愈默认关闭；C4.1优化器默认shadow。
-    updateHealedPath();
-    updateClearanceOptimizedPath();
-    const bool patrol_pp_active = isPatrolPpActive();
-
-    // 2. 重规划开关开启时，前方路径命中死区才停车并返回false。
-    // 关闭后完全跳过此检查，不会由该分支请求move_base重规划。
-    if (enable_path_replanning_ && !checkPathCollision())
+    // C5.4：最终位姿控制是独立控制阶段。一旦进入FINAL_SETTLING/GOAL_HOLD，
+    // 不再运行C5或global replan，避免终点附近raw path的253/254、短窗口和
+    // costmap边界把已经接管的C3.2最终位姿调整重新打回FAILURE_STOP。
+    if (control_state_ == ControlState::GOAL_HOLD)
     {
-        transitionTo(ControlState::FAILURE_STOP, "前方全局路径碰撞");
         stopImmediately(cmd_vel);
-        return false;
+        return true;
     }
 
     geometry_msgs::PoseStamped final_pose;
@@ -2419,13 +2867,137 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
     const double final_distance =
         std::hypot(final_pose.pose.position.x,
                    final_pose.pose.position.y);
-    if (control_state_ == ControlState::GOAL_HOLD)
+
+    if (!patrol_pp_active
+        && control_state_ != ControlState::FINAL_SETTLING
+        && final_distance < goal_dist_threshold_)
     {
-        stopImmediately(cmd_vel);
-        return true;
+        transitionTo(
+            ControlState::FINAL_SETTLING,
+            "进入C3.2原始终点位姿调整");
+        ROS_INFO("距离目标 %.3fm，进入终点位姿调整。",
+                 final_distance);
     }
 
     geometry_msgs::Twist desired_cmd;
+
+    if (!patrol_pp_active
+        && control_state_ == ControlState::FINAL_SETTLING)
+    {
+        // FINAL_SETTLING阶段完全绕过C5与global replan，只运行原C3.2终点控制。
+        collision_replan_confirm_counter_ = 0;
+        c5_failure_replan_confirm_counter_ = 0;
+        c5_failure_replan_candidate_ = false;
+        c5_failure_replan_reason_.clear();
+
+        if (computeFinalPoseCommand(final_pose, desired_cmd))
+        {
+            stopImmediately(cmd_vel);
+            return true;
+        }
+
+        applyVelocityAndAccelerationLimits(
+            desired_cmd, cmd_vel, dt);
+        return true;
+    }
+
+    // 1. 路径链重新收敛：
+    // 普通导航：move_base raw -> path healing -> master costmap C5 -> MPC。
+    // 固定巡检：staged直线Reference ->【跳过path healing】-> master costmap C5
+    //          -> optimized path -> Patrol PP。
+    // 因而墙体inflation允许把optimized path推离墙面；但raw/reference本身永远保持理论直线。
+    if (patrol_pp_active)
+    {
+        global_plan_ = raw_plan_;  // C5的输入Reference必须每周期从理论直线重新开始。
+        target_index_ = std::max(
+            0,
+            std::min(target_index_,
+                     static_cast<int>(global_plan_.size()) - 1));
+
+        // 巡检明确跳过旧path healing，只运行唯一C5；C5直接读取master costmap，
+        // 因此墙体inflation和赛道内真实路障都参与同一套连续优化。
+        updateClearanceOptimizedPath();
+
+        // 安全规则：巡检关闭global replan并不等于允许C5失败后退回raw直线硬冲。
+        // 当C5明确确认fresh/HOLD/reuse均无安全active path时，本周期停车并等待下周期恢复。
+        if (c5_failure_replan_candidate_)
+        {
+            transitionTo(
+                ControlState::FAILURE_STOP,
+                std::string("巡检C5无安全optimized path：") + c5_failure_replan_reason_);
+            stopImmediately(cmd_vel);
+            ROS_ERROR_THROTTLE(
+                0.5,
+                "[巡检C5][STOP] master costmap下无安全optimized path，reason=%s；"
+                "本周期强制停车，绝不fallback到raw直线。",
+                c5_failure_replan_reason_.c_str());
+            return true;
+        }
+
+        // 仅用于终端判断“C5是否真的在改线”。raw和optimized点数在C5中保持一致。
+        double maximum_deviation = 0.0;
+        if (global_plan_.size() == raw_plan_.size())
+        {
+            for (std::size_t i = 0; i < global_plan_.size(); ++i)
+            {
+                const double dx = global_plan_[i].pose.position.x
+                    - raw_plan_[i].pose.position.x;
+                const double dy = global_plan_[i].pose.position.y
+                    - raw_plan_[i].pose.position.y;
+                maximum_deviation = std::max(
+                    maximum_deviation,
+                    std::hypot(dx, dy));
+            }
+        }
+
+        if (maximum_deviation > 0.020)
+        {
+            ROS_WARN_THROTTLE(
+                0.5,
+                "[巡检C5][ACTIVE] Reference保持理论直线，C5正在使用master inflation优化；"
+                "当前最大几何偏移=%.3fm，Patrol PP跟踪optimized path。",
+                maximum_deviation);
+        }
+        else
+        {
+            ROS_INFO_THROTTLE(
+                2.0,
+                "[巡检C5][STRAIGHT] Reference为固定直线；当前C5偏移仅%.3fm。",
+                maximum_deviation);
+        }
+    }
+    else
+    {
+        // 普通move_base导航保持完整C5.4原逻辑。
+        updateHealedPath();
+        updateClearanceOptimizedPath();
+    }
+
+    // 2. 全局重规划只属于普通导航。
+    // 巡检Reference是任务强制直线，即使raw直线穿过254也不能让GlobalPlanner把它改弯；
+    // 真实障碍由上面的master-costmap C5局部优化处理，C5明确无安全解则停车等待恢复。
+    if (!patrol_pp_active && enable_path_replanning_)
+    {
+        if (!checkPathCollision())
+        {
+            transitionTo(ControlState::FAILURE_STOP, "raw全局路径确认进入LETHAL");
+            stopImmediately(cmd_vel);
+            return false;
+        }
+
+        if (!checkC5FailureReplan())
+        {
+            transitionTo(ControlState::FAILURE_STOP, "C5连续无法提供安全active path");
+            stopImmediately(cmd_vel);
+            return false;
+        }
+    }
+    else
+    {
+        // 固定巡检不请求GlobalPlanner重规划；普通导航关闭开关时也清确认状态。
+        collision_replan_confirm_counter_ = 0;
+        c5_failure_replan_confirm_counter_ = 0;
+    }
 
     // V7续巡保护：对准要求使用独立闩锁，不依赖某一次setPlan是否成功
     // 把control_state_留在WAITING_FOR_PLAN。只要新固定Path尚未完成对准，
@@ -2443,35 +3015,7 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         ROS_WARN("巡检续巡对准闩锁生效：禁止带着停靠后的残余航向直接进入平移跟踪。");
     }
 
-    // 3. 恢复C3.2原始终点逻辑：距离小于阈值立即退出MPC，
-    // 由独立XYZ比例控制持续调整到位姿阈值，不等待速度条件，
-    // 不执行C4.0的厘米级轨迹安全检查和静止保持计时。
-    if (!patrol_pp_active
-        && control_state_ != ControlState::FINAL_SETTLING
-        && final_distance < goal_dist_threshold_)
-    {
-        transitionTo(
-            ControlState::FINAL_SETTLING,
-            "进入C3.2原始终点位姿调整");
-        ROS_INFO("距离目标 %.3fm，进入终点位姿调整。",
-                 final_distance);
-    }
-
-    if (!patrol_pp_active
-        && control_state_ == ControlState::FINAL_SETTLING)
-    {
-        if (computeFinalPoseCommand(final_pose, desired_cmd))
-        {
-            stopImmediately(cmd_vel);
-            return true;
-        }
-
-        applyVelocityAndAccelerationLimits(
-            desired_cmd, cmd_vel, dt);
-        return true;
-    }
-
-    // 4. 新目标只在确有必要时进入初始对准；依据路径切线而非前视点方位。
+    // 3. 新目标只在确有必要时进入初始对准；依据路径切线而非前视点方位。
     if (control_state_ == ControlState::WAITING_FOR_PLAN)
     {
         double tangent_error = 0.0;
@@ -2488,14 +3032,16 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
             {
                 transitionTo(
                     ControlState::INITIAL_ALIGN,
-                    "巡检车头需要精确对准原始固定路径");
+                    "巡检车头需要转入原始固定路径的精确对准范围");
             }
             else
             {
-                patrol_pp_settle_counter_ = 0;
+                markPatrolPpAlignmentComplete();
                 transitionTo(
-                    ControlState::PATROL_SETTLING,
-                    "巡检车头已在精确阈值内，等待旋转完全停止");
+                    ControlState::PATH_TRACKING,
+                    "巡检车头已在精确对准范围内，直接开始路径跟踪");
+                ROS_WARN("巡检无需额外停稳：当前航向已在%.1f度内，立即开始路径跟踪。",
+                         patrol_pp_align_tolerance_ * 180.0 / M_PI);
             }
         }
         else if (shouldEnterInitialAlign(tangent_error))
@@ -2532,81 +3078,12 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 
     if (control_state_ == ControlState::PATROL_SETTLING)
     {
-        if (!patrol_pp_active)
-        {
-            transitionTo(
-                ControlState::PATH_TRACKING,
-                "固定巡检PP已解除，恢复普通路径控制");
-        }
-        else
-        {
-            double tangent_error = 0.0;
-            if (!computeInitialPathTangentError(tangent_error))
-            {
-                transitionTo(
-                    ControlState::FAILURE_STOP,
-                    "巡检停稳复查时无法计算原始路径切线");
-                stopImmediately(cmd_vel);
-                return false;
-            }
-
-            // 进入角度阈值后车体仍可能因惯性越过目标。停稳阶段必须每帧
-            // 复查最终航向；一旦超差，立即按误差符号反向低速回调。
-            if (std::abs(tangent_error) > patrol_pp_align_tolerance_)
-            {
-                patrol_pp_settle_counter_ = 0;
-                transitionTo(
-                    ControlState::INITIAL_ALIGN,
-                    "巡检停车后航向越过目标并超出容差，立即反向回调");
-
-                if (computeInitialRotationCommand(tangent_error, desired_cmd))
-                {
-                    applyVelocityAndAccelerationLimits(
-                        desired_cmd, cmd_vel, dt);
-                    ROS_WARN_THROTTLE(
-                        0.5,
-                        "巡检对准超调回调：航向误差=%.2f度，cmd_wz=%.3frad/s。",
-                        tangent_error * 180.0 / M_PI,
-                        cmd_vel.angular.z);
-                    return true;
-                }
-            }
-
-            const MeasuredBodyState measured = getMeasuredBodyState(now);
-            const bool heading_aligned =
-                std::abs(tangent_error) <= patrol_pp_align_tolerance_;
-            const bool angular_stopped =
-                std::abs(measured.omega) <= patrol_pp_settle_omega_
-                && std::abs(last_cmd_vel_.angular.z)
-                       <= patrol_pp_settle_omega_;
-
-            if (heading_aligned && angular_stopped)
-                ++patrol_pp_settle_counter_;
-            else
-                patrol_pp_settle_counter_ = 0;
-
-            desired_cmd = geometry_msgs::Twist();
-            if (patrol_pp_settle_counter_ < patrol_pp_settle_frames_)
-            {
-                applyVelocityAndAccelerationLimits(
-                    desired_cmd, cmd_vel, dt);
-                ROS_INFO_THROTTLE(
-                    0.5,
-                    "巡检PP等待最终对准并停稳：航向误差=%.2f度，"
-                    "omega=%.3frad/s，命令wz=%.3f，稳定帧=%d/%d。",
-                    tangent_error * 180.0 / M_PI,
-                    measured.omega, cmd_vel.angular.z,
-                    patrol_pp_settle_counter_, patrol_pp_settle_frames_);
-                return true;
-            }
-
-            last_cmd_vel_.angular.z = 0.0;
+        // 兼容复位前残留的旧V9状态：V10不再执行停车精调阶段。
+        if (patrol_pp_active)
             markPatrolPpAlignmentComplete();
-            transitionTo(
-                ControlState::PATH_TRACKING,
-                "巡检最终航向正确且旋转已停稳，开始平移追踪和航向保持");
-            ROS_WARN("巡检全向PP开始：优化路径控制vx/vy，原始巡检线闭环保持航向。" );
-        }
+        transitionTo(
+            ControlState::PATH_TRACKING,
+            "V10取消巡检停车精调，立即进入边走边航向保持");
     }
 
     if (control_state_ == ControlState::FAILURE_STOP)
@@ -2661,26 +3138,38 @@ bool MyPlanner::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
         }
 
         double raw_lateral_error = 0.0;
-        double requested_lateral_offset = 0.0;
+        double optimized_lateral_error = 0.0;
         double lateral_error = 0.0;
+
         computePatrolPurePursuitCommand(
-            patrol_target, dt, desired_cmd,
+            patrol_target,
+            dt,
+            desired_cmd,
             raw_lateral_error,
-            requested_lateral_offset,
+            optimized_lateral_error,
             lateral_error);
-        desired_cmd.angular.z = patrol_heading_wz;
-        applyPatrolVelocityLimits(desired_cmd, cmd_vel, dt);
+
+        desired_cmd.angular.z =
+            patrol_heading_wz;
+
+        applyPatrolVelocityLimits(
+            desired_cmd,
+            cmd_vel,
+            dt);
 
         ROS_INFO_THROTTLE(
             0.5,
-            "巡检全向PP：raw_y=%.3f，优化偏移=%.3f，滤波偏移=%.3f，"
-            "横向误差=%.3f，航向误差=%.2f度，target_x=%.3f，"
+            "巡检C5全向PP：raw_y=%.3f，optimized预瞄y=%.3f，"
+            "实际横向误差=%.3f，航向误差=%.2f度，target_x=%.3f，"
             "cmd=(%.3f,%.3f,%.3f)，index=%d。",
-            raw_lateral_error, requested_lateral_offset,
-            patrol_pp_filtered_offset_, lateral_error,
+            raw_lateral_error,
+            optimized_lateral_error,
+            lateral_error,
             patrol_heading_error * 180.0 / M_PI,
             patrol_target.pose.position.x,
-            cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z,
+            cmd_vel.linear.x,
+            cmd_vel.linear.y,
+            cmd_vel.angular.z,
             target_index_);
         return true;
     }

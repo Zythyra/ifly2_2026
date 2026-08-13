@@ -1,3 +1,5 @@
+# IFLY2026 V11：真实角点 + 巡检纯P对准 + 航向死区补偿 + 横移增强
+# 基于V10，其余MPC/C4.1参数保持不变。
 # =============================================================================
 # MyPlanner V6：普通导航LTV-MPC＋固定巡检Path专用全向PP
 # =============================================================================
@@ -171,12 +173,28 @@ path_linear_y_gain: 2.00
 lateral_search_points: 10
 path_angular_y_gain: 10.00
 
-# 可在运行中修改：
-# true：检测到前方全局路径进入死区后停车并返回false，请求move_base重规划；
-# false：跳过这项死区检查，继续执行当前全局路径。
+# C5.4：全局重规划与C5 active path彻底分离，并采用双触发源。
+# A) raw global path连续进入真正LETHAL；B) C5连续无法提供任何安全active path。
+# FINAL_SETTLING / GOAL_HOLD阶段完全禁止路径重规划。
 enable_path_replanning: true
-collision_check_lookahead_points: 20
-collision_cost_threshold: 253
+
+# 从当前路径进度沿raw_plan_累计真实弧长进行前视。
+collision_check_lookahead_distance: 0.60
+
+# raw lethal连续确认。20Hz下2帧约0.10s，可滤掉单帧costmap抖动。
+collision_replan_confirm_frames: 2
+
+# C5 fresh/HOLD/reuse均无安全active path时的独立确认。
+# 3帧约0.15s，允许短时warm-start/escape恢复，持续失败再让global planner改拓扑。
+c5_failure_replan_confirm_frames: 3
+
+# 254=LETHAL_OBSTACLE。253=INSCRIBED_INFLATED_OBSTACLE继续交给C5处理，
+# 不再因为C5已经能绕开的253区域频繁停车/重规划。
+collision_cost_threshold: 254
+
+# 255=NO_INFORMATION是否也直接作为raw全局重规划触发。
+# 默认false，避免rolling costmap内部未知格造成假重规划；地图边界外本来就会跳过。
+collision_replan_on_unknown: false
 
 enable_initial_rotation: true
 
@@ -204,7 +222,7 @@ final_max_vel_theta: 0.90
 
 # 可在运行中修改：/move_base/MyPlanner/max_vel_x
 max_vel_x: 1.00
-max_vel_y: 0.35
+max_vel_y: 0.45
 max_vel_theta: 2.50
 acc_lim_x: 2.00
 acc_lim_y: 2.00
@@ -220,103 +238,154 @@ patrol_goal_position_tolerance: 0.05
 patrol_goal_yaw_tolerance: 0.15
 
 # -----------------------------------------------------------------------------
-# V9 固定巡检Path专用全向PP＋原始巡检线航向保持
+# V10 固定巡检Path专用全向PP＋快速起步对准＋原始巡检线航向保持
 # -----------------------------------------------------------------------------
 # 仅当固定巡检路径已经锁定，并且当前setPlan确实套用了该路径时生效。
 # 普通导航、前往停靠点、视觉横移和雷达逼近仍沿用原有控制流程。
 patrol_pp_enabled: true
 
-# 开始巡检前沿原始固定线精确对准。巡检专用比例旋转没有最小角速度，
-# 进入near区域后进一步限速，避免停车过晚并越过目标约15度。
-patrol_pp_align_tolerance_deg: 1.0
+# V11：开始/续巡前直接复用普通导航初始姿态P控制；
+# 误差进入1.5度后退出纯旋转并开始vx/vy跟踪。
+patrol_pp_align_tolerance_deg: 1.5
+# 旧巡检旋转参数保留兼容；V11起步旋转实际复用普通导航initial_*参数。
 patrol_pp_settle_omega: 0.03
 patrol_pp_settle_frames: 4
 patrol_align_kp: 1.50
 patrol_align_max_wz: 0.40
-patrol_align_near_angle_deg: 5.0
-patrol_align_near_wz: 0.06
+patrol_align_near_angle_deg: 10.0
+patrol_align_near_wz: 0.18
 
 # 正式巡检不停车重对准。目标航向始终取raw_plan_原始巡检线切线，
 # wz=Kp*(目标航向-实际航向)，优化路径仍只决定vx/vy和横向避障。
 patrol_heading_hold_enabled: true
-patrol_heading_kp: 1.20
-patrol_heading_max_wz: 0.18
+patrol_heading_kp: 1.50
+patrol_heading_max_wz: 0.30
 patrol_heading_deadband_deg: 0.5
-patrol_heading_acc_lim: 0.60
+patrol_heading_acc_lim: 1.50
 
-# 前进PP前视距离；横向偏移不追逐单个点，而是统计前方窗口内
-# “优化路径－原始巡检线”的平均偏移，连续路障期间保持稳定的平台偏移。
+# Patrol-R2：巡检Reference由staged固定直线强制提供，不经过GlobalPlanner/path healing；
+# 唯一C5直接使用master costmap（包括墙体inflation和真实路障）生成optimized path。
+# Patrol PP只用optimized决定vx/vy；Yaw始终跟raw/reference直线，因此绕障时车头不会跟弧线乱摆。
 patrol_pp_lookahead_dist: 0.35
-patrol_pp_preview_start: 0.20
-patrol_pp_preview_end: 0.80
-patrol_pp_lateral_gain: 1.80
+patrol_pp_preview_start: 0.15
+patrol_pp_preview_end: 0.90
+patrol_pp_lateral_gain: 2.80
 patrol_pp_lateral_deadband: 0.01
-patrol_pp_max_vy: 0.20
-patrol_pp_acc_lim_y: 0.80
+patrol_pp_max_vy: 0.40
+patrol_pp_acc_lim_y: 1.60
 
-# 避障偏移建立较快；优化器短暂回零或障碍通过后，较慢回归原始巡检线。
-patrol_pp_avoid_offset_rate: 0.35
+# C5.4已删除“优化offset再二次低通”的位置参考模型。
+# 下面两个旧参数源码仍会读取默认值以保持配置兼容，但不再参与巡检XY控制。
+patrol_pp_avoid_offset_rate: 0.50
 patrol_pp_return_offset_rate: 0.15
 
 # 巡检终点仍只以x/y判断到达，不要求特定终点姿态；但接近终点期间
 # 航向保持继续工作，避免车身在减速段再次歪斜。
 patrol_pp_goal_slowdown_distance: 0.30
-patrol_pp_goal_position_tolerance: 0.04
+patrol_pp_goal_position_tolerance: 0.015
 
-# C4.1.2将shadow_mode改为可运行时切换的区域旁路开关：
-# - true：BYPASS走廊模式，不运行净空优化，MPC跟踪原始/治愈路径；
-# - false：ACTIVE路障区模式，运行净空优化并将结果交给MPC；
-# - 模式改变时自动清空优化历史，参数在下一个控制周期生效。
+# Patrol-R2不再使用V15/V16的动态障碍过滤/重新膨胀图：
+# 巡检和普通导航共用下方唯一C5与master costmap。墙体inflation允许把optimized往场地内部推，
+# 遇到真正路障时继续由同一C5在此基础上进一步局部绕行。shadow_mode仍被忽略。
+
 clearance_optimizer:
+  # ===========================================================================
+  # C5.4：稳定active-path轨迹优化器（唯一C5）
+  # ===========================================================================
+  # 不再使用shadow_mode；旧巡检脚本即使继续rosparam set shadow_mode，
+  # MyPlanner也不会读取它。普通导航、导航停靠、固定巡检全部经过C5。
   enabled: true
-  shadow_mode: true
-  publish_debug_paths: true
-  update_rate: 5.0
 
-  # cost=254才是距离场种子；1~253均只作为软代价。
-  # unknown仍不允许优化路径进入，但它不会被当作障碍生成错误推力。
+  publish_debug_paths: true
+
+  # 地图内部unknown默认仍视为不可进入；“超出rolling local costmap”不再等同unknown，
+  # C5.4会自动缩短当前前视窗口。
   reject_unknown: true
 
-  # 局部Frenet窗口与离散精度。
-  forward_window: 1.40
-  backward_window: 0.10
-  longitudinal_step: 0.04
-  lateral_step: 0.02
-  max_lateral_offset: 0.35
-  max_lateral_change_per_step: 0.04
+  # fresh优化偶发失败时，用上一轮offset重建“当前”滚动窗口；
+  # 通过当前costmap验证后继续作为active path，避免瞬间退回raw。
+  hold_last_valid: true
 
-  # 车前已承诺部分保持原路径；窗口末端回到原路径，便于无缝拼接。
-  commitment_distance: 0.12
-  end_blend_distance: 0.20
-
-  # 二代车实测约0.34m×0.26m。这里用于方向支撑半径净空估算，
-  # 不是逐栅格完整footprint硬碰撞检查。
-  robot_half_length: 0.17
-  robot_half_width: 0.13
-  extra_clearance_margin: 0.00
-  preferred_clearance: 0.10
-  distance_field_max_distance: 2.00
-
-  # 横向格点动态规划：净空/膨胀/原路径/历史/一二阶连续性。
-  weight_clearance: 120.0
-  weight_inflation: 2.0
-  weight_reference: 6.0
-  weight_history: 10.0
-  weight_lateral_slope: 80.0
-  weight_lateral_curvature: 250.0
+  # 首次左右完全对称时的小探针；完全对称时优先左侧，保证确定性。
   prefer_left_on_first_solution: true
+  initial_probe_offset: 0.025
 
-  # TEB/CHOMP式弹性细化。只细化格点种子，不独立决定绕障方向。
-  elastic_iterations: 15
-  elastic_step_size: 0.015
-  elastic_max_step: 0.006
-  elastic_weight_seed: 12.0
-  elastic_weight_reference: 2.0
-  elastic_weight_history: 6.0
-  elastic_weight_smoothness: 100.0
-  elastic_weight_clearance: 60.0
+  # raw/warm seed已经进入hard时，沿路径法向按该步长逐层寻找最小安全escape seed。
+  escape_probe_step: 0.025
 
-  # 只检查局部中心线是否穿过cost=254/unknown，不扫描完整footprint。
-  centerline_check_step: 0.01
-  max_accepted_curvature: 12.0
-  max_history_jump: 0.18
+  # ---------------------------------------------------------------------------
+  # 滚动局部窗口
+  # ---------------------------------------------------------------------------
+  # 仍保持C5.0已经验证过的几何尺度。
+  forward_window: 1.50
+  backward_window: 0.08
+  min_window_length: 0.35
+  control_point_spacing: 0.12
+  sample_step: 0.025
+
+  # 到rolling local costmap边缘至少保留该距离；前视超出地图时自动缩短，
+  # 不再因为窗口末端越界导致optimized_path整段消失。
+  map_edge_margin: 0.05
+
+  # 近车端保持raw，避免新旧active path切换时突然横跳。
+  # 末端使用连续blend回raw，但不再把整段末端控制点锁死。
+  commitment_distance: 0.10
+  start_blend_distance: 0.10
+  end_blend_distance: 0.22
+
+  # ---------------------------------------------------------------------------
+  # cost触发与滞回
+  # ---------------------------------------------------------------------------
+  # 未激活时，raw最大cost>=70进入C5避障。
+  activation_cost: 70
+
+  # 已激活后，只有raw最大cost<50才释放回SAFE_RAW；
+  # 50~69区间继续保留C5，避免阈值附近一帧raw/一帧optimized闪烁。
+  deactivation_cost: 50
+
+  # ROS costmap：253仍按软膨胀处理，254才是LETHAL。
+  hard_cost_threshold: 254
+
+  max_lateral_offset: 0.30
+  max_offset_delta_per_control: 0.07
+
+  # ---------------------------------------------------------------------------
+  # 连续优化
+  # ---------------------------------------------------------------------------
+  # 保持C5.0已验证良好的几何权重，不在C5.4重新调形状。
+  max_iterations: 8
+  finite_difference_epsilon: 0.004
+  learning_rate: 0.030
+  max_offset_step: 0.018
+  convergence_delta: 0.0001
+
+  weight_cost: 28.0
+  weight_reference: 2.5
+  weight_slope: 18.0
+  weight_curvature: 70.0
+  hard_collision_penalty: 1500.0
+
+  # ---------------------------------------------------------------------------
+  # Warm Start / HOLD
+  # ---------------------------------------------------------------------------
+  warm_start_weight: 0.75
+  warm_start_max_distance: 0.22
+
+  # ---------------------------------------------------------------------------
+  # C5.4：active trajectory稳定性
+  # ---------------------------------------------------------------------------
+  # 借鉴TEB的warm-start/轨迹延续语义：fresh和HOLD都暂时不可用时，
+  # 在很短时间内继续使用最后一条已经通过当前costmap安全检查的active path。
+  # 该缓存绝不会因为“复用”而刷新时间戳，因此不会无限续命。
+  reuse_last_active: true
+  active_reuse_max_age: 0.35
+  active_reuse_goal_tolerance: 0.10
+
+  # 全向底盘没有非完整最小转弯半径约束，因此曲率继续作为weight_curvature软代价，
+  # 默认只做质量提示，不再因为单个2.5cm采样点曲率峰值直接拒绝整条路径。
+  curvature_warn_threshold: 12.0
+
+  # 0.0 = 关闭曲率硬门槛。仅当后续实车确认极端几何曲率确实会导致MPC不可跟踪时，
+  # 才建议设置一个明显高于正常工作区间的emergency值，例如20~25。
+  curvature_hard_limit: 0.0
+

@@ -1,0 +1,154 @@
+<launch>
+  <!-- IFLY2026_FIXED_PATH_PATROL_V12_SAFE_OFFSET_CORNER_TRANSITION_20260810 -->
+  <!-- 目标类别只允许 food、daily、electronic，且两者不能相同。 -->
+  <arg name="real_target_category" default="food" />
+  <arg name="simulation_target_category" default="daily" />
+
+  <!-- 如果主launch已经启动simple_move_control，请设为false，避免重名。 -->
+  <arg name="start_simple_move_control" default="true" />
+
+  <node if="$(arg start_simple_move_control)"
+        pkg="ucarmain2026"
+        type="simple_move_control"
+        name="simple_move_control"
+        output="screen">
+    <!-- 视觉或主节点阻塞超过0.5秒时，底盘独立自动停车。 -->
+    <param name="command_timeout" value="0.50" />
+  </node>
+
+  <node pkg="ucarmain2026"
+        type="target_patrol_docking"
+        name="target_patrol_docking"
+        output="screen">
+    <param name="real_target_category" value="$(arg real_target_category)" />
+    <param name="simulation_target_category"
+           value="$(arg simulation_target_category)" />
+
+
+    <!-- V12巡检中心线：
+         起点move_base=(0.25,4.25,0deg)，随后横移到(0.25,4.30)。
+         1) y=4.30，到x=4.75；同步过渡到(4.80,4.30,-90deg)。
+         2) x=4.80，到y=2.75；同步过渡到(4.80,2.70,-180deg)。
+         3) y=2.70，到x=0.25；同步过渡到(0.20,2.70,+90deg)。
+         4) x=0.20，最终停在y=4.25。 -->
+    <param name="map_frame" value="map" />
+    <param name="base_frame" value="base_link" />
+    <param name="scan_topic" value="/scan" />
+
+    <!-- 场地边界。 -->
+    <param name="room_min_x" value="0.0" />
+    <param name="room_max_x" value="5.0" />
+    <param name="room_min_y" value="2.5" />
+    <param name="room_max_y" value="4.5" />
+    <!-- 初始点位于原巡检线交点，车头沿+x方向向前。 -->
+    <param name="start_x" value="0.25" />
+    <param name="start_y" value="4.25" />
+    <param name="start_yaw_deg" value="0.0" />
+    <param name="navigation_timeout" value="180.0" />
+
+    <!--
+      巡检不再直接发布速度。主节点按0.02m间隔生成当前投影点到段末的
+      nav_msgs/Path，锁定到MyPlanner，然后异步发送同一终点move_base目标。
+      四条基准线全部走到真实角点；上一段终点与下一段起点严格重合。
+    -->
+    <param name="planner_private_namespace" value="/move_base/MyPlanner" />
+    <param name="patrol_path_spacing" value="0.02" />
+    <param name="patrol_speed_limit" value="0.60" />
+    <param name="normal_navigation_speed_limit" value="1.00" />
+    <param name="patrol_cancel_timeout" value="3.0" />
+    <param name="patrol_interface_timeout" value="3.0" />
+    <!--
+      固定巡检包含原地换向和连续小幅横移；move_base默认振荡监视会把它们
+      误判为oscillation并在约8秒后ABORT。巡检时临时关闭，普通导航时恢复。
+      若仍遇到其他瞬时ABORT，最多从当前位置重建剩余Path并续跑2次。
+    -->
+    <param name="move_base_reconfigure_service"
+           value="/move_base/set_parameters" />
+    <param name="disable_move_base_oscillation_during_patrol" value="true" />
+    <param name="normal_move_base_oscillation_timeout" value="8.0" />
+    <param name="patrol_aborted_retry_count" value="2" />
+    <param name="segment_end_tolerance" value="0.015" />
+    <param name="control_rate" value="15.0" />
+
+    <!-- V12：安全偏移巡检线角点过渡。短距离过渡直接使用/set_speed，
+         XY位置与yaw同时闭环，不使用move_base最终姿态调整。 -->
+    <param name="patrol_transition_position_kp" value="2.50" />
+    <param name="patrol_transition_yaw_kp" value="2.00" />
+    <param name="patrol_transition_min_linear_speed" value="0.025" />
+    <param name="patrol_transition_max_linear_speed" value="0.12" />
+    <param name="patrol_transition_min_angular_speed" value="0.12" />
+    <param name="patrol_transition_max_angular_speed" value="0.65" />
+    <param name="patrol_transition_linear_accel" value="0.60" />
+    <param name="patrol_transition_angular_accel" value="1.50" />
+    <param name="patrol_transition_position_tolerance" value="0.012" />
+    <param name="patrol_transition_yaw_tolerance_deg" value="1.5" />
+    <param name="patrol_transition_stable_frames" value="3" />
+    <param name="patrol_transition_timeout" value="8.0" />
+    <!-- NanoDet巡检采用图像左侧三分之二区域；停靠对准仍使用全画面。 -->
+    <param name="image_width" value="640" />
+    <!-- 640宽、约60度水平视场角时fx约554.256；有标定值时替换这里。 -->
+    <param name="camera_fx" value="554.256" />
+    <param name="camera_yaw_offset_deg" value="0.0" />
+    <!-- 板边界坐标向场地内延伸0.5m，作为move_base停靠导航点。 -->
+    <param name="docking_standoff" value="0.50" />
+    <param name="settle_time" value="0.25" />
+    <param name="ocr_attempts" value="3" />
+    <param name="ocr_retry_interval" value="0.12" />
+    <!--
+      OCR只命中“品/加/工/车/间”而没有类别关键字时，原地逆时针
+      转30度并只复识一次。类别关键字：食；日/用；电/子/产/生。
+    -->
+    <param name="ocr_recovery_turn_deg" value="30.0" />
+    <param name="ocr_recovery_turn_kp" value="2.0" />
+    <param name="ocr_recovery_turn_min_speed" value="0.18" />
+    <param name="ocr_recovery_turn_max_speed" value="0.45" />
+    <param name="ocr_recovery_turn_tolerance_deg" value="1.5" />
+    <param name="ocr_recovery_turn_stable_frames" value="3" />
+    <param name="ocr_recovery_turn_timeout" value="5.0" />
+    <param name="ocr_recovery_settle_time" value="0.35" />
+    <param name="max_detection_duration" value="0.50" />
+    <!-- 同一墙面上估计坐标相距不超过0.5m，判定为同一块板。 -->
+    <param name="duplicate_coordinate_distance" value="0.50" />
+    <!--
+      超过该距离时记录“大跨度重新捕获”警告，但不再把全画面中的
+      有效框直接判为丢失，避免目标进入右侧三分之一后无法恢复跟踪。
+    -->
+    <param name="max_track_jump_px" value="140.0" />
+    <param name="max_lost_frames" value="4" />
+
+    <!--
+      到达旧停靠点后，若横移阶段从未看到任何文字板框，以旧停靠朝向
+      为基准依次扫描左侧+30度、右侧-30度。每个方向连续检测3次；
+      找到后用新框与当前map位姿覆盖旧停靠坐标，并重新导航停靠一次。
+    -->
+    <param name="docking_recovery_turn_deg" value="30.0" />
+    <param name="docking_recovery_detection_attempts" value="3" />
+    <param name="docking_recovery_detection_interval" value="0.15" />
+
+    <!-- 现实目标先找到时，停靠后直接后退回当前前进巡检线。 -->
+    <param name="retreat_line_tolerance" value="0.025" />
+    <param name="retreat_slow_distance" value="0.15" />
+    <param name="retreat_min_speed" value="0.06" />
+    <param name="retreat_max_speed" value="0.18" />
+    <param name="retreat_timeout" value="8.0" />
+
+    <!-- 二段式停靠参数。横移成功只按连续视觉居中帧判定，朝向仅保持。 -->
+    <param name="lateral_align_kp" value="0.0010" />
+    <param name="lateral_align_min_speed" value="0.06" />
+    <param name="lateral_align_max_speed" value="0.20" />
+    <param name="lateral_center_tolerance_px" value="10.0" />
+    <param name="lateral_stable_frames" value="3" />
+    <param name="lateral_align_timeout" value="15.0" />
+
+    <param name="front_lidar_half_window" value="3" />
+    <param name="approach_stop_distance" value="0.20" />
+    <param name="approach_slow_distance" value="0.35" />
+    <param name="approach_min_speed" value="0.05" />
+    <param name="approach_max_speed" value="0.12" />
+    <param name="approach_timeout" value="15.0" />
+    <param name="lidar_data_timeout" value="0.50" />
+    <param name="lidar_loss_abort_timeout" value="2.0" />
+    <param name="docking_yaw_kp" value="2.0" />
+    <param name="docking_yaw_max_speed" value="0.25" />
+  </node>
+</launch>

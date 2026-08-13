@@ -66,3 +66,7 @@ failsafe_stop_linear: 0.05
 failsafe_stop_angular: 0.12
 failsafe_stop_confirm_odom_frames: 3
 failsafe_recovery_grace_ms: 500.0
+
+
+
+base_diag_enable: false

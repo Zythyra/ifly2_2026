@@ -44,7 +44,7 @@ ros::WallTime g_last_tx_wall_time;
 ros::Publisher g_applied_cmd_pub;
 ros::Publisher g_tx_diag_pub;
 
-// ==================== BASE-FAILSAFE V4.1 ====================
+// ==================== BASE-FAILSAFE V4.2 ====================
 // Software-only fail-safe for the observed RK3588 -> MCU stale/delayed command
 // fault.  NORMAL control is unchanged.  V4 estimates the effective command ->
 // odometry delay from recent trajectories instead of requiring odom to freeze.
@@ -115,6 +115,12 @@ double g_fs_delay_improvement_min = 0.25;
 // Channel C: FAST high-confidence abnormal-delay trigger.
 // Unlike the regular delay detector, this channel needs only one FRESH odom
 // frame, but it also requires a large current cmd/odom mismatch.
+// ==================== BASE-FAILSAFE V4.2 ====================
+// Diagnostic-output switch.
+// false disables only BASE-DIAG logs and pure diagnostic topics.
+// It NEVER disables any failsafe detector or emergency braking.
+bool g_base_diag_enable = true;
+
 bool g_fs_fast_delay_enable = true;
 double g_fs_fast_delay_min_ms = 300.0;
 double g_fs_fast_delay_score_max = 2.20;
@@ -229,7 +235,7 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   pravite_nh.param("diag_nonzero_linear_eps", g_diag_nonzero_linear_eps, 0.01);
   pravite_nh.param("diag_nonzero_angular_eps", g_diag_nonzero_angular_eps, 0.02);
 
-  // ==================== BASE-FAILSAFE V4.1 parameters ====================
+  // ==================== BASE-FAILSAFE V4.2 parameters ====================
   pravite_nh.param("failsafe_enable", g_fs_enable, true);
   pravite_nh.param("failsafe_zero_rate_hz", g_fs_zero_rate_hz, 100.0);
   pravite_nh.param("failsafe_odom_max_age_ms", g_fs_odom_max_age_ms, 120.0);
@@ -262,6 +268,9 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   pravite_nh.param("failsafe_delay_fault_score_max", g_fs_delay_fault_score_max, 2.20);
   pravite_nh.param("failsafe_delay_vs_normal_ratio_max", g_fs_delay_vs_normal_ratio_max, 0.85);
   pravite_nh.param("failsafe_delay_improvement_min", g_fs_delay_improvement_min, 0.25);
+
+  // Competition/debug diagnostic output switch.
+  pravite_nh.param("base_diag_enable", g_base_diag_enable, true);
 
   // FAST_DELAY: high-confidence single-fresh-odom trigger.
   pravite_nh.param("failsafe_fast_delay_enable", g_fs_fast_delay_enable, true);
@@ -568,7 +577,7 @@ void baseBringup::writeLoop()
       else if(angular_z < -angular_speed_max_)
         angular_z = -angular_speed_max_;
 
-      // ==================== BASE-FAILSAFE V4.1 ====================
+      // ==================== BASE-FAILSAFE V4.2 ====================
       // Snapshot the newest wheel-odometry body velocity reported by the MCU.
       nav_msgs::Odometry fs_odom;
       lock.lock();
@@ -1128,7 +1137,7 @@ void baseBringup::writeLoop()
         applied_cmd.linear.x = linear_x;
         applied_cmd.linear.y = linear_y;
         applied_cmd.angular.z = angular_z;
-        g_applied_cmd_pub.publish(applied_cmd);
+        if (g_base_diag_enable) g_applied_cmd_pub.publish(applied_cmd);
 
         // /base_driver/tx_diag fields:
         // [0]  rx_seq_at_write
@@ -1216,11 +1225,11 @@ void baseBringup::writeLoop()
         diag_msg.data[40] = fs_current_mismatch_angular;
         diag_msg.data[41] = fs_delay_improvement;
         diag_msg.data[42] = fs_fast_delay_candidate ? 1.0 : 0.0;
-        g_tx_diag_pub.publish(diag_msg);
+        if (g_base_diag_enable) g_tx_diag_pub.publish(diag_msg);
 
         if (pack_write_s != WRITE_MSG_LONGTH)
         {
-          ROS_ERROR("[BASE-DIAG][SHORT_WRITE] selected_rx=%llu bytes=%lu/%d write_ms=%.3f age_ms=%.3f",
+          if (g_base_diag_enable) ROS_ERROR("[BASE-DIAG][SHORT_WRITE] selected_rx=%llu bytes=%lu/%d write_ms=%.3f age_ms=%.3f",
                     static_cast<unsigned long long>(tx_selected_seq),
                     static_cast<unsigned long>(pack_write_s),
                     WRITE_MSG_LONGTH,
@@ -1230,7 +1239,7 @@ void baseBringup::writeLoop()
 
         if (write_ms > g_diag_write_warn_ms)
         {
-          ROS_WARN("[BASE-DIAG][SLOW_WRITE] selected_rx=%llu write_ms=%.3f threshold_ms=%.3f bytes=%lu/%d",
+          if (g_base_diag_enable) ROS_WARN("[BASE-DIAG][SLOW_WRITE] selected_rx=%llu write_ms=%.3f threshold_ms=%.3f bytes=%lu/%d",
                    static_cast<unsigned long long>(tx_selected_seq),
                    write_ms,
                    g_diag_write_warn_ms,
@@ -1242,7 +1251,7 @@ void baseBringup::writeLoop()
         // produces these frequently. Warn only at the configured streak.
         if (repeat_streak_this_tx == static_cast<uint64_t>(g_diag_repeat_warn_streak))
         {
-          ROS_WARN("[BASE-DIAG][REPEAT_STREAK] rx=%llu repeat_streak=%llu age_ms=%.3f cmd=(%.3f,%.3f,%.3f) tx_gap_ms=%.3f",
+          if (g_base_diag_enable) ROS_WARN("[BASE-DIAG][REPEAT_STREAK] rx=%llu repeat_streak=%llu age_ms=%.3f cmd=(%.3f,%.3f,%.3f) tx_gap_ms=%.3f",
                    static_cast<unsigned long long>(tx_selected_seq),
                    static_cast<unsigned long long>(repeat_streak_this_tx),
                    cmd_age_ms,
@@ -1251,7 +1260,7 @@ void baseBringup::writeLoop()
         }
         else if (repeat_streak_this_tx == static_cast<uint64_t>(g_diag_repeat_error_streak))
         {
-          ROS_ERROR("[BASE-DIAG][REPEAT_STUCK] rx=%llu repeat_streak=%llu age_ms=%.3f cmd=(%.3f,%.3f,%.3f) tx_gap_ms=%.3f",
+          if (g_base_diag_enable) ROS_ERROR("[BASE-DIAG][REPEAT_STUCK] rx=%llu repeat_streak=%llu age_ms=%.3f cmd=(%.3f,%.3f,%.3f) tx_gap_ms=%.3f",
                     static_cast<unsigned long long>(tx_selected_seq),
                     static_cast<unsigned long long>(repeat_streak_this_tx),
                     cmd_age_ms,
@@ -1261,7 +1270,7 @@ void baseBringup::writeLoop()
 
         if (newer_rx_pending)
         {
-          ROS_WARN("[BASE-DIAG][STALE_BEFORE_WRITE] selected_rx=%llu latest_rx=%llu lag=%llu cmd=(%.3f,%.3f,%.3f)",
+          if (g_base_diag_enable) ROS_WARN("[BASE-DIAG][STALE_BEFORE_WRITE] selected_rx=%llu latest_rx=%llu lag=%llu cmd=(%.3f,%.3f,%.3f)",
                    static_cast<unsigned long long>(tx_selected_seq),
                    static_cast<unsigned long long>(rx_seq_at_write),
                    static_cast<unsigned long long>(seq_lag),
@@ -1270,7 +1279,7 @@ void baseBringup::writeLoop()
 
         if (nonzero_timeout_edge)
         {
-          ROS_WARN("[BASE-DIAG][NONZERO_TIMEOUT] rx=%llu age_ms=%.3f timeout_ms=%.3f cached_cmd=(%.3f,%.3f,%.3f)",
+          if (g_base_diag_enable) ROS_WARN("[BASE-DIAG][NONZERO_TIMEOUT] rx=%llu age_ms=%.3f timeout_ms=%.3f cached_cmd=(%.3f,%.3f,%.3f)",
                    static_cast<unsigned long long>(tx_selected_seq),
                    cmd_age_ms,
                    cmd_dt_threshold_ * 1000.0,
@@ -1279,7 +1288,7 @@ void baseBringup::writeLoop()
 
         if (tx_gap_ms > g_diag_tx_gap_warn_ms && tx_selected_seq != 0)
         {
-          ROS_WARN("[BASE-DIAG][TX_GAP] tx_gap_ms=%.3f threshold_ms=%.3f selected_rx=%llu",
+          if (g_base_diag_enable) ROS_WARN("[BASE-DIAG][TX_GAP] tx_gap_ms=%.3f threshold_ms=%.3f selected_rx=%llu",
                    tx_gap_ms,
                    g_diag_tx_gap_warn_ms,
                    static_cast<unsigned long long>(tx_selected_seq));
@@ -1289,7 +1298,7 @@ void baseBringup::writeLoop()
         // catching up. Only warn on bursts of >= diag_skip_warn_count.
         if (skipped_this_tx >= static_cast<uint64_t>(g_diag_skip_warn_count))
         {
-          ROS_WARN("[BASE-DIAG][SKIP_BURST] selected_rx=%llu skipped_now=%llu skipped_total=%llu",
+          if (g_base_diag_enable) ROS_WARN("[BASE-DIAG][SKIP_BURST] selected_rx=%llu skipped_now=%llu skipped_total=%llu",
                    static_cast<unsigned long long>(tx_selected_seq),
                    static_cast<unsigned long long>(skipped_this_tx),
                    static_cast<unsigned long long>(g_skipped_rx_total));
@@ -1297,7 +1306,7 @@ void baseBringup::writeLoop()
 
         if (g_diag_verbose)
         {
-          ROS_INFO("[BASE-DIAG][TX] latest_rx=%llu selected_rx=%llu age_ms=%.3f repeat_streak=%llu skipped=%llu stale=%d lag=%llu timeout=%d write=%lu/%d write_ms=%.3f gap_ms=%.3f",
+          if (g_base_diag_enable) ROS_INFO("[BASE-DIAG][TX] latest_rx=%llu selected_rx=%llu age_ms=%.3f repeat_streak=%llu skipped=%llu stale=%d lag=%llu timeout=%d write=%lu/%d write_ms=%.3f gap_ms=%.3f",
                    static_cast<unsigned long long>(rx_seq_at_write),
                    static_cast<unsigned long long>(tx_selected_seq),
                    cmd_age_ms,
@@ -1314,7 +1323,7 @@ void baseBringup::writeLoop()
 
         if (tx_selected_seq == 0)
         {
-          ROS_INFO_THROTTLE(1.0,
+          if (g_base_diag_enable) ROS_INFO_THROTTLE(1.0,
                             "[BASE-DIAG][SUMMARY] latest_rx=0 selected_rx=0 age_ms=NA repeat_total=%llu repeat_streak=0 max_repeat=%llu skipped_total=%llu skip_events=%llu stale=%llu short_write=%llu nonzero_timeout=%llu write_ms=%.2f tx_gap_ms=%.2f",
                             static_cast<unsigned long long>(g_repeat_tx_count),
                             static_cast<unsigned long long>(g_max_repeat_streak),
@@ -1328,7 +1337,7 @@ void baseBringup::writeLoop()
         }
         else
         {
-          ROS_INFO_THROTTLE(1.0,
+          if (g_base_diag_enable) ROS_INFO_THROTTLE(1.0,
                             "[BASE-DIAG][SUMMARY] latest_rx=%llu selected_rx=%llu age_ms=%.2f repeat_total=%llu repeat_streak=%llu max_repeat=%llu skipped_total=%llu skip_events=%llu stale=%llu short_write=%llu nonzero_timeout=%llu write_ms=%.2f tx_gap_ms=%.2f rx_lock_wait_ms=%.3f rx_interval_ms=%.2f fs_state=%d fs_triggers=%llu fs_rev=%d fs_delay=%d delay_fault=%d fast_delay=%d eval_ms=%.1f cmd_span=(%.2f,%.2f) best_delay_ms=%.1f best_score=%.2f normal_delay_ms=%.1f normal_score=%.2f improve=%.2f mismatch=(%.2f,%.2f) eval_n=%d odom_age_ms=%.1f",
                             static_cast<unsigned long long>(rx_seq_at_write),
                             static_cast<unsigned long long>(tx_selected_seq),
@@ -2086,7 +2095,7 @@ void baseBringup::velCallback(const geometry_msgs::Twist::ConstPtr& msg)
   {
     if (lock_wait_ms > g_diag_lock_wait_warn_ms)
     {
-      ROS_WARN("[BASE-DIAG][RX_LOCK_WAIT] rx=%llu wait_ms=%.3f threshold_ms=%.3f cmd=(%.3f,%.3f,%.3f)",
+      if (g_base_diag_enable) ROS_WARN("[BASE-DIAG][RX_LOCK_WAIT] rx=%llu wait_ms=%.3f threshold_ms=%.3f cmd=(%.3f,%.3f,%.3f)",
                static_cast<unsigned long long>(this_rx_seq),
                lock_wait_ms,
                g_diag_lock_wait_warn_ms,
@@ -2096,7 +2105,7 @@ void baseBringup::velCallback(const geometry_msgs::Twist::ConstPtr& msg)
     // Ignore interval==0 (first command). Normal 70-77 ms jitter is no longer warned.
     if (rx_interval_ms > g_diag_cmd_gap_warn_ms)
     {
-      ROS_WARN("[BASE-DIAG][RX_GAP] interval_ms=%.3f threshold_ms=%.3f rx=%llu cmd=(%.3f,%.3f,%.3f)",
+      if (g_base_diag_enable) ROS_WARN("[BASE-DIAG][RX_GAP] interval_ms=%.3f threshold_ms=%.3f rx=%llu cmd=(%.3f,%.3f,%.3f)",
                rx_interval_ms,
                g_diag_cmd_gap_warn_ms,
                static_cast<unsigned long long>(this_rx_seq),
@@ -2105,7 +2114,7 @@ void baseBringup::velCallback(const geometry_msgs::Twist::ConstPtr& msg)
 
     if (g_diag_verbose)
     {
-      ROS_INFO("[BASE-DIAG][RX] rx=%llu cmd=(%.3f,%.3f,%.3f) interval_ms=%.3f lock_wait_ms=%.3f",
+      if (g_base_diag_enable) ROS_INFO("[BASE-DIAG][RX] rx=%llu cmd=(%.3f,%.3f,%.3f) interval_ms=%.3f lock_wait_ms=%.3f",
                static_cast<unsigned long long>(this_rx_seq),
                rx_x, rx_y, rx_w,
                rx_interval_ms,

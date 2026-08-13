@@ -1,0 +1,323 @@
+# =============================================================================
+# MyPlanner V6：普通导航LTV-MPC＋固定巡检Path专用全向PP
+# =============================================================================
+# 保留C3.2的实测状态、输入延迟、一阶响应、主动漂移和PP回退。
+# 当前初始姿态调整和路径跟踪保持不变，仅恢复C3.2原始最终姿态调整。
+#
+# 成熟方案来源：
+# - TEB：使用真实初始速度约束起始加速度；
+# - Nav2 MPPI：真实状态与历史控制序列分离、路径跟随/对齐/自转评价分离；
+# - Autoware MPC：输入延迟、一阶执行器响应、Butterworth滤波、终端稳定权重；
+# - MPCC：轮廓误差之外增加路径进度奖励。
+
+controller_mode: "mpc"
+
+# 建议与move_base/controller_frequency=20Hz一致。
+mpc_horizon_steps: 20
+mpc_dt: 0.05
+mpc_reference_search_behind_points: 160
+mpc_reference_search_ahead_points: 1000
+
+# 原始终点控制会在0.50m处直接接管，因此关闭C4的MPC终点制动参考。
+mpc_terminal_stop_enabled: false
+mpc_terminal_yaw_blend_distance: 0.25
+mpc_terminal_progress_fade_distance: 0.30
+
+# 兼容保留；原始终点控制接管后不会进入该回退分支。
+mpc_terminal_fallback_stop_distance: 0.20
+
+# -----------------------------------------------------------------------------
+# C2保留：路径重采样、曲率估计、曲率速度上限
+# -----------------------------------------------------------------------------
+c2_duplicate_point_distance: 0.003
+c2_resample_distance: 0.020
+c2_tracking_curvature_distance: 0.080
+c2_speed_curvature_distance: 0.120
+c2_curvature_median_window: 5
+c2_curvature_preview_distance: 0.08
+c2_hold_speed_after_curve: 0.04
+
+# 可在运行中修改：/move_base/MyPlanner/c2_max_reference_speed
+c2_max_reference_speed: 1.00
+c2_min_curve_speed: 0.55
+c2_curve_lateral_acc_limit: 0.50
+c2_reference_acceleration: 1.25
+c2_reference_deceleration: 1.80
+
+# -----------------------------------------------------------------------------
+# C3主动漂移几何
+# -----------------------------------------------------------------------------
+c3_enable_active_drift: true
+c3_yaw_preview_distance: 0.12
+c3_yaw_preview_gain: 0.42
+c3_yaw_preview_curvature_deadband: 0.25
+c3_yaw_preview_full_curvature: 1.50
+
+c3_beta_max_low_speed_deg: 35.0
+c3_beta_max_mid_speed_deg: 28.0
+c3_beta_max_high_speed_deg: 22.0
+c3_beta_low_speed_threshold: 0.35
+c3_beta_high_speed_threshold: 0.60
+c3_beta_rate_limit_deg_per_s: 90.0
+
+# 曲率前馈与角速度参考的建立/制动/反向速率。
+c3_reference_omega_limit: 2.40
+c3_reference_omega_accel_rate: 8.0
+c3_reference_omega_decel_rate: 14.0
+c3_reference_omega_reverse_rate: 16.0
+c3_omega_curvature_feedforward_gain: 0.30
+
+# -----------------------------------------------------------------------------
+# TEB/MPPI/Autoware式真实状态、滤波、输入延迟和执行器响应
+# -----------------------------------------------------------------------------
+c3_use_odometry: true
+c3_odom_topic: "/odom"
+c3_odom_timeout: 0.20
+
+# 标准二阶Butterworth，仅滤波odom角速度；0表示关闭。
+c3_measured_omega_filter_cutoff_hz: 5.0
+
+# 初值为保守的一控制周期。后续应通过cmd_vel与odom/IMU阶跃测试标定。
+c3_input_delay: 0.05
+c3_translational_response_tau: 0.08
+c3_angular_response_tau: 0.12
+c3_delay_integration_dt: 0.01
+
+# -----------------------------------------------------------------------------
+# 状态、速度方向、进度和终端稳定代价
+# -----------------------------------------------------------------------------
+mpc_weight_longitudinal: 1.50
+mpc_weight_lateral: 110.0
+mpc_weight_yaw_straight: 12.0
+mpc_weight_yaw_curve: 8.0
+
+# 直道强烈消除残余角速度；弯道允许必要的快速旋转。
+mpc_weight_omega_state_straight: 8.0
+mpc_weight_omega_state_curve: 0.40
+
+mpc_terminal_position_weight_scale: 4.0
+mpc_terminal_yaw_weight_scale: 4.0
+mpc_terminal_omega_weight_scale: 8.0
+
+mpc_weight_tangent_velocity: 4.0
+mpc_weight_path_normal_velocity: 35.0
+
+# MPCC式路径进度奖励。过大可能提前冲向速度圆上限。
+mpc_weight_progress: 0.80
+
+# 控制命令正则。直道抑制无意义自转，弯道不压制甩尾。
+mpc_weight_vx: 0.20
+mpc_weight_vy: 0.20
+mpc_weight_omega_straight: 0.90
+mpc_weight_omega_curve: 0.15
+
+mpc_weight_delta_vx: 10.0
+mpc_weight_delta_vy: 12.0
+mpc_weight_delta_omega: 8.0
+
+# -----------------------------------------------------------------------------
+# 硬约束
+# -----------------------------------------------------------------------------
+mpc_min_vx_ratio: 0.0
+mpc_min_vx: 0.0
+# 可在运行中修改：/move_base/MyPlanner/mpc_max_vx
+mpc_max_vx: 1.00
+mpc_min_vy: -0.35
+mpc_max_vy: 0.35
+mpc_min_omega: -2.50
+mpc_max_omega: 2.50
+
+# 可在运行中修改：/move_base/MyPlanner/mpc_max_translational_speed
+mpc_max_translational_speed: 1.00
+mpc_velocity_polygon_sides: 16
+
+mpc_max_accel_x: 2.00
+mpc_max_decel_x: 2.00
+mpc_max_accel_y: 2.00
+mpc_max_accel_theta: 8.00
+
+# -----------------------------------------------------------------------------
+# OSQP与回退
+# -----------------------------------------------------------------------------
+mpc_osqp_max_iterations: 180
+mpc_osqp_eps_abs: 0.001
+mpc_osqp_eps_rel: 0.001
+mpc_osqp_polish: false
+mpc_osqp_verbose: false
+mpc_max_total_time_ms: 30.0
+mpc_max_consecutive_failures: 5
+mpc_lock_to_pp_after_failures: true
+mpc_publish_debug_paths: true
+
+# -----------------------------------------------------------------------------
+# PP回退、碰撞检查、条件式初始对准与C3.2原始终点控制
+# -----------------------------------------------------------------------------
+# C4.0暂不研究路径移动，默认关闭；保留实现与RViz话题供后续继续开发。
+enable_path_healing: false
+path_healing_points_behind: 5
+path_healing_points_ahead: 60
+path_healing_iterations: 3
+path_healing_max_step: 0.01
+path_healing_gradient_deadband: 4.0
+path_healing_gradient_scale: 20.0
+
+# RViz路径治愈调试。只在话题存在订阅者时按限频发布。
+publish_path_healing_debug: false
+path_healing_debug_publish_rate: 5.0
+
+lookahead_dist: 0.26
+path_linear_x_gain: 2.20
+path_linear_y_gain: 2.00
+lateral_search_points: 10
+path_angular_y_gain: 10.00
+
+# 可在运行中修改：
+# true：检测到前方全局路径进入死区后停车并返回false，请求move_base重规划；
+# false：跳过这项死区检查，继续执行当前全局路径。
+enable_path_replanning: true
+collision_check_lookahead_points: 20
+collision_cost_threshold: 253
+
+enable_initial_rotation: true
+
+# 仅当车头与起始路径切线夹角>30deg时旋转；进入22deg后交给MPC，形成滞回。
+initial_align_enter_angle_deg: 30.0
+initial_align_exit_angle_deg: 22.0
+initial_path_tangent_lookahead: 0.16
+initial_angular_gain: 8.00
+initial_min_angular_speed: 0.10
+initial_max_angular_speed: 1.40
+
+# 距离目标小于0.50m时立即退出MPC，恢复C3.2独立XYZ比例控制。
+goal_dist_threshold: 0.50
+goal_position_tolerance: 0.025
+goal_yaw_tolerance: 0.05
+
+final_linear_x_gain: 1.60
+final_linear_y_gain: 1.20
+final_angular_gain: 6.50
+final_min_linear_speed: 0.03
+final_min_angular_speed: 0.08
+final_max_vel_x: 0.30
+final_max_vel_y: 0.20
+final_max_vel_theta: 0.90
+
+# 可在运行中修改：/move_base/MyPlanner/max_vel_x
+max_vel_x: 1.00
+max_vel_y: 0.45
+max_vel_theta: 2.50
+acc_lim_x: 2.00
+acc_lim_y: 2.00
+acc_lim_theta: 8.00
+
+debug_log: false
+
+# =============================================================================
+# C4.1 独立净空路径优化器
+# =============================================================================
+# 外部固定巡检路径的终点必须与move_base目标匹配，避免旧路线误用于新目标。
+patrol_goal_position_tolerance: 0.05
+patrol_goal_yaw_tolerance: 0.15
+
+# -----------------------------------------------------------------------------
+# V10 固定巡检Path专用全向PP＋快速起步对准＋原始巡检线航向保持
+# -----------------------------------------------------------------------------
+# 仅当固定巡检路径已经锁定，并且当前setPlan确实套用了该路径时生效。
+# 普通导航、前往停靠点、视觉横移和雷达逼近仍沿用原有控制流程。
+patrol_pp_enabled: true
+
+# 开始巡检前按普通初始姿态调整的比例限幅方式快速旋转；进入5度后
+# 不停车、不等待角速度稳定，立即开始vx/vy跟踪并由航向闭环继续收敛。
+patrol_pp_align_tolerance_deg: 5.0
+# 以下两个参数仅为兼容旧V9配置保留；V10不再进入停车等待状态。
+patrol_pp_settle_omega: 0.03
+patrol_pp_settle_frames: 4
+patrol_align_kp: 1.50
+patrol_align_max_wz: 0.40
+patrol_align_near_angle_deg: 10.0
+patrol_align_near_wz: 0.18
+
+# 正式巡检不停车重对准。目标航向始终取raw_plan_原始巡检线切线，
+# wz=Kp*(目标航向-实际航向)，优化路径仍只决定vx/vy和横向避障。
+patrol_heading_hold_enabled: true
+patrol_heading_kp: 1.20
+patrol_heading_max_wz: 0.18
+patrol_heading_deadband_deg: 0.5
+patrol_heading_acc_lim: 0.60
+
+# 前进PP前视距离；横向偏移不追逐单个点，而是统计前方窗口内
+# “优化路径－原始巡检线”的平均偏移，连续路障期间保持稳定的平台偏移。
+patrol_pp_lookahead_dist: 0.35
+patrol_pp_preview_start: 0.20
+patrol_pp_preview_end: 0.80
+patrol_pp_lateral_gain: 2.20
+patrol_pp_lateral_deadband: 0.01
+patrol_pp_max_vy: 0.40
+patrol_pp_acc_lim_y: 1.20
+
+# 避障偏移建立较快；优化器短暂回零或障碍通过后，较慢回归原始巡检线。
+patrol_pp_avoid_offset_rate: 0.35
+patrol_pp_return_offset_rate: 0.15
+
+# 巡检终点仍只以x/y判断到达，不要求特定终点姿态；但接近终点期间
+# 航向保持继续工作，避免车身在减速段再次歪斜。
+patrol_pp_goal_slowdown_distance: 0.30
+patrol_pp_goal_position_tolerance: 0.04
+
+# C4.1.2将shadow_mode改为可运行时切换的区域旁路开关：
+# - true：BYPASS走廊模式，不运行净空优化，MPC跟踪原始/治愈路径；
+# - false：ACTIVE路障区模式，运行净空优化并将结果交给MPC；
+# - 模式改变时自动清空优化历史，参数在下一个控制周期生效。
+clearance_optimizer:
+  enabled: true
+  shadow_mode: true
+  publish_debug_paths: true
+  update_rate: 5.0
+
+  # cost=254才是距离场种子；1~253均只作为软代价。
+  # unknown仍不允许优化路径进入，但它不会被当作障碍生成错误推力。
+  reject_unknown: true
+
+  # 局部Frenet窗口与离散精度。
+  forward_window: 1.40
+  backward_window: 0.10
+  longitudinal_step: 0.04
+  lateral_step: 0.02
+  max_lateral_offset: 0.35
+  max_lateral_change_per_step: 0.04
+
+  # 车前已承诺部分保持原路径；窗口末端回到原路径，便于无缝拼接。
+  commitment_distance: 0.12
+  end_blend_distance: 0.20
+
+  # 二代车实测约0.34m×0.26m。这里用于方向支撑半径净空估算，
+  # 不是逐栅格完整footprint硬碰撞检查。
+  robot_half_length: 0.17
+  robot_half_width: 0.13
+  extra_clearance_margin: 0.00
+  preferred_clearance: 0.10
+  distance_field_max_distance: 2.00
+
+  # 横向格点动态规划：净空/膨胀/原路径/历史/一二阶连续性。
+  weight_clearance: 120.0
+  weight_inflation: 2.0
+  weight_reference: 6.0
+  weight_history: 10.0
+  weight_lateral_slope: 80.0
+  weight_lateral_curvature: 250.0
+  prefer_left_on_first_solution: true
+
+  # TEB/CHOMP式弹性细化。只细化格点种子，不独立决定绕障方向。
+  elastic_iterations: 15
+  elastic_step_size: 0.015
+  elastic_max_step: 0.006
+  elastic_weight_seed: 12.0
+  elastic_weight_reference: 2.0
+  elastic_weight_history: 6.0
+  elastic_weight_smoothness: 100.0
+  elastic_weight_clearance: 60.0
+
+  # 只检查局部中心线是否穿过cost=254/unknown，不扫描完整footprint。
+  centerline_check_step: 0.01
+  max_accepted_curvature: 12.0
+  max_history_jump: 0.18

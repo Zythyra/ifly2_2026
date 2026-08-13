@@ -1,5 +1,6 @@
 <launch>
-  <!-- IFLY2026_FIXED_PATH_PATROL_V2_NO_WALL_FIT_20260804 -->
+  <!-- IFLY2026_FIXED_PATH_PATROL_V14_4_REAL_DOCKED_SIM_EXCEPTION_20260812 -->
+  <!-- 停靠：巡检识别完成后关闭摄像头 -> 第一段move_base -> 到点重开新会话并立即视觉定位 -> move_base最终停靠。 -->
   <!-- 目标类别只允许 food、daily、electronic，且两者不能相同。 -->
   <arg name="real_target_category" default="food" />
   <arg name="simulation_target_category" default="daily" />
@@ -24,6 +25,13 @@
     <param name="simulation_target_category"
            value="$(arg simulation_target_category)" />
 
+
+    <!-- V12巡检中心线：
+         起点move_base=(0.25,4.25,0deg)，随后横移到(0.25,4.30)。
+         1) y=4.30，到x=4.75；同步过渡到(4.80,4.30,-90deg)。
+         2) x=4.80，到y=2.75；同步过渡到(4.80,2.70,-180deg)。
+         3) y=2.70，到x=0.25；同步过渡到(0.20,2.70,+90deg)。
+         4) x=0.20，最终停在y=4.25。 -->
     <param name="map_frame" value="map" />
     <param name="base_frame" value="base_link" />
     <param name="scan_topic" value="/scan" />
@@ -42,7 +50,7 @@
     <!--
       巡检不再直接发布速度。主节点按0.02m间隔生成当前投影点到段末的
       nav_msgs/Path，锁定到MyPlanner，然后异步发送同一终点move_base目标。
-      四条基准线和提前5cm结束的位置保持不变。
+      四条基准线全部走到真实角点；上一段终点与下一段起点严格重合。
     -->
     <param name="planner_private_namespace" value="/move_base/MyPlanner" />
     <param name="patrol_path_spacing" value="0.02" />
@@ -50,9 +58,37 @@
     <param name="normal_navigation_speed_limit" value="1.00" />
     <param name="patrol_cancel_timeout" value="3.0" />
     <param name="patrol_interface_timeout" value="3.0" />
-    <param name="segment_end_tolerance" value="0.025" />
+    <!--
+      固定巡检包含原地换向和连续小幅横移；move_base默认振荡监视会把它们
+      误判为oscillation并在约8秒后ABORT。巡检时临时关闭，普通导航时恢复。
+      若仍遇到其他瞬时ABORT，最多从当前位置重建剩余Path并续跑2次。
+    -->
+    <param name="move_base_reconfigure_service"
+           value="/move_base/set_parameters" />
+    <param name="disable_move_base_oscillation_during_patrol" value="true" />
+    <param name="normal_move_base_oscillation_timeout" value="8.0" />
+    <param name="patrol_aborted_retry_count" value="2" />
+    <param name="segment_end_tolerance" value="0.015" />
     <param name="control_rate" value="15.0" />
 
+    <!-- V12：安全偏移巡检线角点过渡。短距离过渡直接使用/set_speed，
+         XY位置与yaw同时闭环，不使用move_base最终姿态调整。 -->
+    <param name="patrol_transition_position_kp" value="2.50" />
+    <param name="patrol_transition_yaw_kp" value="3.00" />
+    <param name="patrol_transition_min_linear_speed" value="0.025" />
+    <param name="patrol_transition_max_linear_speed" value="0.12" />
+    <param name="patrol_transition_min_angular_speed" value="0.25" />
+    <param name="patrol_transition_max_angular_speed" value="1.20" />
+    <param name="patrol_transition_linear_accel" value="0.60" />
+    <param name="patrol_transition_angular_accel" value="4.00" />
+    <!-- V13：角点旋转优先。大角度误差时压低平移，车头转开墙面后逐步恢复线速度。 -->
+    <param name="patrol_transition_yaw_priority_start_deg" value="55.0" />
+    <param name="patrol_transition_yaw_priority_release_deg" value="20.0" />
+    <param name="patrol_transition_yaw_priority_min_linear_scale" value="0.15" />
+    <param name="patrol_transition_position_tolerance" value="0.012" />
+    <param name="patrol_transition_yaw_tolerance_deg" value="1.5" />
+    <param name="patrol_transition_stable_frames" value="3" />
+    <param name="patrol_transition_timeout" value="8.0" />
     <!-- NanoDet巡检采用图像左侧三分之二区域；停靠对准仍使用全画面。 -->
     <param name="image_width" value="640" />
     <!-- 640宽、约60度水平视场角时fx约554.256；有标定值时替换这里。 -->
@@ -63,7 +99,21 @@
     <param name="settle_time" value="0.25" />
     <param name="ocr_attempts" value="3" />
     <param name="ocr_retry_interval" value="0.12" />
+    <!--
+      OCR只命中“品/加/工/车/间”而没有类别关键字时，原地逆时针
+      转30度并只复识一次。类别关键字：食；日/用；电/子/产/生。
+    -->
+    <param name="ocr_recovery_turn_deg" value="30.0" />
+    <param name="ocr_recovery_turn_kp" value="2.0" />
+    <param name="ocr_recovery_turn_min_speed" value="0.18" />
+    <param name="ocr_recovery_turn_max_speed" value="0.45" />
+    <param name="ocr_recovery_turn_tolerance_deg" value="1.5" />
+    <param name="ocr_recovery_turn_stable_frames" value="3" />
+    <param name="ocr_recovery_turn_timeout" value="5.0" />
+    <param name="ocr_recovery_settle_time" value="0.35" />
     <param name="max_detection_duration" value="0.50" />
+    <!-- V14.3保护1：巡检时只有框中心x严格小于600px才允许停车进入OCR。 -->
+    <param name="patrol_stop_max_center_x" value="600.0" />
     <!-- 同一墙面上估计坐标相距不超过0.5m，判定为同一块板。 -->
     <param name="duplicate_coordinate_distance" value="0.50" />
     <!--
@@ -73,6 +123,19 @@
     <param name="max_track_jump_px" value="140.0" />
     <param name="max_lost_frames" value="4" />
 
+    <!--
+      到达旧停靠点后，若横移阶段从未看到任何文字板框，以旧停靠朝向
+      为基准依次扫描左侧+30度、右侧-30度。每个方向连续检测3次；
+      找到后用新框与当前map位姿覆盖旧停靠坐标，并重新导航停靠一次。
+    -->
+    <param name="docking_recovery_turn_deg" value="30.0" />
+    <param name="docking_recovery_detection_attempts" value="3" />
+    <param name="docking_recovery_detection_interval" value="0.0" />
+    <!-- 第二次视觉只关联同墙且距第一次墙面估计不超过该值的框。 -->
+    <param name="docking_refine_max_board_shift" value="0.80" />
+    <!-- V14.2：仅±30度恢复旋转后使用-3即时grab；正常第二段依靠第一段前关闭/到点重开摄像头保证新鲜帧。 -->
+    <param name="docking_refresh_clear_calls" value="2" />
+
     <!-- 现实目标先找到时，停靠后直接后退回当前前进巡检线。 -->
     <param name="retreat_line_tolerance" value="0.025" />
     <param name="retreat_slow_distance" value="0.15" />
@@ -80,7 +143,7 @@
     <param name="retreat_max_speed" value="0.18" />
     <param name="retreat_timeout" value="8.0" />
 
-    <!-- 旧稳定版二段式停靠参数。 -->
+    <!-- 旧版横移参数：V14正常停靠链已不再使用，暂保留便于回退对照。 -->
     <param name="lateral_align_kp" value="0.0010" />
     <param name="lateral_align_min_speed" value="0.06" />
     <param name="lateral_align_max_speed" value="0.20" />
@@ -88,6 +151,8 @@
     <param name="lateral_stable_frames" value="3" />
     <param name="lateral_align_timeout" value="15.0" />
 
+    <!-- V14中approach_stop_distance不再用于雷达闭环，而直接作为最终
+         move_base目标相对板/墙面的法向停靠距离。 -->
     <param name="front_lidar_half_window" value="3" />
     <param name="approach_stop_distance" value="0.20" />
     <param name="approach_slow_distance" value="0.35" />

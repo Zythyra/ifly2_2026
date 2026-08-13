@@ -2,12 +2,11 @@ cmake_minimum_required(VERSION 3.0.2)
 project(line_follow)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
-# add_compile_options(-std=c++11)
+add_compile_options(-std=c++11)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   roscpp
@@ -18,20 +17,21 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   # image_transport
   message_generation
-  actionlib      
+  actionlib
   move_base_msgs
   dynamic_reconfigure
   ucarmain2026
 )
+
 # find_package(catkin REQUIRED COMPONENTS
-#   geometry_msgs
-#   roscpp
-#   rospy
-#   std_msgs
-#   # cv_bridge
-#   # sensor_msgs
-#   # image_transport
-#   # message_generation
+# geometry_msgs
+# roscpp
+# rospy
+# std_msgs
+# # cv_bridge
+# # sensor_msgs
+# # image_transport
+# # message_generation
 # )#调试用
 
 # 查找 OpenCV 并指定必要组件
@@ -40,11 +40,11 @@ find_package(OpenCV REQUIRED COMPONENTS
   highgui
   imgproc
   calib3d
+  videoio
 )
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
-
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -83,7 +83,6 @@ find_package(OpenCV REQUIRED COMPONENTS
 # )
 
 ## Generate services in the 'srv' folder
-
 add_service_files(
   FILES
   line_follow.srv
@@ -97,11 +96,11 @@ add_service_files(
 # )
 
 ## Generate added messages and services with any dependencies listed here
-
 generate_messages(
   DEPENDENCIES
   std_msgs
-  geometry_msgs#   sensor_msgs
+  geometry_msgs
+  # sensor_msgs
 )
 
 ################################################
@@ -127,6 +126,7 @@ generate_messages(
 ###################################
 ## catkin specific configuration ##
 ###################################
+
 ## The catkin_package macro generates cmake config files for your package
 ## Declare things to be passed to dependent projects
 ## INCLUDE_DIRS: uncomment this if your package contains header files
@@ -134,10 +134,10 @@ generate_messages(
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES line_follow
- CATKIN_DEPENDS geometry_msgs roscpp std_msgs message_runtime #cv_bridge image_transport sensor_msgs ucarmain2026
-#  DEPENDS system_lib
+  # INCLUDE_DIRS include
+  # LIBRARIES line_follow
+  CATKIN_DEPENDS geometry_msgs roscpp std_msgs message_runtime #cv_bridge image_transport sensor_msgs ucarmain2026
+  # DEPENDS system_lib
 )
 
 ###########
@@ -147,7 +147,7 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
+  # include
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
 )
@@ -165,10 +165,8 @@ include_directories(
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
-
 add_executable(line_right src/line_right.cpp)
 add_executable(line_left src/line_left.cpp)
-
 
 add_executable(dynamic_awb src/dynamic_awb.cpp)
 add_executable(wb src/wb.cpp)
@@ -184,29 +182,35 @@ add_executable(wb src/wb.cpp)
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
-
 target_link_libraries(line_right
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
 )
+
 target_link_libraries(line_left
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
 )
 
-
 target_link_libraries(dynamic_awb
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
 )
+
 target_link_libraries(wb
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
 )
 
+add_dependencies(line_right
+  ${PROJECT_NAME}_generate_messages_cpp
+  ${catkin_EXPORTED_TARGETS}
+)
 
-add_dependencies(line_right ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
-add_dependencies(line_left ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
+add_dependencies(line_left
+  ${PROJECT_NAME}_generate_messages_cpp
+  ${catkin_EXPORTED_TARGETS}
+)
 
 #############
 ## Install ##
@@ -282,7 +286,6 @@ target_link_libraries(line2_left
   ${OpenCV_LIBRARIES}
 )
 
-
 # ============================================================
 # 第二套右巡线节点：line2_right
 # ============================================================
@@ -297,6 +300,24 @@ add_dependencies(line2_right
 )
 
 target_link_libraries(line2_right
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+)
+
+# ============================================================
+# 红绿灯识别节点：traffic_light
+# ============================================================
+
+add_executable(traffic_light
+  src/traffic_light.cpp
+)
+
+add_dependencies(traffic_light
+  ${PROJECT_NAME}_generate_messages_cpp
+  ${catkin_EXPORTED_TARGETS}
+)
+
+target_link_libraries(traffic_light
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
 )

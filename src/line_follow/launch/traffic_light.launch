@@ -1,0 +1,13 @@
+<launch>
+
+    <node pkg="line_follow"
+          type="traffic_light"
+          name="traffic_light"
+          output="screen">
+
+        <rosparam command="load"
+                  file="$(find line_follow)/config/traffic_light.yaml"/>
+
+    </node>
+
+</launch>

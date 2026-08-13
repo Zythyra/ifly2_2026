@@ -262,7 +262,10 @@ private:
         int end_index,
         double z_offset);
     void publishPathHealingDebug(int heal_start, int heal_end);
+    // 只检查raw_plan_，不检查C5改写后的global_plan_。
     bool checkPathCollision();
+    // 第二触发源：C5连续无法提供安全active path时请求global replan。
+    bool checkC5FailureReplan();
     bool selectTrackingTarget(geometry_msgs::PoseStamped& target_pose);
     bool selectPatrolTrackingTarget(
         geometry_msgs::PoseStamped& target_pose);
@@ -281,13 +284,13 @@ private:
         double& lateral_deviation);
     bool computePatrolPreviewErrors(
         double& raw_lateral_error,
-        double& optimized_lateral_offset);
+        double& optimized_lateral_error);
     void computePatrolPurePursuitCommand(
         const geometry_msgs::PoseStamped& target_pose,
         double control_dt,
         geometry_msgs::Twist& desired_cmd,
         double& raw_lateral_error,
-        double& requested_lateral_offset,
+        double& optimized_lateral_error,
         double& lateral_error);
     bool computePatrolFinalPositionCommand(
         const geometry_msgs::PoseStamped& final_pose,
@@ -323,9 +326,12 @@ private:
     tf::TransformListener* tf_listener_;
     costmap_2d::Costmap2DROS* costmap_ros_;
     ros::NodeHandle private_nh_;
-    ros::NodeHandle clearance_optimizer_nh_;
-    bool runtime_shadow_mode_;
     bool enable_path_replanning_;
+    // C5.4：raw lethal与C5无安全解分别独立确认。
+    int collision_replan_confirm_counter_;
+    int c5_failure_replan_confirm_counter_;
+    bool c5_failure_replan_candidate_;
+    std::string c5_failure_replan_reason_;
     bool runtime_parameters_initialized_;
 
     std::string base_frame_;
@@ -524,11 +530,17 @@ private:
     ros::Publisher healed_global_path_pub_;
     ros::Publisher healed_window_path_pub_;
 
+    // Patrol-R2：权威固定巡检Reference（直线），与move_base GlobalPlanner/plan完全解耦。
+    ros::Publisher patrol_reference_path_pub_;
     ros::Subscriber patrol_path_sub_;
     ros::ServiceServer patrol_path_lock_service_;
     ros::ServiceServer controller_reset_service_;
 
-    int collision_check_lookahead_points_;
+    // C5.4：raw path仅以真正LETHAL为默认重规划触发；unknown可独立配置。
+    double collision_check_lookahead_distance_;
+    int collision_replan_confirm_frames_;
+    int c5_failure_replan_confirm_frames_;
+    bool collision_replan_on_unknown_;
     unsigned char collision_cost_threshold_;
 
     bool enable_initial_rotation_;
