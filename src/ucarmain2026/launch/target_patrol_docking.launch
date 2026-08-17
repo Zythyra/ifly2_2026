@@ -1,9 +1,9 @@
 <launch>
-  <!-- IFLY2026_FIXED_PATH_PATROL_V14_4_REAL_DOCKED_SIM_EXCEPTION_20260812 -->
+  <!-- IFLY2026_FIXED_PATH_PATROL_V14_8_EDGE_DIRECT_OCR_20260817 -->
   <!-- 停靠：巡检识别完成后关闭摄像头 -> 第一段move_base -> 到点重开新会话并立即视觉定位 -> move_base最终停靠。 -->
   <!-- 目标类别只允许 food、daily、electronic，且两者不能相同。 -->
   <arg name="real_target_category" default="food" />
-  <arg name="simulation_target_category" default="daily" />
+  <arg name="simulation_target_category" default="electronic" />
 
   <!-- 如果主launch已经启动simple_move_control，请设为false，避免重名。 -->
   <arg name="start_simple_move_control" default="true" />
@@ -26,12 +26,14 @@
            value="$(arg simulation_target_category)" />
 
 
-    <!-- V12巡检中心线：
-         起点move_base=(0.25,4.25,0deg)，随后横移到(0.25,4.30)。
-         1) y=4.30，到x=4.75；同步过渡到(4.80,4.30,-90deg)。
+    <!-- V14.6巡检中心线：
+         初始move_base直接到(1.25,4.25,0deg)，不再做旧起点安全横移。
+         第一条固定Patrol Path自身也直接从(1.25,4.25)发布：
+         1) (1.25,4.25) -> (4.75,4.30)；同步过渡到(4.80,4.30,-90deg)。
          2) x=4.80，到y=2.75；同步过渡到(4.80,2.70,-180deg)。
          3) y=2.70，到x=0.25；同步过渡到(0.20,2.70,+90deg)。
-         4) x=0.20，最终停在y=4.25。 -->
+         4) x=0.20，最终停在y=4.25。
+         除第一段起点外，所有终点和后续角点均保持V14.5。 -->
     <param name="map_frame" value="map" />
     <param name="base_frame" value="base_link" />
     <param name="scan_topic" value="/scan" />
@@ -42,7 +44,7 @@
     <param name="room_min_y" value="2.5" />
     <param name="room_max_y" value="4.5" />
     <!-- 初始点位于原巡检线交点，车头沿+x方向向前。 -->
-    <param name="start_x" value="0.25" />
+    <param name="start_x" value="1.25" />
     <param name="start_y" value="4.25" />
     <param name="start_yaw_deg" value="0.0" />
     <param name="navigation_timeout" value="180.0" />
@@ -54,7 +56,7 @@
     -->
     <param name="planner_private_namespace" value="/move_base/MyPlanner" />
     <param name="patrol_path_spacing" value="0.02" />
-    <param name="patrol_speed_limit" value="0.60" />
+    <param name="patrol_speed_limit" value="0.50" />
     <param name="normal_navigation_speed_limit" value="1.00" />
     <param name="patrol_cancel_timeout" value="3.0" />
     <param name="patrol_interface_timeout" value="3.0" />
@@ -112,8 +114,48 @@
     <param name="ocr_recovery_turn_timeout" value="5.0" />
     <param name="ocr_recovery_settle_time" value="0.35" />
     <param name="max_detection_duration" value="0.50" />
-    <!-- V14.3保护1：巡检时只有框中心x严格小于600px才允许停车进入OCR。 -->
+    <!-- V14.3保护1仍保留：只有centerX<600的框参与巡检目标判断。 -->
     <param name="patrol_stop_max_center_x" value="600.0" />
+
+    <!--
+      V14.5：当前车体左侧正在巡检的墙面目标不再一检测到就停车。
+
+      距离采用：
+        当前机器人map位置 -> 相机射线估计出的墙面板坐标
+      的欧氏距离，同时要求目标沿当前巡检方向仍在车前方。
+
+      >=1.50m：保持patrol_speed_limit
+      1.50m~0.50m：线性减速
+      0.70m：速度上限=patrol_speed_limit*0.20，然后取消巡检goal停车OCR
+
+      当前实测参数以本launch实际值为准；本版不修改V14.5减速参数。
+      非当前巡检墙目标仍按V14.4原逻辑立即停车。
+    -->
+    <param name="patrol_target_slowdown_start_distance" value="1.50" />
+    <param name="patrol_target_stop_distance" value="0.40" />
+    <param name="patrol_target_min_speed_ratio" value="0.20" />
+
+    <!--
+      V14.7保护1：
+      非当前巡检墙的目标只有在机器人到“该墙本身”的垂直距离
+      严格小于1.50m时才允许立即停车。
+      例如当前巡检上墙时看见右墙目标：
+        distance = room_max_x - robot_x
+      >=1.50m时只观察，不停车。
+    -->
+    <param name="patrol_noncurrent_wall_stop_max_distance" value="1.50" />
+
+    <!--
+      V14.8视觉急停：
+      当前车体左侧正在巡检的墙上，如果目标框左边界x0严格小于100px，
+      说明实车已经进入适合OCR的近距离视野：
+        -> 立即取消Patrol并停车
+        -> 直接使用触发急停的当前NanoDet框进入OCR
+        -> 不执行reacquireApproachBoxAfterStop()二次取框
+      普通0.70m map距离停车仍保留停车后二次取框。
+    -->
+    <param name="patrol_target_left_edge_stop_px" value="100" />
+
     <!-- 同一墙面上估计坐标相距不超过0.5m，判定为同一块板。 -->
     <param name="duplicate_coordinate_distance" value="0.50" />
     <!--
@@ -127,6 +169,14 @@
       到达旧停靠点后，若横移阶段从未看到任何文字板框，以旧停靠朝向
       为基准依次扫描左侧+30度、右侧-30度。每个方向连续检测3次；
       找到后用新框与当前map位姿覆盖旧停靠坐标，并重新导航停靠一次。
+    -->
+    <!--
+      V14.6：第一段临时停靠点的新V4L2画面先只匹配原目标，不先算最终点。
+      centerX <= image_width*0.25：先向左/逆时针转30度；
+      centerX >= image_width*0.75：先向右/顺时针转30度；
+      中间二分之一：不转。
+      30度直接复用docking_recovery_turn_deg；转完使用-3缓存刷新后，
+      再用新帧计算最终approach_stop_distance停靠点。
     -->
     <param name="docking_recovery_turn_deg" value="30.0" />
     <param name="docking_recovery_detection_attempts" value="3" />
@@ -154,7 +204,7 @@
     <!-- V14中approach_stop_distance不再用于雷达闭环，而直接作为最终
          move_base目标相对板/墙面的法向停靠距离。 -->
     <param name="front_lidar_half_window" value="3" />
-    <param name="approach_stop_distance" value="0.20" />
+    <param name="approach_stop_distance" value="0.28" />
     <param name="approach_slow_distance" value="0.35" />
     <param name="approach_min_speed" value="0.05" />
     <param name="approach_max_speed" value="0.12" />

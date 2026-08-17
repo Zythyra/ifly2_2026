@@ -1,5 +1,17 @@
 <launch>
 
+    <!--
+      国赛交通灯节点。
+      规则：没有稳定确认绿色箭头之前一律停车；
+      绿箭头确认后直接调用对应巡线服务并停止红绿灯识别。
+
+      LEFT     -> /line2_left
+      STRAIGHT -> /line_right
+      RIGHT    -> /line2_right
+
+      三个巡线服务端节点需要由整车原有启动流程提前启动。
+    -->
+
     <node pkg="line_follow"
           type="traffic_light"
           name="traffic_light"

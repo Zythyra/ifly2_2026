@@ -28,6 +28,8 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <map>
+#include <sstream>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -98,6 +100,7 @@ constexpr size_t PCM_PREBUFFER_BYTES =
 bool vad_running = false;
 bool vad_pipe_error_reported = false;
 bool pcm_received = false;
+bool discard_pcm = false;
 pid_t vad_pid = -1;
 int vad_stdin_fd = -1;
 deque<uint8_t> pcm_prebuffer;
@@ -110,6 +113,7 @@ double vad_min_seconds = 2.0;
 double vad_silence_seconds = 1.2;
 double vad_max_seconds = 9.0;
 double vad_tail_seconds = 0.30;
+double retry_pcm_guard_seconds = 0.15;
 
 /**
  * @brief 把任意 UTF-8 文本安全地作为一个 shell 参数传给 system()。
@@ -375,6 +379,14 @@ bool writeAllToVad(const uint8_t* data, size_t size) {
             continue;
         }
 
+        if (written < 0 && errno == EPIPE) {
+            // VAD 已完成录音并关闭了管道读取端，这是正常收尾竞态。
+            // 主循环随后仍会通过 waitpid() 回收子进程并确认录音结果。
+            close(vad_stdin_fd);
+            vad_stdin_fd = -1;
+            return false;
+        }
+
         if (!vad_pipe_error_reported) {
             ROS_WARN(
                 "向 vad_record.py 写入 PCM 失败：%s",
@@ -515,6 +527,12 @@ void pcmCallback(
     const std_msgs::UInt8MultiArray::ConstPtr& message
 ) {
     if (message->data.empty()) {
+        return;
+    }
+
+    // 重录提示音播放及尾音保护期间，PCM 直接丢弃，
+    // 不允许进入 VAD 或 300 ms 预缓存。
+    if (discard_pcm) {
         return;
     }
 
@@ -781,18 +799,42 @@ void playRetryPrompt() {
 }
 
 bool startRetryRecording() {
-    playRetryPrompt();
-    // 播放提示音期间主循环被阻塞，先处理并丢弃队列中残留的提示音 PCM，
-    // 避免提示音本身被下一轮 VAD 当成用户任务语音。
-    ros::spinOnce();
+    // 从提示音开始播放就关闭 PCM 接收。aplay 是阻塞调用，播放期间
+    // speech_command_node 仍会持续发布 PCM，因此这些消息会积压在 ROS 队列中。
+    discard_pcm = true;
     pcm_prebuffer.clear();
 
+    playRetryPrompt();
+
+    const double guard_seconds =
+        retry_pcm_guard_seconds > 0.0
+        ? retry_pcm_guard_seconds
+        : 0.0;
+    const ros::WallTime guard_deadline =
+        ros::WallTime::now() + ros::WallDuration(guard_seconds);
+
+    // 持续处理并丢弃播放期间积压的 PCM，同时覆盖扬声器/声学链路尾音。
+    do {
+        ros::spinOnce();
+        if (ros::WallTime::now() >= guard_deadline) {
+            break;
+        }
+        ros::WallDuration(0.01).sleep();
+    } while (ros::ok());
+
+    pcm_prebuffer.clear();
+    discard_pcm = false;
+
+    // 重录仍按原设计：无需再次说唤醒词，提示音结束后直接启动新一轮 VAD。
     if (!startVadProcess(false)) {
         ROS_ERROR("重新启动 VAD 失败");
         return false;
     }
 
-    ROS_INFO("请重新说出完整任务，VAD 将在说完后自动停止");
+    ROS_INFO(
+        "重录提示音已隔离，尾音保护 %.2f s；请直接重新说出完整任务",
+        guard_seconds
+    );
     return true;
 }
 
@@ -826,9 +868,49 @@ bool go_destination(
 
 // ================= 扫码核心遍历参数 =================
 int qr_waypoint_idx = 0;
-ros::Time scan_start_time;
-vector<string> scanned_urls;
+int qr_scan_round = 0;
 int valid_qr_count = 0;
+ros::Time scan_start_time;
+ros::Time qr_post_success_deadline;
+bool qr_found_item_at_current_waypoint = false;
+
+// 单个墙面观察点的视角状态。
+// NORMAL：原设定朝向；LEFT：相对原朝向左转；RIGHT：相对原朝向右转。
+enum QrViewMode {
+    QR_VIEW_NORMAL,
+    QR_VIEW_LEFT,
+    QR_VIEW_RIGHT
+};
+QrViewMode qr_view_mode = QR_VIEW_NORMAL;
+
+// 当前这个“视角”在扫描窗口内是否至少成功解出过一个二维码字符串。
+// 这里只判断视觉层是否解码成功，与 URL 是否重复、HTTP 是否成功无关。
+bool qr_decoded_any_at_current_view = false;
+
+vector<double> qr_wp_x = {1.0, 0.75, 0.5, 0.75};
+vector<double> qr_wp_y = {5.25, 5.0, 5.25, 5.5};
+vector<double> qr_wp_yaw = {3.14, 1.57, 0.0, -1.57};
+
+double qr_scan_timeout = 1.2;
+double qr_retry_scan_timeout = 2.0;
+double qr_camera_warmup = 0.7;
+// 当前墙面成功获得二维码后，只再短暂观察几帧，兼顾“一墙一码”快速离开
+// 与同一墙面意外出现多个二维码时的连续读取能力。
+double qr_post_success_scan_seconds = 0.15;
+
+// 正常朝向整个扫描窗口都没有解出二维码时，依次尝试：
+// 原朝向左转 30° -> 原朝向右转 30°。
+// 角度做成 ROS 参数，比赛默认固定 30°。
+double qr_fallback_yaw_deg = 30.0;
+
+double qr_http_timeout = 2.0;
+double qr_http_retry_delay = 0.15;
+int qr_max_scan_rounds = 2;
+int qr_http_retry_count = 2;
+
+bool qr_camera_started = false;
+vector<string> successful_qr_urls;
+map<string, int> qr_url_failures_this_round;
 
 // ================= HTTP 解析 =================
 size_t WriteCallback(
@@ -846,10 +928,16 @@ string httpGet(const string& url) {
     string read_buffer;
 
     if (curl) {
+        const long timeout_ms = static_cast<long>(
+            max(0.1, qr_http_timeout) * 1000.0
+        );
+
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &read_buffer);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
         const CURLcode result = curl_easy_perform(curl);
         if (result != CURLE_OK) {
@@ -905,6 +993,422 @@ string extractResult(const string& json_str) {
     );
 }
 
+string trimCopy(const string& value) {
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == string::npos) {
+        return "";
+    }
+    const size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+bool startsWith(const string& value, const string& prefix) {
+    return value.size() >= prefix.size()
+        && value.compare(0, prefix.size(), prefix) == 0;
+}
+
+vector<string> splitQrServerResults(const string& raw_result) {
+    vector<string> results;
+    istringstream stream(raw_result);
+    string line;
+
+    while (getline(stream, line)) {
+        line = trimCopy(line);
+        if (line.empty()) {
+            continue;
+        }
+
+        // 兼容旧链路中可能出现的 “前缀|URL” 格式。
+        const size_t split_pos = line.find("|");
+        if (split_pos != string::npos) {
+            line = trimCopy(line.substr(split_pos + 1));
+        }
+
+        if (!line.empty()) {
+            results.push_back(line);
+        }
+    }
+
+    return results;
+}
+
+bool qrUrlAlreadyAccepted(const string& url) {
+    return find(
+        successful_qr_urls.begin(),
+        successful_qr_urls.end(),
+        url
+    ) != successful_qr_urls.end();
+}
+
+void stopQrCamera() {
+    if (!qr_camera_started) {
+        return;
+    }
+
+    qr_01::qr_code srv;
+    srv.request.command = -2;
+    if (!qr_client.call(srv)) {
+        ROS_WARN("释放二维码摄像头服务调用失败");
+    }
+    qr_camera_started = false;
+}
+
+bool ensureQrCameraReady() {
+    if (qr_camera_started) {
+        return true;
+    }
+
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        qr_01::qr_code srv;
+        srv.request.command = -1;
+
+        if (!qr_client.call(srv)) {
+            ROS_WARN(
+                "开启二维码摄像头服务调用失败，第 %d/2 次",
+                attempt
+            );
+        } else if (
+            srv.response.result.empty()
+            || !startsWith(srv.response.result, "ERROR:")
+        ) {
+            qr_camera_started = true;
+            ROS_INFO(
+                "二维码摄像头已开启，预热 %.2f 秒",
+                qr_camera_warmup
+            );
+            ros::Duration(max(0.0, qr_camera_warmup)).sleep();
+            return true;
+        } else {
+            ROS_WARN(
+                "二维码摄像头开启失败：%s，第 %d/2 次",
+                srv.response.result.c_str(),
+                attempt
+            );
+        }
+
+        if (attempt < 2) {
+            ros::Duration(0.20).sleep();
+        }
+    }
+
+    return false;
+}
+
+bool flushQrCamera() {
+    qr_01::qr_code srv;
+    srv.request.command = -3;
+
+    if (
+        qr_client.call(srv)
+        && (
+            srv.response.result.empty()
+            || !startsWith(srv.response.result, "ERROR:")
+        )
+    ) {
+        return true;
+    }
+
+    if (!srv.response.result.empty()) {
+        ROS_WARN(
+            "清理二维码摄像头缓存失败：%s，尝试重新初始化相机",
+            srv.response.result.c_str()
+        );
+    } else {
+        ROS_WARN("清理二维码摄像头缓存服务调用失败，尝试重新初始化相机");
+    }
+
+    stopQrCamera();
+    if (!ensureQrCameraReady()) {
+        return false;
+    }
+
+    srv.request.command = -3;
+    if (
+        !qr_client.call(srv)
+        || startsWith(srv.response.result, "ERROR:")
+    ) {
+        ROS_WARN(
+            "重新初始化后仍无法清理摄像头缓存：%s",
+            srv.response.result.c_str()
+        );
+        return false;
+    }
+
+    return true;
+}
+
+double qrFallbackYawRad() {
+    return qr_fallback_yaw_deg
+        * 3.14159265358979323846 / 180.0;
+}
+
+double currentQrViewYaw() {
+    const double base_yaw = qr_wp_yaw[qr_waypoint_idx];
+
+    if (qr_view_mode == QR_VIEW_LEFT) {
+        return base_yaw + qrFallbackYawRad();
+    }
+    if (qr_view_mode == QR_VIEW_RIGHT) {
+        return base_yaw - qrFallbackYawRad();
+    }
+    return base_yaw;
+}
+
+const char* currentQrViewName() {
+    if (qr_view_mode == QR_VIEW_LEFT) {
+        return "左转fallback";
+    }
+    if (qr_view_mode == QR_VIEW_RIGHT) {
+        return "右转fallback";
+    }
+    return "正常朝向";
+}
+
+void advanceQrWaypoint() {
+    ++qr_waypoint_idx;
+    qr_view_mode = QR_VIEW_NORMAL;
+    qr_decoded_any_at_current_view = false;
+}
+
+double currentQrScanTimeout() {
+    return qr_scan_round == 0
+        ? qr_scan_timeout
+        : qr_retry_scan_timeout;
+}
+
+bool acceptQrItem(const string& url, const string& item) {
+    if (item.empty() || qrUrlAlreadyAccepted(url)) {
+        return false;
+    }
+
+    successful_qr_urls.push_back(url);
+
+    if (valid_qr_count == 0) {
+        target_qr_1 = item;
+    } else if (valid_qr_count == 1) {
+        target_qr_2 = item;
+    } else if (valid_qr_count == 2) {
+        target_qr_3 = item;
+    } else {
+        return false;
+    }
+
+    valid_qr_count++;
+
+    ROS_INFO(
+        "录入第 %d 个有效二维码：%s",
+        valid_qr_count,
+        item.c_str()
+    );
+    return true;
+}
+
+bool processQrUrl(const string& url) {
+    if (url.empty() || qrUrlAlreadyAccepted(url)) {
+        return false;
+    }
+
+    const auto fail_it = qr_url_failures_this_round.find(url);
+    if (
+        fail_it != qr_url_failures_this_round.end()
+        && fail_it->second >= qr_http_retry_count
+    ) {
+        return false;
+    }
+
+    const int max_attempts = max(1, qr_http_retry_count);
+    bool accepted = false;
+
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        ROS_INFO(
+            "请求二维码链接，第 %d/%d 次：%s",
+            attempt,
+            max_attempts,
+            url.c_str()
+        );
+
+        const string json = httpGet(url);
+        const int code = extractCode(json);
+        const string result_text =
+            code == 200 ? trimCopy(extractResult(json)) : "";
+
+        if (code == 200 && !result_text.empty()) {
+            accepted = acceptQrItem(url, result_text);
+            qr_url_failures_this_round.erase(url);
+            break;
+        }
+
+        if (code == 200 && result_text.empty()) {
+            ROS_WARN("二维码接口返回 code=200，但 result 为空");
+        } else if (code == 400) {
+            ROS_WARN("二维码接口返回 code=400，本轮进行有限重试");
+        } else {
+            ROS_WARN(
+                "二维码接口返回异常或网络失败，code=%d",
+                code
+            );
+        }
+
+        if (attempt < max_attempts) {
+            ros::Duration(max(0.0, qr_http_retry_delay)).sleep();
+        }
+    }
+
+    if (!accepted) {
+        qr_url_failures_this_round[url] = max_attempts;
+    }
+
+    return accepted;
+}
+
+bool processQrServerResponse(const string& raw_result) {
+    if (raw_result.empty()) {
+        return false;
+    }
+
+    if (startsWith(raw_result, "ERROR:")) {
+        ROS_WARN(
+            "二维码服务返回相机错误：%s",
+            raw_result.c_str()
+        );
+
+        // CAMERA_CLOSED / FRAME_EMPTY 等异常不应被当成 URL。
+        // 下一观察点到位时会重新检查相机状态。
+        if (
+            raw_result.find("CAMERA_CLOSED") != string::npos
+            || raw_result.find("CAMERA_OPEN_FAILED") != string::npos
+        ) {
+            qr_camera_started = false;
+        }
+        return false;
+    }
+
+    const vector<string> urls = splitQrServerResults(raw_result);
+    if (urls.empty()) {
+        return false;
+    }
+
+    // 只要 QR Server 返回了至少一个真实二维码字符串，就说明当前视角
+    // 的视觉解码已经成功。即使它是旧 URL，或者后续 HTTP 请求失败，
+    // 也不再把这个视角当作“视觉识别失败”触发左右转 fallback。
+    qr_decoded_any_at_current_view = true;
+
+    const ros::WallTime http_start = ros::WallTime::now();
+    bool found_new_item = false;
+
+    for (const string& url : urls) {
+        if (valid_qr_count >= 3) {
+            break;
+        }
+        if (processQrUrl(url)) {
+            found_new_item = true;
+        }
+    }
+
+    const double http_elapsed =
+        (ros::WallTime::now() - http_start).toSec();
+
+    // HTTP 请求不占用当前观察点的视觉驻留时间：把阻塞的 HTTP 时间
+    // 加回扫描起点，而不是重新赠送完整的扫描时长。
+    if (http_elapsed > 0.001) {
+        scan_start_time += ros::Duration(http_elapsed);
+    }
+
+    if (found_new_item) {
+        qr_found_item_at_current_waypoint = true;
+        qr_post_success_deadline =
+            ros::Time::now()
+            + ros::Duration(max(0.0, qr_post_success_scan_seconds));
+    }
+
+    return found_new_item;
+}
+
+void loadQrParameters(ros::NodeHandle& private_nh) {
+    const vector<double> default_x = qr_wp_x;
+    const vector<double> default_y = qr_wp_y;
+    const vector<double> default_yaw = qr_wp_yaw;
+
+    private_nh.getParam("qr_wp_x", qr_wp_x);
+    private_nh.getParam("qr_wp_y", qr_wp_y);
+    private_nh.getParam("qr_wp_yaw", qr_wp_yaw);
+
+    if (
+        qr_wp_x.empty()
+        || qr_wp_x.size() != qr_wp_y.size()
+        || qr_wp_x.size() != qr_wp_yaw.size()
+    ) {
+        ROS_ERROR(
+            "二维码观察点参数长度不一致，恢复代码默认四观察点"
+        );
+        qr_wp_x = default_x;
+        qr_wp_y = default_y;
+        qr_wp_yaw = default_yaw;
+    }
+
+    private_nh.param(
+        "qr_scan_timeout",
+        qr_scan_timeout,
+        1.2
+    );
+    private_nh.param(
+        "qr_retry_scan_timeout",
+        qr_retry_scan_timeout,
+        2.0
+    );
+    private_nh.param(
+        "qr_camera_warmup",
+        qr_camera_warmup,
+        0.7
+    );
+    private_nh.param(
+        "qr_post_success_scan_seconds",
+        qr_post_success_scan_seconds,
+        0.15
+    );
+    private_nh.param(
+        "qr_fallback_yaw_deg",
+        qr_fallback_yaw_deg,
+        30.0
+    );
+    private_nh.param(
+        "qr_http_timeout",
+        qr_http_timeout,
+        2.0
+    );
+    private_nh.param(
+        "qr_http_retry_delay",
+        qr_http_retry_delay,
+        0.15
+    );
+    private_nh.param(
+        "qr_max_scan_rounds",
+        qr_max_scan_rounds,
+        2
+    );
+    private_nh.param(
+        "qr_http_retry_count",
+        qr_http_retry_count,
+        2
+    );
+
+    qr_max_scan_rounds = max(1, qr_max_scan_rounds);
+    qr_http_retry_count = max(1, qr_http_retry_count);
+
+    ROS_INFO(
+        "二维码参数：观察点=%zu，首轮每点=%.2fs，兜底每点=%.2fs，"
+        "相机预热=%.2fs，单墙成功后追加扫描=%.2fs，"
+        "视觉失败左右fallback=±%.1f°，最大轮数=%d",
+        qr_wp_x.size(),
+        qr_scan_timeout,
+        qr_retry_scan_timeout,
+        qr_camera_warmup,
+        qr_post_success_scan_seconds,
+        qr_fallback_yaw_deg,
+        qr_max_scan_rounds
+    );
+}
+
 int main(int argc, char** argv) {
     setlocale(LC_ALL, "");
     signal(SIGPIPE, SIG_IGN);
@@ -947,6 +1451,13 @@ int main(int argc, char** argv) {
         vad_tail_seconds,
         0.30
     );
+    private_nh.param(
+        "retry_pcm_guard_seconds",
+        retry_pcm_guard_seconds,
+        0.15
+    );
+
+    loadQrParameters(private_nh);
 
     semantic_client =
         nh.serviceClient<ucarmain2026::GetTaskSemantics>(
@@ -1064,117 +1575,247 @@ int main(int argc, char** argv) {
             case NAVIGATING:
             {
                 ac.waitForServer();
-                const double qr_wp_x[4] =
-                    {1.0, 0.75, 0.5, 0.75};
-                const double qr_wp_y[4] =
-                    {5.25, 5.0, 5.25, 5.5};
-                const double qr_wp_yaw[4] =
-                    {3.14, 1.57, 0.0, -1.57};
 
-                if (qr_waypoint_idx >= 4) {
-                    ROS_INFO("4 个扫码点遍历完毕！进行分类...");
-                    qr_01::qr_code srv_qr;
-                    srv_qr.request.command = -2;
-                    qr_client.call(srv_qr);
+                if (valid_qr_count >= 3) {
+                    stopQrCamera();
+                    ROS_INFO("已收集 3 个有效二维码，进入分类阶段");
                     current_state = ITEM_CLASSIFYING;
                     break;
                 }
 
-                ROS_INFO(
-                    "前往第 %d 个定点扫码位置...",
-                    qr_waypoint_idx + 1
-                );
-                if (
-                    go_destination(
+                if (qr_waypoint_idx >= static_cast<int>(qr_wp_x.size())) {
+                    if (qr_scan_round + 1 < qr_max_scan_rounds) {
+                        qr_scan_round++;
+                        qr_waypoint_idx = 0;
+                        qr_view_mode = QR_VIEW_NORMAL;
+                        qr_decoded_any_at_current_view = false;
+                        qr_url_failures_this_round.clear();
+
+                        ROS_WARN(
+                            "第 %d 轮扫码结束，目前仅收集 %d/3 个二维码；"
+                            "开始第 %d 轮兜底扫描，每点 %.2f 秒",
+                            qr_scan_round,
+                            valid_qr_count,
+                            qr_scan_round + 1,
+                            currentQrScanTimeout()
+                        );
+                        break;
+                    }
+
+                    stopQrCamera();
+                    ROS_ERROR(
+                        "二维码扫码失败：完成 %d 轮观察后仅获得 %d/3 个有效结果，"
+                        "为避免把“未知物”交给 Spark，终止后续分类",
+                        qr_max_scan_rounds,
+                        valid_qr_count
+                    );
+                    current_state = ALL_FINISHED;
+                    break;
+                }
+
+                const double target_qr_yaw = currentQrViewYaw();
+
+                if (qr_view_mode == QR_VIEW_NORMAL) {
+                    ROS_INFO(
+                        "第 %d/%d 轮：前往二维码观察点 %d/%zu "
+                        "[x=%.2f, y=%.2f, yaw=%.2f]",
+                        qr_scan_round + 1,
+                        qr_max_scan_rounds,
+                        qr_waypoint_idx + 1,
+                        qr_wp_x.size(),
                         qr_wp_x[qr_waypoint_idx],
                         qr_wp_y[qr_waypoint_idx],
-                        qr_wp_yaw[qr_waypoint_idx],
+                        target_qr_yaw
+                    );
+                } else {
+                    ROS_INFO(
+                        "观察点 %d 视觉识别 fallback：保持位置 [x=%.2f, y=%.2f]，"
+                        "%s %.1f°，目标 yaw=%.2f",
+                        qr_waypoint_idx + 1,
+                        qr_wp_x[qr_waypoint_idx],
+                        qr_wp_y[qr_waypoint_idx],
+                        qr_view_mode == QR_VIEW_LEFT ? "左转" : "右转",
+                        qr_fallback_yaw_deg,
+                        target_qr_yaw
+                    );
+                }
+
+                if (
+                    !go_destination(
+                        qr_wp_x[qr_waypoint_idx],
+                        qr_wp_y[qr_waypoint_idx],
+                        target_qr_yaw,
                         ac
                     )
                 ) {
-                    qr_01::qr_code srv_qr;
-                    srv_qr.request.command = -1;
-                    qr_client.call(srv_qr);
-                    ros::Duration(1.0).sleep();
-                    srv_qr.request.command = -3;
-                    qr_client.call(srv_qr);
-                    scan_start_time = ros::Time::now();
-                    current_state = QR_SCANNING;
-                } else {
-                    qr_waypoint_idx++;
+                    if (qr_view_mode == QR_VIEW_NORMAL) {
+                        ROS_WARN(
+                            "无法到达二维码观察点 %d，直接尝试下一个点",
+                            qr_waypoint_idx + 1
+                        );
+                        advanceQrWaypoint();
+                    } else if (qr_view_mode == QR_VIEW_LEFT) {
+                        ROS_WARN(
+                            "观察点 %d 左转 fallback 到位失败，继续尝试右转 fallback",
+                            qr_waypoint_idx + 1
+                        );
+                        qr_view_mode = QR_VIEW_RIGHT;
+                    } else {
+                        ROS_WARN(
+                            "观察点 %d 右转 fallback 到位失败，放弃该观察点",
+                            qr_waypoint_idx + 1
+                        );
+                        advanceQrWaypoint();
+                    }
+                    break;
                 }
+
+                // 相机在整个二维码阶段只打开一次；移动到后续观察点时保持开启。
+                if (!ensureQrCameraReady()) {
+                    ROS_ERROR(
+                        "二维码摄像头无法启动，本观察点跳过；下一点将再次尝试"
+                    );
+                    advanceQrWaypoint();
+                    break;
+                }
+
+                if (!flushQrCamera()) {
+                    ROS_WARN(
+                        "观察点 %d 到位后缓存清理失败，仍尝试读取实时画面",
+                        qr_waypoint_idx + 1
+                    );
+                }
+
+                // 失败 URL 只在当前观察点内限次；到新观察点后允许再次尝试。
+                qr_url_failures_this_round.clear();
+                scan_start_time = ros::Time::now();
+                qr_found_item_at_current_waypoint = false;
+                qr_decoded_any_at_current_view = false;
+                qr_post_success_deadline = ros::Time(0);
+                ROS_INFO(
+                    "观察点 %d [%s] 开始扫码，本视角视觉驻留上限 %.2f 秒，当前已收集 %d/3",
+                    qr_waypoint_idx + 1,
+                    currentQrViewName(),
+                    currentQrScanTimeout(),
+                    valid_qr_count
+                );
+                current_state = QR_SCANNING;
                 break;
             }
 
             case QR_SCANNING:
             {
+                if (valid_qr_count >= 3) {
+                    stopQrCamera();
+                    ROS_INFO("成功收集 3 个有效二维码，立即进入分类阶段");
+                    current_state = ITEM_CLASSIFYING;
+                    break;
+                }
+
+                const ros::Time now = ros::Time::now();
+                const double elapsed =
+                    (now - scan_start_time).toSec();
+
+                // 官方场景是一面墙一个二维码：一旦本墙已成功获得有效内容，
+                // 只再保留一个很短的追加窗口。若同帧或紧邻几帧还有其他二维码，
+                // 仍会继续处理；否则窗口到期后立即前往下一观察点。
                 if (
-                    (ros::Time::now() - scan_start_time).toSec()
-                    > 2.0
+                    qr_found_item_at_current_waypoint
+                    && now >= qr_post_success_deadline
                 ) {
-                    qr_01::qr_code srv_qr;
-                    srv_qr.request.command = -2;
-                    qr_client.call(srv_qr);
-                    qr_waypoint_idx++;
+                    ROS_INFO(
+                        "观察点 %d 已获得有效二维码，追加扫描 %.2f 秒结束；"
+                        "立即前往下一观察点",
+                        qr_waypoint_idx + 1,
+                        max(0.0, qr_post_success_scan_seconds)
+                    );
+                    advanceQrWaypoint();
+                    current_state = NAVIGATING;
+                    break;
+                }
+
+                if (elapsed > currentQrScanTimeout()) {
+                    // 只有当前整个视角一张二维码都没有解出来，才认为是视觉失败。
+                    // 如果解出了旧二维码或 HTTP 后续失败，说明相机/ZBar已经看到了码，
+                    // 左右转并不能解决网络问题，因此不触发角度 fallback。
+                    if (qr_decoded_any_at_current_view) {
+                        ROS_INFO(
+                            "观察点 %d [%s] 扫描结束：本视角已成功解出二维码，"
+                            "但未新增有效物品；不触发角度 fallback，前往下一观察点",
+                            qr_waypoint_idx + 1,
+                            currentQrViewName()
+                        );
+                        advanceQrWaypoint();
+                        current_state = NAVIGATING;
+                        break;
+                    }
+
+                    if (qr_view_mode == QR_VIEW_NORMAL) {
+                        ROS_WARN(
+                            "观察点 %d 正常朝向 %.2f 秒内完全未解出二维码；"
+                            "启动视觉 fallback：原地左转 %.1f°",
+                            qr_waypoint_idx + 1,
+                            currentQrScanTimeout(),
+                            qr_fallback_yaw_deg
+                        );
+                        qr_view_mode = QR_VIEW_LEFT;
+                        current_state = NAVIGATING;
+                        break;
+                    }
+
+                    if (qr_view_mode == QR_VIEW_LEFT) {
+                        ROS_WARN(
+                            "观察点 %d 左转 %.1f° 后仍完全未解出二维码；"
+                            "继续尝试原朝向右转 %.1f°",
+                            qr_waypoint_idx + 1,
+                            qr_fallback_yaw_deg,
+                            qr_fallback_yaw_deg
+                        );
+                        qr_view_mode = QR_VIEW_RIGHT;
+                        current_state = NAVIGATING;
+                        break;
+                    }
+
+                    ROS_WARN(
+                        "观察点 %d 右转 %.1f° 后仍完全未解出二维码；"
+                        "左右视角 fallback 均失败，前往下一观察点",
+                        qr_waypoint_idx + 1,
+                        qr_fallback_yaw_deg
+                    );
+                    advanceQrWaypoint();
                     current_state = NAVIGATING;
                     break;
                 }
 
                 qr_01::qr_code srv;
                 srv.request.command = 1;
-                if (
-                    qr_client.call(srv)
-                    && !srv.response.result.empty()
-                ) {
-                    const string raw_res = srv.response.result;
-                    const size_t split_pos = raw_res.find("|");
-                    const string captured_url =
-                        (split_pos != string::npos)
-                        ? raw_res.substr(split_pos + 1)
-                        : raw_res;
 
-                    if (
-                        find(
-                            scanned_urls.begin(),
-                            scanned_urls.end(),
-                            captured_url
-                        ) == scanned_urls.end()
-                    ) {
-                        scanned_urls.push_back(captured_url);
-                        const string json = httpGet(captured_url);
-                        const int code = extractCode(json);
+                if (!qr_client.call(srv)) {
+                    ROS_WARN_THROTTLE(1.0, "二维码识别服务调用失败");
+                    break;
+                }
 
-                        if (code == 200) {
-                            const string res_text =
-                                extractResult(json);
-                            if (valid_qr_count == 0) {
-                                target_qr_1 = res_text;
-                            } else if (valid_qr_count == 1) {
-                                target_qr_2 = res_text;
-                            } else if (valid_qr_count == 2) {
-                                target_qr_3 = res_text;
-                            }
-                            valid_qr_count++;
+                if (srv.response.result.empty()) {
+                    break;
+                }
 
-                            if (valid_qr_count >= 3) {
-                                ROS_INFO(
-                                    "成功收集 3 个有效二维码！"
-                                );
-                                qr_01::qr_code srv_qr;
-                                srv_qr.request.command = -2;
-                                qr_client.call(srv_qr);
-                                current_state = ITEM_CLASSIFYING;
-                            } else {
-                                qr_01::qr_code srv_qr;
-                                srv_qr.request.command = -2;
-                                qr_client.call(srv_qr);
-                                qr_waypoint_idx++;
-                                current_state = NAVIGATING;
-                            }
-                        } else if (code != 400) {
-                            scanned_urls.pop_back();
-                        }
-                    }
+                const bool found_new_item =
+                    processQrServerResponse(srv.response.result);
+
+                if (valid_qr_count >= 3) {
+                    stopQrCamera();
+                    ROS_INFO("成功收集 3 个有效二维码，立即进入分类阶段");
+                    current_state = ITEM_CLASSIFYING;
+                    break;
+                }
+
+                if (found_new_item) {
+                    ROS_INFO(
+                        "当前观察点获得新二维码；再观察 %.2f 秒确认是否还有其他二维码，"
+                        "当前 %d/3",
+                        max(0.0, qr_post_success_scan_seconds),
+                        valid_qr_count
+                    );
                 }
                 break;
             }
@@ -1255,6 +1896,18 @@ int main(int argc, char** argv) {
                     final_sim_item,
                     sim_audio_texts.warehouse_placement
                 };
+
+                const string broadcast_full_text =
+                    "取得" + final_real_item + "，"
+                    + real_audio_texts.classification
+                    + "；仿真环境中取得" + final_sim_item + "，"
+                    + sim_audio_texts.classification
+                    + "；已将" + final_real_item
+                    + real_audio_texts.workshop_placement
+                    + "；仿真任务已完成，已将" + final_sim_item
+                    + sim_audio_texts.warehouse_placement + "。";
+
+                ROS_INFO("完整播报内容：%s", broadcast_full_text.c_str());
 
                 if (!playAudioTextSequence(
                         broadcast_audio_texts,

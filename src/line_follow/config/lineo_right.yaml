@@ -1,0 +1,358 @@
+# lineo_right 挡板近区禁止丢线右转 + 虚线立即可用 + 可固定绕障目标点/朝向（V30，2026-08-17）
+# 唯一校验标识：LINEO_RIGHT_BARRIER_NO_DRIFT_ZONE_V10
+# 触发：当前y < 0.75，且距终点(0.25, 0.20) < 0.75m；最终方向-90°。
+
+center_distance: 240
+# right_P: 0.015
+# right_I: 0.05
+# right_D: 0.06
+# integration_limit: 150.0
+
+# leftpoint_p: 0.004
+# leftpoint_I: 0.05
+# leftpoint_D: 0.017
+
+# double_P: 0.005
+# double_I: 0.05
+# double_D: 0.017
+
+# out_turn_angel: -1.3
+# out_forward: 0.075
+# out_turn: -1.0
+# x_max_: 0.9
+
+right_P: 0.015
+right_I: 0.05
+right_D: 0.04
+integration_limit: 150.0
+
+leftpoint_p: 0.004
+leftpoint_I: 0.05
+leftpoint_D: 0.017
+
+double_P: 0.004
+double_I: 0.055
+double_D: 0.020
+
+out_turn_angel: -1.3
+out_forward: 0.075
+out_turn: -1.0
+x_max_: 0.6
+
+out_forward: 0.40 # 丢线右转时的前进速度
+out_turn: 1.3     # 固定右转角速度的大小
+out_left_speed: 0.08
+
+# ==================== 原实线二值化（一级识别） ====================
+# V21开始这3项真正由YAML读取。为了不改变V20已经跑通的实线行为，
+# 默认值严格使用V20代码里实际硬编码的 45 / -15 / 250。
+adaptive_block: 45
+adaptive_c: -15.0
+min_contour_area: 250.0
+
+# ==================== 1cm白/1cm蓝虚线重建（二级识别） ====================
+# V29严格保持“原稳定实线优先”：每帧先完整运行最早版 find_track_edge + trace_edge。
+# 服务启动后虚线低阈值通道按dashed_line_enable立即可用，但只有trace_edge明确失败时
+# 才启动虚线重建；避障成功后仍可按配置永久关闭。
+# dashed_line_enable为总开关；false表示整次运行关闭虚线识别。
+dashed_line_enable: true
+
+# 虚线单独从“原始红通道”建立更宽松的二值图，不影响上面的实线二值图。
+# C越接近0越容易保留偏暗的白块，同时也更容易保留反光；因此后面再靠几何共线过滤。
+dashed_adaptive_block: 45
+dashed_adaptive_c: -12.0
+
+# 1cm白块可能远小于250px²，因此下限明显降低；过大的白色反光/整片边界则用上限排除。
+dashed_min_contour_area: 35.0
+dashed_max_contour_area: 5000.0
+
+# V24重新定义两档：
+# - 已经进入DASHED_LOCK后，允许2段白块继续“续锁”；
+# - 尚未锁定时，无论是否有上一帧prior，都至少要求3段才能建立新的虚线控制路线。
+# 这样2个零散反光只能续一条已锁定且位置一致的线，不能从零建立新路线。
+dashed_min_component_count: 2
+dashed_min_component_count_without_prior: 3
+
+# 单个1cm白块在ROI中的包围框尺寸约束，用于删除细碎噪点和大片反光。
+dashed_min_component_width: 4
+dashed_min_component_height: 3
+dashed_max_component_width: 160
+dashed_max_component_height: 100
+
+# 右转路线只在画面右侧寻找“右边线”的虚线白块。
+dashed_min_x: 350
+dashed_min_y: 55
+
+# 多个白块中心必须近似共线；通过后再用每个白块的“左边缘像素”做Huber鲁棒直线拟合。
+dashed_component_line_tolerance_px: 20.0
+dashed_fit_max_error_px: 8.0
+dashed_min_y_span: 35
+
+# 拟合后重新生成连续的虚拟右边线点，数量保持与原trace_edge的60点上限一致。
+dashed_virtual_max_points: 60
+# 当前帧刚好落在1cm蓝间隔时，允许对观测白块上下小范围外推，从而跨过蓝色间隔。
+dashed_bottom_extrapolation_px: 25
+dashed_top_extrapolation_px: 8
+
+# 上一帧有效实线/虚线仅用于候选消歧，不参与PID；非锁定阶段若先验不匹配，
+# 仍允许>=3段真实虚线从零重锁。
+dashed_use_prior: true
+dashed_prior_x_tolerance_px: 80.0
+dashed_prior_angle_tolerance_deg: 35.0
+
+
+# V25已取消V24的continuous_right_*正常白线门控。
+# 正常白线完全按最早稳定版trace_edge结果判定；以下动态走廊仅供虚线重建使用。
+
+# -------------------- V22/V23：右侧动态走廊 --------------------
+# 不再在整个右半屏拼虚线。根据原error_calculater的center_distance透视标定，
+# 计算理论右边线 expected_x(y)=320+center_distance+(y-140)*1.40，
+# 仅保留该曲线附近的白块。远处允许区域自然偏左，近处自然贴近屏幕右缘。
+dashed_use_expected_corridor: false
+dashed_corridor_left_margin_px: 115.0
+dashed_corridor_right_margin_px: 65.0
+
+# 多组候选同时满足共线条件时显式给“更靠右”加分，但不会无条件选最右：
+# 白块数量、y覆盖范围、拟合残差和上一帧连续性仍然共同参与评分。
+dashed_right_bias_weight: 0.30
+
+# 1cm白/1cm蓝会形成近似“白块长度≈空隙长度”的节奏。这里仅作为软加分，
+# 不做硬门槛，避免透视变化或偶尔漏掉一个白块时把真实虚线误删。
+dashed_pattern_score_weight: 20.0
+
+# -------------------- V24沿用：DASHED_LOCK + DASHED_HOLD时序互锁 --------------------
+# 连续多少帧识别到可靠虚线后正式进入虚线锁定。建议先用2，若仍偶发假锁可改3。
+dashed_lock_confirm_frames: 2
+
+# DASHED_LOCK内，新虚线必须与上一帧位置/角度足够接近，防止下一帧跳到另一处反光。
+dashed_lock_x_tolerance_px: 55.0
+dashed_lock_angle_tolerance_deg: 25.0
+
+# 以下两个参数为V22/V23配置兼容保留。V24主仲裁不再因连续线出现而退出DASHED_LOCK：
+# 连续线只是当前帧更高质量的视觉来源，区域状态继续保持到避障完成（随后永久关闭虚线）
+# 或DASHED_HOLD真正超时释放。
+dashed_solid_relock_confirm_frames: 2
+dashed_lock_release_miss_frames: 6
+
+# -------------------- V23：DASHED_HOLD，解决虚线与丢线状态冲突 --------------------
+# DASHED_LOCK内虚线暂时被二值化抹黑时，最多保持这么多帧。
+# 这几帧不会增加trace_failed_count，也绝不会进入DRIFT_RECOVERY。
+# 超过后释放DASHED_LOCK；释放当帧仍不计普通丢线，下一帧才从0/lost_confirm_frames重新计数。
+dashed_hold_frames: 6
+
+# HOLD阶段前进速度上限。若最后一帧可靠虚线PID本来就低于该值，则保持更低速度，不会反向加速。
+dashed_hold_speed: 0.40
+
+# HOLD阶段角速度使用“最后一帧可靠虚线PID的wz × decay^miss”。
+# 例如0.70时，第1/2/3帧分别保留原wz的0.70 / 0.49 / 0.343。
+# 这样短暂继承正确转向，但很快趋近直行，不会把旧的大角速度长期保持。
+dashed_hold_angular_decay: 0.70
+
+# 国赛该挡板只需要在虚线路段绕一次：三段避障成功后，本次lineo_right服务内
+# 永久关闭虚线二值化/识别/DASHED_LOCK，只运行原实线巡线。
+# 下一次服务调用时重新按dashed_line_enable初始化；若为true则立即恢复虚线识别能力。
+disable_dashed_after_avoidance: true
+
+# 调试视频：候选白块黄框，采用的左边缘紫点，重建虚拟右边线红线；
+# 正常PID文字会显示DASHED / DASHED_LOCK / DASHED_HOLD / SOLID。
+dashed_debug_draw: true
+
+# 相机标定文件；需要时可直接修改
+calibration_file: /home/ucar/ucar_ws_copy/src/line_follow/camera_info/pinhole.yaml
+
+# ==================== 精简雷达挡板检测 ====================
+scan_topic: /scan
+barrier_min_scan_range: 0.05
+barrier_max_scan_range: 2.00
+
+# 场地边界；距四周边界不超过barrier_boundary_margin的点视为边界并删除。
+field_min_x: 0.0
+field_max_x: 5.0
+field_min_y: 0.0
+field_max_y: 2.5
+barrier_boundary_margin: 0.10
+
+# 只有map_x严格小于该值的非边界点才可能属于挡板。
+barrier_candidate_max_map_x: 2.25
+
+# 候选点在该距离内没有其他候选点时，作为孤立点删除；
+# 剩余点也使用该阈值分成互不混合的连通点簇。
+barrier_neighbor_max_distance: 0.10
+
+# 每个点簇执行二维总最小二乘直线拟合后的基本质量门槛。
+barrier_min_points: 6
+barrier_min_line_length: 0.15
+barrier_max_rms_error: 0.03
+barrier_endpoint_margin: 0.05
+
+# 小车到合格挡板直线的垂直距离不大于该值时触发一次性避障。
+barrier_trigger_distance: 0.31
+
+# 只要出现第一帧疑似丢线，最近一次有效挡板拟合进入该距离后就立即
+# 锁存停车并开始避障，禁止继续累计到甩尾漂移。正常巡线不使用该阈值。
+barrier_lost_mode_trigger_distance: 0.31
+
+# V30：避障前只要合格挡板进入该距离，立即锁存“禁止丢线右转/甩尾”。
+# 在此近区内即使实线/虚线暂时都识别不到，也只沿原LOST_CONFIRM机制减速直行，
+# 不允许进入DRIFT_RECOVERY；三段避障完成后自动取消，后半程恢复原丢线逻辑。
+# 建议必须大于等于barrier_trigger_distance。
+barrier_no_drift_distance: 0.40
+
+# 仅对正常右线PID巡线生效：从该距离开始，越接近挡板，vx上限越低。
+# 启动找线、疑似丢线、锁存甩尾、恢复确认期间均不使用该上限；
+# 一次避障完成后永久停用该减速。
+barrier_slowdown_start_distance: 1.00
+
+# 到达barrier_trigger_distance时，正常巡线vx最低限制为x_max_的该比例。
+barrier_slowdown_min_speed_ratio: 0.20
+
+barrier_debug_log_enabled: true
+barrier_debug_log_interval: 0.50
+
+# ==================== 一次性三段全向避障 ====================
+# 第一段右移固定距离、第二段前进固定距离、第三段二维P控制到最终绝对map目标点。
+# 默认动态模式(false)：真正停车后取当前车头yaw，从停车位置沿该yaw作射线与锁存挡板求交，
+# 再沿同一车头前向穿板后延伸avoid_target_extension_distance；三段始终保持停车时yaw。
+# 固定模式(true)：完全跳过本次几何目标计算，直接使用下面写死的map坐标和yaw；
+# 三段均保持avoid_fixed_target_yaw_deg。适合在正式场地测出最佳日志后直接固化。
+avoid_right_distance: 0.50
+avoid_forward_distance: 0.56
+avoid_target_extension_distance: 0.25
+
+# -------------------- V29沿用：绕障目标固定覆盖 --------------------
+# false：使用本次停车位姿 + 挡板实时计算出的目标点/停车yaw（用于现场标定）。
+# true ：直接使用avoid_fixed_target_x/y/yaw_deg（用于比赛固化）。
+avoid_use_fixed_target: false
+avoid_fixed_target_x: 1.80
+avoid_fixed_target_y: 0.45
+avoid_fixed_target_yaw_deg: -131.61
+
+avoid_right_speed: 0.35
+avoid_forward_speed: 0.45
+# 第三段虽然不再是固定“向左”运动，但继续沿用该参数作为到绕障点P控制的最大平移速度，
+# 保留参数名是为了尽量减少对现有代码/调参习惯的改动。
+avoid_left_speed: 0.35
+
+# 三段均使用AMCL/TF位置闭环和yaw闭环，不发送MoveBase避障目标；
+# 第三段的x/y速度由目标点二维位置误差P控制自动合成。
+avoid_control_rate: 40.0
+avoid_position_kp: 2.0
+avoid_yaw_kp: 2.5
+avoid_max_angular_speed: 0.60
+avoid_heading_pause_error_deg: 6.0
+avoid_position_tolerance: 0.02
+avoid_min_linear_speed: 0.08
+avoid_segment_timeout: 5.0
+avoid_stop_hold_time: 0.10
+
+# 停车后第一段从零速按加速度限制逐步起步；每段完成后持续发布零速
+# avoid_segment_pause_time，再进入下一段。
+avoid_segment_pause_time: 0.05
+avoid_acc_lim_x: 2.0
+avoid_acc_lim_y: 2.0
+avoid_acc_lim_theta: 6.0
+
+# 三段执行时相机没有取帧；完成后丢弃这些旧帧再恢复原巡线。
+avoid_camera_flush_frames: 5
+
+# ==================== AMCL 初始位姿 ====================
+# 每次 lineo_right 服务开始巡线前，向 /initialpose 连续发布该位姿。
+map_frame: map
+base_frame: base_link
+
+initial_pose_x: 2.50
+initial_pose_y: 2.60
+initial_pose_yaw_deg: -90.0
+initial_pose_covariance_xy: 0.01
+initial_pose_covariance_yaw: 0.01
+initial_pose_publish_count: 3
+initial_pose_publish_interval: 0.10
+
+# ==================== AMCL 停靠触发条件 ====================
+# 两项同时满足后，视觉巡线无停顿切换为终点纯 PP 位姿停靠：
+# 1. 当前 AMCL y < docking_trigger_max_y
+# 2. 当前点到停靠终点的距离 < docking_trigger_distance
+docking_trigger_max_y: 0.75
+docking_trigger_distance: 0.75
+
+# 固定停靠终点及最终方向
+docking_goal_x: 0.25
+docking_goal_y: 0.20
+docking_goal_yaw_deg: 180.0
+
+# ==================== 纯 PP 位姿停靠 ====================
+docking_control_rate: 30.0
+
+# 到点判定容差；角度单位为 rad
+docking_position_tolerance: 0.025
+docking_yaw_tolerance: 0.05
+
+# 地图系误差转换到 base_link 后的 vx、vy、wz 增益
+docking_linear_x_gain: 2.50
+docking_linear_y_gain: 1.20
+docking_angular_gain: 1.50
+
+# 克服底盘死区的最小非零速度
+docking_min_linear_speed: 0.10
+docking_min_angular_speed: 0.010
+
+# 停靠阶段速度上限
+docking_max_vel_x: 0.90
+docking_max_vel_y: 0.40
+docking_max_vel_theta: 0.90
+
+# 从巡线末帧速度平滑衔接到停靠速度，不插入零速帧
+docking_acc_lim_x: 2.00
+docking_acc_lim_y: 2.00
+docking_acc_lim_theta: 8.00
+
+start_straight_distance: 0.14 # 从起始停止线向前行驶的距离，单位 m
+start_turn_angular_speed: 1.3 # 进入右半圆前的转弯角速度大小，保持正数
+start_rotate_angle_deg: 60.0       # 原地右转的角度，单位 °
+start_straight_speed: 0.5
+
+# right_P: 0.007
+# right_I: 0.05
+# right_D: 0.017
+# integration_limit: 150.0
+# righty_P: 0.001
+# righty_I: 0.0
+# righty_D: 0.0
+
+# leftpoint_p: 0.004
+# leftpoint_I: 0.05
+# leftpoint_D: 0.017
+
+# double_P: 0.005
+# double_I: 0.05
+# double_D: 0.017
+
+# out_forward: 0.075
+# out_turn: -1.0
+# x_max_: 0.5
+
+# # 慢速版
+# x_max_: 0.7
+
+# out_forward: 0.35   # 丢线右转时的前进速度
+# out_turn: 1.2      # 固定右转角速度的大小
+
+# ==================== 丢线判定与漂移恢复状态机（V13新增） ====================
+# 假设 lost_confirm_frames=x：
+# 第n次追踪失败时，疑似丢线阶段前进速度为
+# vx = x_max_ - n * (x_max_ - out_forward) / x
+# 因而第x次失败时vx恰好降至out_forward，并在同一帧进入锁存漂移。
+lost_confirm_frames: 4
+
+# 疑似丢线阶段出现单帧“假成功”不会直接清零失败计数；
+# 必须连续这么多帧重新识别到右线，才取消疑似丢线并恢复正常PID。
+lost_cancel_confirm_frames: 2
+
+# 一旦确认丢线进入漂移，漂移状态锁存；
+# 必须连续这么多帧重新识别到右线，才退出漂移恢复PID。
+drift_recover_confirm_frames: 2
+
+# 疑似丢线、尚未正式漂移期间，只按上式逐帧降低vx；
+# 默认不横移、不转向，避免沿用上一帧高速/PID角速度。
+lost_confirm_linear_y: 0.0
+lost_confirm_angular_z: 0.0

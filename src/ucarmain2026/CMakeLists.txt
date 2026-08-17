@@ -181,7 +181,7 @@ add_executable(nav_test src/nav_test.cpp)
 add_executable(qr_client_test_node src/qr_client_test.cpp)
 add_executable(wakeup_test_node src/wakeup_test.cpp)
 add_executable(race src/race.cpp )
-add_executable(test_detect_node src/test_detect.cpp src/turn_detect.cpp)
+add_executable(test_detect src/test_detect.cpp src/turn_detect.cpp)
 add_executable(test_find_approach_node src/test_find_approach.cpp src/turn_detect.cpp)
 
 # add_executable(turn_detect src/turn_detect.cpp)
@@ -239,7 +239,7 @@ target_link_libraries(wakeup_test_node
 target_link_libraries(race ${catkin_LIBRARIES} curl)
 
 
-target_link_libraries(test_detect_node
+target_link_libraries(test_detect
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )
@@ -250,7 +250,7 @@ target_link_libraries(test_find_approach_node
 
 
 
-add_dependencies(test_detect_node ${PROJECT_NAME}_generate_messages_cpp)
+add_dependencies(test_detect ${PROJECT_NAME}_generate_messages_cpp)
 add_dependencies(test_find_approach_node ${PROJECT_NAME}_generate_messages_cpp)
 
 # target_link_libraries(lidar_test
@@ -347,4 +347,29 @@ target_link_libraries(back_and_forth_nav
 
 add_dependencies(back_and_forth_nav
   ${catkin_EXPORTED_TARGETS}
+)
+
+find_package(Threads REQUIRED)
+
+add_executable(car_comm_bridge
+  src/car_comm_bridge.cpp
+)
+
+target_link_libraries(car_comm_bridge
+  ${catkin_LIBRARIES}
+  Threads::Threads
+)
+
+# 正式比赛旋转找板
+add_executable(target_scan_competition
+  src/target_scan_competition.cpp
+)
+
+add_dependencies(target_scan_competition
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+
+target_link_libraries(target_scan_competition
+  ${catkin_LIBRARIES}
 )

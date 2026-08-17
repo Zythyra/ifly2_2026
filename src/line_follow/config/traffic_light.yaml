@@ -1,100 +1,83 @@
 camera_index: 0                 # 摄像头编号，0 对应 /dev/video0
 camera_width: 640               # 图像宽度
 camera_height: 480              # 图像高度
-mirror_image: true               # true：摄像头画面左右镜像翻转后再显示和识别
+mirror_image: true              # true：摄像头画面左右镜像翻转后再显示和识别
 
 cmd_vel_topic: /cmd_vel         # 小车速度控制话题
 direction_topic: /traffic_light/direction   # 最终方向结果发布话题
 
 # ============================================================
 # 整张图识别
-#
-# 不假设红绿灯最终出现在当前测试位置。
-# 0,0,1,1 表示完整使用 640x480 摄像头画面。
 # ============================================================
-roi_x: 0.0                      # 从整幅图最左边开始
-roi_y: 0.0                      # 从整幅图最上边开始
-roi_w: 1.0                      # 使用整幅图宽度
-roi_h: 1.0                      # 使用整幅图高度
+roi_x: 0.0
+roi_y: 0.0
+roi_w: 1.0
+roi_h: 1.0
 
 # ============================================================
 # HSV 绿色阈值
-# 1.8m 实测下 160/180 太严格，因此恢复到 120/120。
 # ============================================================
-green_h_min: 35                 # 绿色 H 最小值
-green_h_max: 95                 # 绿色 H 最大值
-green_s_min: 120                # 绿色最小饱和度
-green_v_min: 120                # 绿色最小亮度
+green_h_min: 35
+green_h_max: 95
+green_s_min: 120
+green_v_min: 120
 
 # ============================================================
 # 黑色负形箭头提取
-#
-# 实测中真正 LED 箭头因为过曝，在 green_mask 里反而呈黑色；
-# 周围绿色光晕呈白色。
-#
-# 所以现在不再使用“更严格绿色 core”，而是：
-# 绿色支撑闭运算 - 原始 green_mask = 黑色负形箭头
 # ============================================================
-negative_close_kernel: 17       # 闭运算核；连接箭头周围绿色光晕形成支撑区域
-negative_open_kernel: 3         # 对负形箭头轻微去噪；保持 3 即可
+negative_close_kernel: 17
+negative_open_kernel: 3
 
 # ============================================================
 # 过曝白芯过滤
-#
-# 真正箭头中心由于过曝会泛白：
-# V 很高、S 会下降。
-# 现在负形候选必须同时符合这个特征，
-# 用于排除绿色椅子内部暗孔、阴影和普通绿色反光噪声。
 # ============================================================
-bright_core_v_min: 175          # 过曝白芯最低亮度；1.8m 测试先用 175
-bright_core_s_max: 150          # 过曝白芯最大饱和度；越泛白 S 越低
-
-negative_component_min_area: 8  # arrow_mask 中小于 8 像素的孤立白点直接删除
+bright_core_v_min: 175
+bright_core_s_max: 150
+negative_component_min_area: 8
 
 # ============================================================
-# 红灯提示检测
-#
-# 只用于终端提示“RED LIGHT -> HOLD STOP”。
-# 不作为绿灯的硬否决条件，避免场地红胶带影响。
-# 小车真正允许离开仍然必须连续确认 LEFT/STRAIGHT/RIGHT。
+# 红灯检测
 # ============================================================
-red_h1_min: 0                   # 红色 H 第一段最小值
-red_h1_max: 12                  # 红色 H 第一段最大值
-red_h2_min: 168                 # 红色 H 第二段最小值
-red_h2_max: 179                 # 红色 H 第二段最大值
-red_s_min: 160                 # 红灯最低饱和度
-red_v_min: 185                 # 红灯最低亮度，尽量只保留发光红灯
-red_min_pixels: 80             # 强红色像素达到该数量才提示红灯
+red_h1_min: 0
+red_h1_max: 12
+red_h2_min: 168
+red_h2_max: 179
+red_s_min: 160
+red_v_min: 185
+red_min_pixels: 80
 
 # ============================================================
 # 全图箭头候选过滤
-#
-# 不再逐颗数 LED，而是扫描整张图中的所有绿色候选区域。
 # ============================================================
-min_arrow_pixels: 80            # 一个候选至少要有 40 个原始绿色像素
-max_arrow_pixels: 1800          # 超过该值通常是大面积绿色物体
+min_arrow_pixels: 80
+max_arrow_pixels: 1800
 
-min_arrow_width: 15             # 候选包围框最小宽度
-max_arrow_width: 160            # 候选包围框最大宽度
-min_arrow_height: 15            # 候选包围框最小高度
-max_arrow_height: 160           # 候选包围框最大高度
+min_arrow_width: 15
+max_arrow_width: 160
+min_arrow_height: 15
+max_arrow_height: 160
 
-bbox_aspect_min: 0.30           # 排除过细的竖线
-bbox_aspect_max: 3.20           # 排除过细的横线
+bbox_aspect_min: 0.30
+bbox_aspect_max: 3.20
 
-min_arrow_fill_ratio: 0.04      # 候选框内至少 4% 是绿色，过滤极稀疏噪声
-max_arrow_fill_ratio: 0.70      # 超过 55% 太接近实心绿色物体，如绿色椅子
+min_arrow_fill_ratio: 0.04
+max_arrow_fill_ratio: 0.70
 
-arrow_head_ratio: 1.18          # 最佳方向结构本身至少达到 1.18 才接受
-direction_dominance_ratio: 1.12 # 最佳方向还必须至少比第二名高 12%，避免歧义噪点误判
-edge_fraction: 0.40             # 用候选框四周各 40% 分析箭头头部
+arrow_head_ratio: 1.18
+direction_dominance_ratio: 1.12
+edge_fraction: 0.40
 
-stable_frames: 5                # 连续 5 帧同一方向才启动巡线
+# ============================================================
+# 连续确认帧数
+# stable_frames 只在 YAML 里设置，C++ 不再保存默认帧数。
+# LEFT / STRAIGHT / RIGHT 三个方向全部共用这个值。
+# 省赛当前保持 2 帧；以后需要改，只改这一行。
+# ============================================================
+stable_frames: 2
 
-show_debug: true                # 当前调试保持 true，稳定后再改 false
-auto_launch: false              # false：只输出识别结果；true：识别成功后自动启动巡线
+show_debug: true
 
-# 使用 rosrun 绝对路径，避免子进程中出现 rosrun: command not found
-left_command: "/opt/ros/noetic/bin/rosrun line_follow line2_left"       # 左箭头
-straight_command: "/opt/ros/noetic/bin/rosrun line_follow line_right"   # 上箭头/直行
-right_command: "/opt/ros/noetic/bin/rosrun line_follow line2_right"     # 右箭头
+# 路线映射固定在 C++：
+# LEFT     -> /line2_left
+# STRAIGHT -> /line_right
+# RIGHT    -> /line2_right

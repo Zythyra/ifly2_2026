@@ -1,0 +1,236 @@
+# line2o_right：避障航向指向YAML参考点 + 沿板平移MoveBase目标 + 停靠平移同步转向
+# 唯一校验标识：LINE2O_RIGHT_HEADING_REFERENCE_DOCKING_ROTATE_V16
+# 文件名为 line2o_right.yaml，由 line_dependence.launch 加载到 /line2o_right 命名空间。
+
+# ==================== 视觉巡线 ====================
+center_distance: 240
+
+right_P: 0.015
+right_I: 0.05
+right_D: 0.04
+integration_limit: 150.0
+
+leftpoint_p: 0.004
+leftpoint_I: 0.05
+leftpoint_D: 0.017
+
+double_P: 0.004
+double_I: 0.055
+double_D: 0.020
+
+out_turn_angel: -1.3
+x_max_: 0.8
+out_forward: 0.45  # 丢线右转时的前进速度
+out_turn: 1.5      # 固定右转角速度大小，代码内部取负值
+
+adaptive_block: 45
+adaptive_c: -20
+min_contour_area: 250
+
+# 相机标定文件；需要时可直接修改
+calibration_file: /home/ucar/ucar_ws_copy/src/line_follow/camera_info/pinhole.yaml
+
+# ==================== 雷达挡板检测 ====================
+scan_topic: /scan
+
+# 只处理该距离范围内的有限雷达点。
+barrier_min_scan_range: 0.05
+barrier_max_scan_range: 2.00
+
+# 已知巡线场地的map坐标边界。
+field_min_x: 0.0
+field_max_x: 5.0
+field_min_y: 0.0
+field_max_y: 2.5
+
+# 只对map_x<2.0m的点执行后续边界、最近邻、分簇和拟合计算。
+# LaserScan不自带map_x，每个有效量测仅做一次TF坐标变换后立即筛选。
+barrier_candidate_max_map_x: 2.0
+
+# 候选点到x=0、x=5、y=0、y=2.5四条边界的距离均必须>0.10m。
+barrier_boundary_margin: 0.10
+
+# 候选点必须在10cm内存在另一个同样通过map筛选的雷达点。
+# 同时用该阈值生成空间连通点簇，各点簇分别在雷达坐标系拟合。
+barrier_neighbor_max_distance: 0.10
+
+# 直线质量门槛，防止少量噪点或弯曲物体触发。
+barrier_min_points: 6
+barrier_min_line_length: 0.25
+
+# 进入 barrier_trigger_distance 后，可见板长度会随距离快速缩短。
+# 触发区改用独立近场门槛；仍须同时通过点数、RMS和垂足检查。
+barrier_trigger_zone_min_line_length: 0.005
+
+barrier_max_rms_error: 0.025
+
+# 不再用挡板相对车体横向轴的角度拒绝候选；
+# 候选点已通过map_x<2和场地边界过滤确认位置。
+
+# 原点到拟合直线的垂足必须落在实际观测线段内；允许少量端点余量。
+barrier_endpoint_margin: 0.05
+
+# 拟合直线到车体原点的垂直距离小于等于该值时立即停车并锁定直线。
+barrier_trigger_distance: 0.20
+
+# ==================== 接近挡板线性减速 ====================
+# 拟合直线最短距离>=1m时不限制原巡线速度。
+barrier_slowdown_start_distance: 1.00
+
+# 从1m接近barrier_trigger_distance的过程中，速度上限从x_max_
+# 线性降至x_max_ * 0.50；达到触发距离后仍由原逻辑立即停车。
+barrier_slowdown_min_speed_ratio: 0.10
+
+# 默认1表示单帧达到阈值立即触发；如雷达噪声较大可改为2，但会增加反应延迟。
+barrier_confirm_scans: 1
+barrier_confirm_max_distance_change: 0.08
+barrier_confirm_max_angle_change_deg: 15.0
+
+# ==================== 雷达拟合诊断输出 ====================
+# 打开后周期输出：有效量测数、x<2后点数、边界过滤后点数、
+# 最近邻过滤后点数、点簇数、板/法线角度、最短距离、线长、RMS和过滤原因。
+barrier_debug_log_enabled: true
+barrier_debug_log_interval: 0.50
+
+# 巡线服务运行时，超过该时长没有收到 /scan 就输出话题中断警告。
+barrier_scan_timeout: 1.00
+
+# ==================== 一次性绕障：左移 + MoveBase ====================
+# 触发时锁存挡板线段中点的map坐标，后续不再更新。
+# 第一段仍按原逻辑沿锁存挡板方向左移。
+avoid_left_distance: 0.50
+
+# 左移完成后，从挡板中点沿朝车头前方一侧的板法向延伸该距离。
+avoid_move_base_extension_distance: 0.26
+
+# 在法向延伸结果上，再沿平行挡板的方向移动该距离。
+# 正值默认向map_x增大的方向移动；负值向相反方向移动。
+# 默认0.0表示暂不施加额外沿板偏移。
+avoid_move_base_parallel_shift_distance: 0.01
+
+# 避障MoveBase终点的车头航向指向该map坐标点。
+# yaw = atan2(heading_target_y - 最终避障点y,
+#             heading_target_x - 最终避障点x)
+avoid_move_base_heading_target_x: 0.20
+avoid_move_base_heading_target_y: 0.50
+
+# 最终计算得到的MoveBase目标点x不得小于该值；若更小则强制取该值。
+# 默认0.0不改变V10现有行为，可按实际场地直接调大。
+avoid_move_base_min_target_x: 0.0
+
+avoid_move_base_timeout: 10.0
+
+# 以下视觉横移回线参数仅保留便于快速回退，V16执行流程不再使用。
+avoid_recenter_y_kp: 0.004
+avoid_recenter_min_y_speed: 0.06
+avoid_recenter_max_y_speed: 0.30
+avoid_recenter_line_error_tolerance: 8.0
+avoid_recenter_confirm_frames: 5
+avoid_recenter_timeout: 5.0
+
+# 以下原前进/右移距离参数暂保留便于回退，V16流程不再执行。
+avoid_forward_distance: 0.50
+avoid_right_distance: 0.47
+
+# 第一段左移最大速度。其余两项为保留参数，V16不使用。
+avoid_left_speed: 0.35
+avoid_forward_speed: 0.45
+avoid_right_speed: 0.35
+
+# AMCL/TF闭环位移与车身朝向保持。
+avoid_control_rate: 40.0
+avoid_position_kp: 2.0
+avoid_yaw_kp: 2.5
+avoid_max_angular_speed: 0.60
+
+# 原旋转参数暂保留便于回退，V16不再执行中间旋转。
+avoid_rotate_min_angular_speed: 0.10
+avoid_rotate_tolerance_deg: 2.0
+avoid_rotate_timeout: 3.0
+
+# 朝向偏差超过该角度时暂停平移，先把车头纠正到触发时锁定的方向。
+avoid_heading_pause_error_deg: 6.0
+
+avoid_position_tolerance: 0.02
+avoid_min_linear_speed: 0.08
+avoid_segment_timeout: 5.0
+
+# 触发急停保持时间、段间换向停顿时间。
+avoid_stop_hold_time: 0.10
+avoid_segment_pause_time: 0.05
+
+# 绕障速度变化率限制，防止全向底盘换向冲击。
+avoid_acc_lim_x: 2.0
+avoid_acc_lim_y: 2.0
+avoid_acc_lim_theta: 6.0
+
+# MoveBase结束后丢弃相机缓存帧，随后直接恢复正常前向巡线。
+avoid_camera_flush_frames: 5
+
+# ==================== AMCL 初始位姿 ====================
+# 每次 line2o_right 服务开始巡线前，向 /initialpose 连续发布该位姿。
+map_frame: map
+base_frame: base_link
+
+initial_pose_x: 2.50
+initial_pose_y: 2.60
+initial_pose_yaw_deg: -90.0
+initial_pose_covariance_xy: 0.01
+initial_pose_covariance_yaw: 0.01
+initial_pose_publish_count: 3
+initial_pose_publish_interval: 0.10
+
+# ==================== AMCL 停靠触发条件 ====================
+# 两项同时满足后，视觉巡线无停顿切换为终点纯 PP 位姿停靠：
+# 1. 当前 AMCL x < docking_trigger_max_x
+# 2. 当前点到停靠终点的距离 < docking_trigger_distance
+docking_trigger_max_x: 0.75
+docking_trigger_distance: 0.75
+
+# true：必须先成功完成“第一段沿板横移 + MoveBase避障目标”，
+# 才允许坐标触发切换到最终纯PP停靠，防止避障中途改去终点。
+# 无挡板单独测试终点停靠时可临时改为false。
+docking_require_avoidance_complete: true
+
+# 固定停靠终点及最终方向
+docking_goal_x: 0.25
+docking_goal_y: 0.25
+docking_goal_yaw_deg: -90.0
+
+# ==================== 纯 PP 位姿停靠 ====================
+docking_control_rate: 30.0
+
+# 到点判定容差；角度单位为 rad
+docking_position_tolerance: 0.025
+docking_yaw_tolerance: 0.05
+
+# 优先使用上面的严格判据；若底盘卡在小角速度死区，则允许在位置已到位、
+# 方向误差进入宽松门槛并持续一段时间后结束，避免永久输出小角速度。
+docking_relaxed_yaw_tolerance: 0.08
+docking_relaxed_hold_time: 0.50
+
+# 无论定位或底盘发生何种异常，停靠控制最多运行该时长，然后停车退出服务。
+docking_timeout: 12.0
+
+# 地图系误差转换到 base_link 后的 vx、vy、wz 增益。
+# 停靠平移过程中wz始终根据docking_goal_yaw_deg（当前-90°）同步纠偏。
+docking_linear_x_gain: 2.50
+docking_linear_y_gain: 1.20
+docking_angular_gain: 4.50
+
+# 克服底盘死区的最小非零速度
+docking_min_linear_speed: 0.10
+docking_min_angular_speed: 0.010
+
+# 停靠阶段速度上限
+docking_max_vel_x: 0.90
+docking_max_vel_y: 0.40
+docking_max_vel_theta: 0.90
+
+# 从巡线末帧速度平滑衔接到停靠速度，不插入零速帧
+docking_acc_lim_x: 2.00
+docking_acc_lim_y: 2.00
+docking_acc_lim_theta: 8.00
+
+
+barrier_no_drift_distance: 0.60

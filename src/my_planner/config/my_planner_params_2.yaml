@@ -1,0 +1,391 @@
+# IFLY2026 V11：真实角点 + 巡检纯P对准 + 航向死区补偿 + 横移增强
+# 基于V10，其余MPC/C4.1参数保持不变。
+# =============================================================================
+# MyPlanner V6：普通导航LTV-MPC＋固定巡检Path专用全向PP
+# =============================================================================
+# 保留C3.2的实测状态、输入延迟、一阶响应、主动漂移和PP回退。
+# 当前初始姿态调整和路径跟踪保持不变，仅恢复C3.2原始最终姿态调整。
+#
+# 成熟方案来源：
+# - TEB：使用真实初始速度约束起始加速度；
+# - Nav2 MPPI：真实状态与历史控制序列分离、路径跟随/对齐/自转评价分离；
+# - Autoware MPC：输入延迟、一阶执行器响应、Butterworth滤波、终端稳定权重；
+# - MPCC：轮廓误差之外增加路径进度奖励。
+
+controller_mode: "mpc"
+
+# 建议与move_base/controller_frequency=20Hz一致。
+mpc_horizon_steps: 20
+mpc_dt: 0.05
+mpc_reference_search_behind_points: 160
+mpc_reference_search_ahead_points: 1000
+
+# 原始终点控制会在0.50m处直接接管，因此关闭C4的MPC终点制动参考。
+mpc_terminal_stop_enabled: false
+mpc_terminal_yaw_blend_distance: 0.25
+mpc_terminal_progress_fade_distance: 0.30
+
+# 兼容保留；原始终点控制接管后不会进入该回退分支。
+mpc_terminal_fallback_stop_distance: 0.20
+
+# -----------------------------------------------------------------------------
+# C2保留：路径重采样、曲率估计、曲率速度上限
+# -----------------------------------------------------------------------------
+c2_duplicate_point_distance: 0.003
+c2_resample_distance: 0.020
+c2_tracking_curvature_distance: 0.080
+c2_speed_curvature_distance: 0.120
+c2_curvature_median_window: 5
+c2_curvature_preview_distance: 0.08
+c2_hold_speed_after_curve: 0.04
+
+# 可在运行中修改：/move_base/MyPlanner/c2_max_reference_speed
+c2_max_reference_speed: 0.60
+c2_min_curve_speed: 0.55
+c2_curve_lateral_acc_limit: 0.50
+c2_reference_acceleration: 1.25
+c2_reference_deceleration: 1.80
+
+# -----------------------------------------------------------------------------
+# C3主动漂移几何
+# -----------------------------------------------------------------------------
+c3_enable_active_drift: true
+c3_yaw_preview_distance: 0.12
+c3_yaw_preview_gain: 0.42
+c3_yaw_preview_curvature_deadband: 0.25
+c3_yaw_preview_full_curvature: 1.50
+
+c3_beta_max_low_speed_deg: 35.0
+c3_beta_max_mid_speed_deg: 28.0
+c3_beta_max_high_speed_deg: 22.0
+c3_beta_low_speed_threshold: 0.35
+c3_beta_high_speed_threshold: 0.60
+c3_beta_rate_limit_deg_per_s: 90.0
+
+# 曲率前馈与角速度参考的建立/制动/反向速率。
+c3_reference_omega_limit: 2.40
+c3_reference_omega_accel_rate: 8.0
+c3_reference_omega_decel_rate: 14.0
+c3_reference_omega_reverse_rate: 16.0
+c3_omega_curvature_feedforward_gain: 0.30
+
+# -----------------------------------------------------------------------------
+# TEB/MPPI/Autoware式真实状态、滤波、输入延迟和执行器响应
+# -----------------------------------------------------------------------------
+c3_use_odometry: true
+c3_odom_topic: "/odom"
+c3_odom_timeout: 0.20
+
+# 标准二阶Butterworth，仅滤波odom角速度；0表示关闭。
+c3_measured_omega_filter_cutoff_hz: 5.0
+
+# 初值为保守的一控制周期。后续应通过cmd_vel与odom/IMU阶跃测试标定。
+c3_input_delay: 0.05
+c3_translational_response_tau: 0.08
+c3_angular_response_tau: 0.12
+c3_delay_integration_dt: 0.01
+
+# -----------------------------------------------------------------------------
+# 状态、速度方向、进度和终端稳定代价
+# -----------------------------------------------------------------------------
+mpc_weight_longitudinal: 1.50
+mpc_weight_lateral: 110.0
+mpc_weight_yaw_straight: 12.0
+mpc_weight_yaw_curve: 8.0
+
+# 直道强烈消除残余角速度；弯道允许必要的快速旋转。
+mpc_weight_omega_state_straight: 8.0
+mpc_weight_omega_state_curve: 0.40
+
+mpc_terminal_position_weight_scale: 4.0
+mpc_terminal_yaw_weight_scale: 4.0
+mpc_terminal_omega_weight_scale: 8.0
+
+mpc_weight_tangent_velocity: 4.0
+mpc_weight_path_normal_velocity: 35.0
+
+# MPCC式路径进度奖励。过大可能提前冲向速度圆上限。
+mpc_weight_progress: 0.80
+
+# 控制命令正则。直道抑制无意义自转，弯道不压制甩尾。
+mpc_weight_vx: 0.20
+mpc_weight_vy: 0.20
+mpc_weight_omega_straight: 0.90
+mpc_weight_omega_curve: 0.15
+
+mpc_weight_delta_vx: 10.0
+mpc_weight_delta_vy: 12.0
+mpc_weight_delta_omega: 8.0
+
+# -----------------------------------------------------------------------------
+# 硬约束
+# -----------------------------------------------------------------------------
+mpc_min_vx_ratio: 0.0
+mpc_min_vx: 0.0
+# 可在运行中修改：/move_base/MyPlanner/mpc_max_vx
+mpc_max_vx: 0.60
+mpc_min_vy: -0.35
+mpc_max_vy: 0.35
+mpc_min_omega: -2.50
+mpc_max_omega: 2.50
+
+# 可在运行中修改：/move_base/MyPlanner/mpc_max_translational_speed
+mpc_max_translational_speed: 0.60
+mpc_velocity_polygon_sides: 16
+
+mpc_max_accel_x: 2.00
+mpc_max_decel_x: 2.00
+mpc_max_accel_y: 2.00
+mpc_max_accel_theta: 8.00
+
+# -----------------------------------------------------------------------------
+# OSQP与回退
+# -----------------------------------------------------------------------------
+mpc_osqp_max_iterations: 180
+mpc_osqp_eps_abs: 0.001
+mpc_osqp_eps_rel: 0.001
+mpc_osqp_polish: false
+mpc_osqp_verbose: false
+mpc_max_total_time_ms: 30.0
+mpc_max_consecutive_failures: 5
+mpc_lock_to_pp_after_failures: true
+mpc_publish_debug_paths: true
+
+# -----------------------------------------------------------------------------
+# PP回退、碰撞检查、条件式初始对准与C3.2原始终点控制
+# -----------------------------------------------------------------------------
+# C4.0暂不研究路径移动，默认关闭；保留实现与RViz话题供后续继续开发。
+enable_path_healing: false
+path_healing_points_behind: 5
+path_healing_points_ahead: 60
+path_healing_iterations: 3
+path_healing_max_step: 0.01
+path_healing_gradient_deadband: 4.0
+path_healing_gradient_scale: 20.0
+
+# RViz路径治愈调试。只在话题存在订阅者时按限频发布。
+publish_path_healing_debug: false
+path_healing_debug_publish_rate: 5.0
+
+lookahead_dist: 0.26
+path_linear_x_gain: 2.20
+path_linear_y_gain: 2.00
+lateral_search_points: 10
+path_angular_y_gain: 10.00
+
+# C5.4：全局重规划与C5 active path彻底分离，并采用双触发源。
+# A) raw global path连续进入真正LETHAL；B) C5连续无法提供任何安全active path。
+# FINAL_SETTLING / GOAL_HOLD阶段完全禁止路径重规划。
+enable_path_replanning: false
+
+# 从当前路径进度沿raw_plan_累计真实弧长进行前视。
+collision_check_lookahead_distance: 0.60
+
+# raw lethal连续确认。20Hz下2帧约0.10s，可滤掉单帧costmap抖动。
+collision_replan_confirm_frames: 2
+
+# C5 fresh/HOLD/reuse均无安全active path时的独立确认。
+# 3帧约0.15s，允许短时warm-start/escape恢复，持续失败再让global planner改拓扑。
+c5_failure_replan_confirm_frames: 3
+
+# 254=LETHAL_OBSTACLE。253=INSCRIBED_INFLATED_OBSTACLE继续交给C5处理，
+# 不再因为C5已经能绕开的253区域频繁停车/重规划。
+collision_cost_threshold: 254
+
+# 255=NO_INFORMATION是否也直接作为raw全局重规划触发。
+# 默认false，避免rolling costmap内部未知格造成假重规划；地图边界外本来就会跳过。
+collision_replan_on_unknown: false
+
+enable_initial_rotation: true
+
+# 仅当车头与起始路径切线夹角>30deg时旋转；进入22deg后交给MPC，形成滞回。
+initial_align_enter_angle_deg: 30.0
+initial_align_exit_angle_deg: 22.0
+initial_path_tangent_lookahead: 0.16
+initial_angular_gain: 8.00
+initial_min_angular_speed: 0.10
+initial_max_angular_speed: 1.40
+
+# 距离目标小于0.50m时立即退出MPC，恢复C3.2独立XYZ比例控制。
+goal_dist_threshold: 0.50
+goal_position_tolerance: 0.025
+goal_yaw_tolerance: 0.05
+
+final_linear_x_gain: 1.60
+final_linear_y_gain: 1.20
+final_angular_gain: 6.50
+final_min_linear_speed: 0.03
+final_min_angular_speed: 0.08
+final_max_vel_x: 0.30
+final_max_vel_y: 0.20
+final_max_vel_theta: 0.90
+
+# 可在运行中修改：/move_base/MyPlanner/max_vel_x
+max_vel_x: 0.60
+max_vel_y: 0.45
+max_vel_theta: 2.50
+acc_lim_x: 2.00
+acc_lim_y: 2.00
+acc_lim_theta: 8.00
+
+debug_log: false
+
+# =============================================================================
+# C4.1 独立净空路径优化器
+# =============================================================================
+# 外部固定巡检路径的终点必须与move_base目标匹配，避免旧路线误用于新目标。
+patrol_goal_position_tolerance: 0.05
+patrol_goal_yaw_tolerance: 0.15
+
+# -----------------------------------------------------------------------------
+# V10 固定巡检Path专用全向PP＋快速起步对准＋原始巡检线航向保持
+# -----------------------------------------------------------------------------
+# 仅当固定巡检路径已经锁定，并且当前setPlan确实套用了该路径时生效。
+# 普通导航、前往停靠点、视觉横移和雷达逼近仍沿用原有控制流程。
+patrol_pp_enabled: true
+
+# V11：开始/续巡前直接复用普通导航初始姿态P控制；
+# 误差进入1.5度后退出纯旋转并开始vx/vy跟踪。
+patrol_pp_align_tolerance_deg: 1.5
+# 旧巡检旋转参数保留兼容；V11起步旋转实际复用普通导航initial_*参数。
+patrol_pp_settle_omega: 0.03
+patrol_pp_settle_frames: 4
+patrol_align_kp: 1.50
+patrol_align_max_wz: 0.40
+patrol_align_near_angle_deg: 10.0
+patrol_align_near_wz: 0.18
+
+# 正式巡检不停车重对准。目标航向始终取raw_plan_原始巡检线切线，
+# wz=Kp*(目标航向-实际航向)，优化路径仍只决定vx/vy和横向避障。
+patrol_heading_hold_enabled: true
+patrol_heading_kp: 1.50
+patrol_heading_max_wz: 0.30
+patrol_heading_deadband_deg: 0.5
+patrol_heading_acc_lim: 1.50
+
+# Patrol-R2：巡检Reference由staged固定直线强制提供，不经过GlobalPlanner/path healing；
+# 唯一C5直接使用master costmap（包括墙体inflation和真实路障）生成optimized path。
+# Patrol PP只用optimized决定vx/vy；Yaw始终跟raw/reference直线，因此绕障时车头不会跟弧线乱摆。
+patrol_pp_lookahead_dist: 0.35
+patrol_pp_preview_start: 0.15
+patrol_pp_preview_end: 0.90
+patrol_pp_lateral_gain: 2.80
+patrol_pp_lateral_deadband: 0.01
+patrol_pp_max_vy: 0.40
+patrol_pp_acc_lim_y: 1.60
+
+# C5.4已删除“优化offset再二次低通”的位置参考模型。
+# 下面两个旧参数源码仍会读取默认值以保持配置兼容，但不再参与巡检XY控制。
+patrol_pp_avoid_offset_rate: 0.50
+patrol_pp_return_offset_rate: 0.15
+
+# 巡检终点仍只以x/y判断到达，不要求特定终点姿态；但接近终点期间
+# 航向保持继续工作，避免车身在减速段再次歪斜。
+patrol_pp_goal_slowdown_distance: 0.30
+patrol_pp_goal_position_tolerance: 0.015
+
+# Patrol-R2不再使用V15/V16的动态障碍过滤/重新膨胀图：
+# 巡检和普通导航共用下方唯一C5与master costmap。墙体inflation允许把optimized往场地内部推，
+# 遇到真正路障时继续由同一C5在此基础上进一步局部绕行。shadow_mode仍被忽略。
+
+clearance_optimizer:
+  # ===========================================================================
+  # C5.4：稳定active-path轨迹优化器（唯一C5）
+  # ===========================================================================
+  # 不再使用shadow_mode；旧巡检脚本即使继续rosparam set shadow_mode，
+  # MyPlanner也不会读取它。普通导航、导航停靠、固定巡检全部经过C5。
+  enabled: false
+
+  publish_debug_paths: true
+
+  # 地图内部unknown默认仍视为不可进入；“超出rolling local costmap”不再等同unknown，
+  # C5.4会自动缩短当前前视窗口。
+  reject_unknown: true
+
+  # fresh优化偶发失败时，用上一轮offset重建“当前”滚动窗口；
+  # 通过当前costmap验证后继续作为active path，避免瞬间退回raw。
+  hold_last_valid: true
+
+  # 首次左右完全对称时的小探针；完全对称时优先左侧，保证确定性。
+  prefer_left_on_first_solution: true
+  initial_probe_offset: 0.025
+
+  # raw/warm seed已经进入hard时，沿路径法向按该步长逐层寻找最小安全escape seed。
+  escape_probe_step: 0.025
+
+  # ---------------------------------------------------------------------------
+  # 滚动局部窗口
+  # ---------------------------------------------------------------------------
+  # 仍保持C5.0已经验证过的几何尺度。
+  forward_window: 1.50
+  backward_window: 0.08
+  min_window_length: 0.35
+  control_point_spacing: 0.12
+  sample_step: 0.025
+
+  # 到rolling local costmap边缘至少保留该距离；前视超出地图时自动缩短，
+  # 不再因为窗口末端越界导致optimized_path整段消失。
+  map_edge_margin: 0.05
+
+  # 近车端保持raw，避免新旧active path切换时突然横跳。
+  # 末端使用连续blend回raw，但不再把整段末端控制点锁死。
+  commitment_distance: 0.10
+  start_blend_distance: 0.10
+  end_blend_distance: 0.22
+
+  # ---------------------------------------------------------------------------
+  # cost触发与滞回
+  # ---------------------------------------------------------------------------
+  # 未激活时，raw最大cost>=70进入C5避障。
+  activation_cost: 70
+
+  # 已激活后，只有raw最大cost<50才释放回SAFE_RAW；
+  # 50~69区间继续保留C5，避免阈值附近一帧raw/一帧optimized闪烁。
+  deactivation_cost: 50
+
+  # ROS costmap：253仍按软膨胀处理，254才是LETHAL。
+  hard_cost_threshold: 254
+
+  max_lateral_offset: 0.30
+  max_offset_delta_per_control: 0.07
+
+  # ---------------------------------------------------------------------------
+  # 连续优化
+  # ---------------------------------------------------------------------------
+  # 保持C5.0已验证良好的几何权重，不在C5.4重新调形状。
+  max_iterations: 8
+  finite_difference_epsilon: 0.004
+  learning_rate: 0.030
+  max_offset_step: 0.018
+  convergence_delta: 0.0001
+
+  weight_cost: 28.0
+  weight_reference: 2.5
+  weight_slope: 18.0
+  weight_curvature: 70.0
+  hard_collision_penalty: 1500.0
+
+  # ---------------------------------------------------------------------------
+  # Warm Start / HOLD
+  # ---------------------------------------------------------------------------
+  warm_start_weight: 0.75
+  warm_start_max_distance: 0.22
+
+  # ---------------------------------------------------------------------------
+  # C5.4：active trajectory稳定性
+  # ---------------------------------------------------------------------------
+  # 借鉴TEB的warm-start/轨迹延续语义：fresh和HOLD都暂时不可用时，
+  # 在很短时间内继续使用最后一条已经通过当前costmap安全检查的active path。
+  # 该缓存绝不会因为“复用”而刷新时间戳，因此不会无限续命。
+  reuse_last_active: true
+  active_reuse_max_age: 0.35
+  active_reuse_goal_tolerance: 0.10
+
+  # 全向底盘没有非完整最小转弯半径约束，因此曲率继续作为weight_curvature软代价，
+  # 默认只做质量提示，不再因为单个2.5cm采样点曲率峰值直接拒绝整条路径。
+  curvature_warn_threshold: 12.0
+
+  # 0.0 = 关闭曲率硬门槛。仅当后续实车确认极端几何曲率确实会导致MPC不可跟踪时，
+  # 才建议设置一个明显高于正常工作区间的emergency值，例如20~25。
+  curvature_hard_limit: 0.0
+

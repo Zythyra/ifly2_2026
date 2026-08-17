@@ -1,11 +1,9 @@
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
 #include <std_msgs/String.h>
+#include "line_follow/line_follow.h"
 
 #include <opencv2/opencv.hpp>
-
-#include <unistd.h>
-#include <sys/types.h>
 
 #include <algorithm>
 #include <cmath>
@@ -29,6 +27,7 @@ public:
         : nh_(),
           pnh_("~"),
           route_started_(false),
+          stable_frames_(0),
           stable_count_(0),
           last_direction_(DIR_NONE)
     {
@@ -142,37 +141,48 @@ public:
 
         pnh_.param("edge_fraction", edge_fraction_, 0.40);
 
-        // 连续确认
-        pnh_.param("stable_frames", stable_frames_, 5);
+        // 连续确认帧数：只从 YAML 读取。
+        if (!pnh_.getParam("stable_frames", stable_frames_))
+        {
+            ROS_FATAL("Missing required parameter: ~stable_frames");
+            ros::shutdown();
+            return;
+        }
+
+        if (stable_frames_ < 1)
+        {
+            ROS_FATAL("Invalid ~stable_frames=%d, must be >= 1", stable_frames_);
+            ros::shutdown();
+            return;
+        }
 
         // 调试
         pnh_.param("show_debug", show_debug_, true);
-
-        // false: 测试阶段，只输出识别结果，不启动巡线
-        // true : 正式阶段，识别成功后启动对应巡线
-        pnh_.param("auto_launch", auto_launch_, false);
-
-        // 三个巡线节点
-        pnh_.param<std::string>(
-            "left_command",
-            left_command_,
-            std::string("/opt/ros/noetic/bin/rosrun line_follow line2_left"));
-
-        pnh_.param<std::string>(
-            "straight_command",
-            straight_command_,
-            std::string("/opt/ros/noetic/bin/rosrun line_follow line_right"));
-
-        pnh_.param<std::string>(
-            "right_command",
-            right_command_,
-            std::string("/opt/ros/noetic/bin/rosrun line_follow line2_right"));
 
         cmd_pub_ =
             nh_.advertise<geometry_msgs::Twist>(cmd_vel_topic_, 1);
 
         direction_pub_ =
             nh_.advertise<std_msgs::String>(direction_topic_, 1, true);
+
+        // =========================
+        // 巡线服务客户端
+        //
+        // 三个巡线节点应当提前启动并等待服务调用：
+        // LEFT     -> /line2_left
+        // STRAIGHT -> /line_right
+        // RIGHT    -> /line2_right
+        //
+        // 注意：这里直接调用 ROS service，不再通过 YAML 写 rosrun 命令。
+        // =========================
+        left_client_ =
+            nh_.serviceClient<line_follow::line_follow>("/line2_left");
+
+        straight_client_ =
+            nh_.serviceClient<line_follow::line_follow>("/line_right");
+
+        right_client_ =
+            nh_.serviceClient<line_follow::line_follow>("/line2_right");
 
         if (!cap_.open(camera_index_, cv::CAP_V4L2))
         {
@@ -183,6 +193,12 @@ public:
 
         cap_.set(cv::CAP_PROP_FRAME_WIDTH, camera_width_);
         cap_.set(cv::CAP_PROP_FRAME_HEIGHT, camera_height_);
+        cap_.set(cv::CAP_PROP_BUFFERSIZE, 1);
+
+        // 摄像头必须先 open()，之后才能清理采集队列。
+        // 正式识别前先丢弃一批启动阶段旧帧。
+        ROS_INFO("Flushing camera startup buffer...");
+        flushCameraBuffer(8);
 
         ROS_INFO(
             "traffic_light_fullframe started: /dev/video%d, %dx%d",
@@ -190,7 +206,7 @@ public:
             camera_width_,
             camera_height_);
 
-        ROS_INFO("Full-frame green-arrow detection enabled.");
+        ROS_INFO("traffic_light: full-frame green-arrow detection + direct route-service dispatch enabled.");
     }
 
     ~TrafficLightRecognizer()
@@ -212,9 +228,10 @@ public:
 
             cv::Mat frame;
 
-            if (!cap_.read(frame) || frame.empty())
+            // 每轮主动丢弃积压帧，只取更接近当前时刻的画面。
+            if (!readLatestFrame(frame))
             {
-                ROS_WARN_THROTTLE(1.0, "Camera read failed");
+                ROS_WARN_THROTTLE(1.0, "Camera latest-frame read failed");
                 ros::spinOnce();
                 rate.sleep();
                 continue;
@@ -291,6 +308,40 @@ public:
     }
 
 private:
+    void flushCameraBuffer(int frame_count)
+    {
+        if (!cap_.isOpened())
+            return;
+
+        for (int i = 0; i < frame_count; ++i)
+        {
+            if (!cap_.grab())
+            {
+                ROS_WARN("Camera buffer flush stopped at frame %d", i);
+                break;
+            }
+        }
+    }
+
+    bool readLatestFrame(cv::Mat &frame)
+    {
+        if (!cap_.isOpened())
+            return false;
+
+        const int discard_count = 4;
+
+        for (int i = 0; i < discard_count; ++i)
+        {
+            if (!cap_.grab())
+                return false;
+        }
+
+        if (!cap_.retrieve(frame))
+            return false;
+
+        return !frame.empty();
+    }
+
     std::string directionName(Direction d) const
     {
         switch (d)
@@ -950,82 +1001,102 @@ private:
 
         direction_pub_.publish(result);
 
-        if (!auto_launch_)
-        {
-            ROS_WARN(
-                "TEST DETECTED GREEN ARROW: %s",
-                result.data.c_str());
-
-            stable_count_ = 0;
-            return;
-        }
-
         ROS_WARN(
             "GREEN ARROW CONFIRMED: %s",
             result.data.c_str());
 
-        launchRoute(direction);
+        callRouteService(direction);
     }
 
-    void launchRoute(Direction direction)
+    void callRouteService(Direction direction)
     {
-        std::string command;
+        ros::ServiceClient *client = nullptr;
+        const char *service_name = nullptr;
 
         if (direction == DIR_LEFT)
-            command = left_command_;
+        {
+            client = &left_client_;
+            service_name = "/line2_left";
+        }
         else if (direction == DIR_STRAIGHT)
-            command = straight_command_;
+        {
+            client = &straight_client_;
+            service_name = "/line_right";
+        }
         else if (direction == DIR_RIGHT)
-            command = right_command_;
+        {
+            client = &right_client_;
+            service_name = "/line2_right";
+        }
         else
+        {
             return;
+        }
 
+        // 先确认服务存在。
+        // 三个巡线服务节点应提前启动；这里只负责在绿箭头确认后调用。
+        if (!client->waitForExistence(ros::Duration(1.0)))
+        {
+            ROS_ERROR(
+                "Route service %s is not available -> HOLD STOP",
+                service_name);
+
+            // 服务不存在时不进入巡线模式，继续识别并保持停车。
+            stable_count_ = 0;
+            last_direction_ = DIR_NONE;
+            publishStop();
+            return;
+        }
+
+        // 从这一刻开始，方向已经在绿灯阶段正式确认。
+        // 立即锁定巡线模式，不再继续识别后续红/黄/绿灯。
         route_started_ = true;
 
+        // 切换控制权前最后发布一次停车，避免旧速度残留。
         publishStop();
 
+        // traffic_light 当前占用 /dev/video0。
+        // 巡线服务回调也会打开 /dev/video0，所以必须先释放摄像头。
         if (cap_.isOpened())
         {
             cap_.release();
-            ROS_INFO("Released /dev/video%d", camera_index_);
+            ROS_INFO("Released /dev/video%d before route service", camera_index_);
         }
 
         if (show_debug_)
+        {
             cv::destroyAllWindows();
+        }
 
-        ros::Duration(0.30).sleep();
+        // 给 V4L2 很短的释放时间，然后立刻调用巡线服务。
+        ros::Duration(0.05).sleep();
 
         ROS_WARN(
-            "Starting route: %s",
-            command.c_str());
+            "Calling route service: %s",
+            service_name);
 
-        pid_t pid = fork();
+        line_follow::line_follow srv;
 
-        if (pid < 0)
+        // 巡线服务回调会持续执行完整巡线流程。
+        // 本调用是同步调用；在服务执行期间，本节点不会再做红绿灯识别，
+        // 也不会再向 /cmd_vel 发布停车指令。
+        if (!client->call(srv))
         {
-            ROS_ERROR("fork() failed");
+            ROS_ERROR(
+                "Failed to call route service %s",
+                service_name);
+
+            // 此时摄像头已经释放，最安全的处理是停车并结束本节点，
+            // 避免在未知状态下重新抢占摄像头。
+            publishStop();
+            ros::shutdown();
             return;
         }
 
-        if (pid == 0)
-        {
-            setsid();
+        ROS_INFO(
+            "Route service %s returned",
+            service_name);
 
-            execl(
-                "/bin/bash",
-                "bash",
-                "-c",
-                command.c_str(),
-                static_cast<char *>(NULL));
-
-            _exit(127);
-        }
-
-        ROS_WARN(
-            "Route process started, pid=%d",
-            static_cast<int>(pid));
-
-        ros::Duration(0.30).sleep();
         ros::shutdown();
     }
 
@@ -1150,11 +1221,10 @@ private:
 
     int stable_frames_;
     bool show_debug_;
-    bool auto_launch_;
 
-    std::string left_command_;
-    std::string straight_command_;
-    std::string right_command_;
+    ros::ServiceClient left_client_;
+    ros::ServiceClient straight_client_;
+    ros::ServiceClient right_client_;
 
     bool route_started_;
     int stable_count_;

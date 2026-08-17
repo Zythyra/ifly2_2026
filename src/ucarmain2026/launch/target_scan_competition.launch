@@ -1,0 +1,271 @@
+<launch>
+  <!-- ================================================================
+       IFLY2026 正式比赛旋转找板 R1.6
+       对应：target_scan_competition.cpp
+       ================================================================ -->
+
+  <!-- ======================== 任务类别 ======================== -->
+  <!-- 只允许：food / daily / electronic -->
+  <arg name="real_target_category" default="food" />
+  <arg name="simulation_target_category" default="daily" />
+
+  <node pkg="ucarmain2026"
+        type="target_scan_competition"
+        name="target_scan_competition"
+        output="screen">
+
+    <!-- ============================================================
+         1. 任务类别
+         ============================================================ -->
+    <param name="real_target_category"
+           value="$(arg real_target_category)" />
+    <param name="simulation_target_category"
+           value="$(arg simulation_target_category)" />
+
+
+    <!-- ============================================================
+         2. 坐标系 / 找板区域 / 普通导航
+         ============================================================ -->
+    <param name="map_frame" value="map" />
+    <param name="base_frame" value="base_link" />
+
+    <!-- 找板房间矩形边界 -->
+    <param name="room_min_x" value="0.0" />
+    <param name="room_max_x" value="5.0" />
+    <param name="room_min_y" value="2.5" />
+    <param name="room_max_y" value="4.5" />
+
+    <!-- move_base单次导航最长等待时间 -->
+    <param name="navigation_timeout" value="180.0" />
+
+
+    <!-- ============================================================
+         3. NanoDet / 相机几何 / 同位置目标屏蔽
+         ============================================================ -->
+    <!-- 当前图像宽度 -->
+    <param name="image_width" value="640" />
+
+    <!-- 相机水平焦距，用于：
+         pixel center -> relative yaw -> map墙面交点 -->
+    <param name="camera_fx" value="554.256" />
+
+    <!-- 摄像头光轴相对base_link正前方的偏角，单位：deg
+         正值 = 逆时针 -->
+    <param name="camera_yaw_offset_deg" value="0.0" />
+
+    <!-- 单次NanoDet服务调用超过该时长则按过期帧丢弃 -->
+    <param name="max_detection_duration" value="0.50" />
+
+    <!--
+      同一位置目标屏蔽距离。
+      只有“同一面墙 + 墙面map坐标距离 <= 此值”才视为同一块板。
+      与当前target_patrol_docking保持一致。
+    -->
+    <param name="duplicate_coordinate_distance" value="0.50" />
+
+    <!--
+      每到一个固定绝对角度后，静止状态最多连续处理几个不同的新位置框。
+      用于同一画面同时存在多个目标的情况。
+    -->
+    <param name="static_view_detection_passes" value="4" />
+
+
+    <!-- ============================================================
+         4. OCR
+         ============================================================ -->
+    <!-- 一次停车后最多OCR次数 -->
+    <param name="ocr_attempts" value="3" />
+
+    <!-- OCR多次尝试之间的间隔 -->
+    <param name="ocr_retry_interval" value="0.12" />
+
+
+    <!-- ============================================================
+         5. 固定角度旋转
+
+         控制形式与MyPlanner最终姿态调整一致：
+           yaw_error = normalize(target_yaw - current_yaw)
+           wz = Kp * yaw_error
+           -> 最小角速度
+           -> 最大角速度
+           -> acc_lim_theta限制角加速度
+
+         下面5个参数显式写在本launch里，比赛时直接改这里即可。
+         ============================================================ -->
+
+    <!-- 仅用于记录MyPlanner参数命名空间；本节点仍使用下面显式值 -->
+    <param name="planner_private_namespace"
+           value="/move_base/MyPlanner" />
+
+    <!-- 最终姿态P增益 -->
+    <param name="rotation_angular_gain" value="1.50" />
+
+    <!--
+      绝对yaw到达容差，单位：rad。
+      0.06 rad ≈ 3.44 deg。
+    -->
+    <param name="rotation_yaw_tolerance" value="0.06" />
+
+    <!-- 克服底盘原地旋转死区的最小角速度 -->
+    <param name="rotation_min_angular_speed" value="0.11" />
+
+    <!-- 固定角度旋转最大角速度 -->
+    <param name="rotation_max_angular_speed" value="0.90" />
+
+    <!-- angular.z最大加速度，单位rad/s^2 -->
+    <param name="rotation_acc_lim_theta" value="8.00" />
+
+    <!-- 每次固定角度旋转的最大允许时间 -->
+    <param name="rotation_timeout" value="12.0" />
+
+    <!-- /set_speed旋转闭环控制频率 -->
+    <param name="rotation_control_rate" value="20.0" />
+
+
+    <!-- ============================================================
+         6. 两段式停靠
+
+         已验证逻辑：
+           目标墙面坐标
+             -> 0.50m第一段预停靠
+             -> 关闭/重开摄像头避免旧缓存
+             -> 同一目标视觉复定位
+             -> 0.20m最终move_base停靠
+         ============================================================ -->
+
+    <!-- 第一段预停靠距离 -->
+    <param name="docking_standoff" value="0.50" />
+
+    <!-- 第二段最终距墙距离 -->
+    <param name="approach_stop_distance" value="0.25" />
+
+    <!--
+      第一段到点后二次视觉关联同一目标时，
+      新旧墙面坐标允许的最大偏移。
+    -->
+    <param name="docking_refine_max_board_shift" value="0.80" />
+
+    <!--
+      第一段到点后当前视野看不到原目标时，
+      依次尝试基准朝向 +30deg / -30deg。
+    -->
+    <param name="docking_recovery_turn_deg" value="30.0" />
+
+    <!-- 每个恢复朝向最多检测次数 -->
+    <param name="docking_recovery_detection_attempts" value="3" />
+
+    <!--
+      恢复旋转期间摄像头一直开着，因此转完后用NanoDet -3清缓存。
+      detect2026.py每次-3内部会grab两帧。
+    -->
+    <param name="docking_refresh_clear_calls" value="2" />
+
+
+    <!-- ============================================================
+         7. 无法分类候选位置回访
+         ============================================================ -->
+
+    <!--
+      回访候选点后，重新检测到的墙面坐标与原候选位置
+      最大允许距离。
+    -->
+    <param name="candidate_match_max_shift" value="0.80" />
+
+    <!-- 单个候选位置最多尝试检测次数 -->
+    <param name="candidate_detection_attempts" value="4" />
+
+    <!--
+      R1.6：候选主扫描重试冷却。
+      candidate本身不永久屏蔽，但必须先真正换视角/换位置，
+      才允许同一unknown目标再次触发停车OCR。
+    -->
+    <param name="candidate_retry_yaw_delta_deg" value="15.0" />
+
+    <!-- 与上次unknown位置相差达到该距离也可直接解锁 -->
+    <param name="candidate_retry_position_delta" value="0.20" />
+
+  </node>
+
+
+  <!-- ================================================================
+       R1.2提前结束当前扫描点机制：
+
+       1) 现实目标在更早时刻已经记录，本次旋转新确认仿真：
+          -> 立即结束剩余角度。
+
+       2) 进入某次固定角度旋转前两个目标都未凑齐，
+          但在“同一次旋转”中两个目标先后/同帧被确认：
+          -> 无论先现实还是先仿真，都立即结束剩余角度。
+
+       3) 如果仿真目标是在更早扫描阶段已经记录，
+          当前这次旋转才第一次找到现实：
+          -> 保持原规则，继续看完当前扫描点全部角度。
+
+       同一NanoDet帧出现多个目标时：
+         -> 先在停车瞬间冻结本帧全部历史未屏蔽bbox；
+         -> 从左到右逐个OCR；
+         -> 第一个目标处理后新增的0.50m屏蔽状态，
+            不允许屏蔽同一冻结帧里的第二/第三个bbox；
+         -> 全部处理完才恢复旋转。
+
+       该机制没有新增launch参数。
+       ================================================================ -->
+
+  <!-- ================================================================
+       R1.4 候选点恢复：
+
+       候选点导航到位后：
+         基准朝向检测/OCR
+           ↓ 仍无可分类结果
+         基准 + docking_recovery_turn_deg 检测/OCR
+           ↓ 仍无可分类结果
+         基准 - docking_recovery_turn_deg 检测/OCR
+           ↓
+         仍失败才放弃本候选
+
+       默认 docking_recovery_turn_deg=30.0，因此就是 +30° / -30°。
+       每次恢复旋转后都会执行NanoDet -3缓存刷新。
+       没有新增参数，直接复用现有停靠恢复参数。
+       ================================================================ -->
+
+  <!-- ================================================================
+       R1.6 candidate视角冷却：
+
+       unknown目标：
+         -> 进入candidate_locations_
+         -> 不加入永久seen屏蔽
+         -> 记录本次失败yaw和位置
+
+       后续主扫描再次看到同一candidate时，满足任意一个才允许OCR：
+         |current_yaw - last_failed_yaw| >= candidate_retry_yaw_delta_deg
+         或
+         当前位置距last_failed_pose >= candidate_retry_position_delta
+
+       默认：
+         15°
+         0.20m
+
+       未达到阈值时只临时忽略该框，不停车，让车继续转。
+       正式candidate回访的基准/+30/-30流程不受该冷却限制。
+
+       临时停靠边缘保护：
+         centerX <= image_width*0.25 -> 左转30°
+         centerX >= image_width*0.75 -> 右转30°
+       转完清NanoDet缓存，再重新定位原目标并计算最终停靠点。
+       ================================================================ -->
+
+  <!-- ================================================================
+       固定比赛扫描流程写死在target_scan_competition.cpp，不放launch：
+
+       点1：(1.25, 4.25, 180deg)
+            180 -> 240 -> -90 -> 0
+
+       点2：(2.50, 2.75, 180deg)
+            180 -> 120 -> 90 -> 60 -> 0
+
+       点3：(3.75, 3.25, 180deg)
+            180 -> -90 -> -30 -> 0 -> 60 -> 90 -> 120
+
+       这样比赛现场调参数时不会误改扫描路线。
+       ================================================================ -->
+</launch>

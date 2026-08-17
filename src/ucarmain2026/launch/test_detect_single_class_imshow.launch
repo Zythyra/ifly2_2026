@@ -1,0 +1,21 @@
+<launch>
+  <!--
+    当前单类NanoDet测试：
+      1. detect2026.py 发布与检测完全同一帧的已标注图像；
+      2. C++节点订阅 /nanodet/debug_image 并使用imshow显示。
+  -->
+  <arg name="enable_debug_video" default="false" />
+  <arg name="loop_hz" default="10.0" />
+  <arg name="detect_command" default="1" />
+
+  
+
+  <node pkg="ucarmain2026"
+        type="test_detect"
+        name="test_detect"
+        output="screen">
+    <param name="loop_hz" value="$(arg loop_hz)" />
+    <param name="detect_command" value="$(arg detect_command)" />
+    <param name="debug_image_topic" value="/nanodet/debug_image" />
+  </node>
+</launch>

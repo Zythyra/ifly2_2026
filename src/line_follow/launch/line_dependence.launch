@@ -1,5 +1,5 @@
 <launch>
-    <!-- 三个巡线程序分别加载各自的 YAML，参数键名保持不变。 -->
+    <!-- 各巡线程序分别加载各自的 YAML，参数键名保持不变。 -->
     <rosparam
         command="load"
         file="$(find line_follow)/config/line_right.yaml"
@@ -21,6 +21,22 @@
         file="$(find line_follow)/config/line2_left.yaml"
         ns="line2_left"/>
 
+    <!-- 新赛道右线 + 单次挡板绕障参数。 -->
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/line2o_right.yaml"
+        ns="line2o_right"/>
+
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/line2o_left.yaml"
+        ns="line2o_left"/>
+
+    <rosparam
+        command="load"
+        file="$(find line_follow)/config/lineo_right.yaml"
+        ns="lineo_right"/>
+
     <!-- 各巡线节点使用同一份相机标定文件；巡线参数则由各自 YAML 独立提供。 -->
     <param
         name="/line_right/calibration_file"
@@ -36,6 +52,18 @@
 
     <param
         name="/line2_left/calibration_file"
+        value="$(find line_follow)/camera_info/pinhole.yaml"/>
+
+    <param
+        name="/line2o_right/calibration_file"
+        value="$(find line_follow)/camera_info/pinhole.yaml"/>
+
+    <param
+        name="/line2o_left/calibration_file"
+        value="$(find line_follow)/camera_info/pinhole.yaml"/>
+
+    <param
+        name="/lineo_right/calibration_file"
         value="$(find line_follow)/camera_info/pinhole.yaml"/>
 
     <!-- 位姿获取服务：/getpose_server -->
@@ -54,7 +82,7 @@
         output="screen"
         respawn="false"/>
 
-    <!-- 原赛道左侧巡线继续沿用 line_right.yaml。 -->
+    <!-- 原赛道左侧巡线服务：/line_left。 -->
     <node
         pkg="line_follow"
         type="line_left"
@@ -75,6 +103,28 @@
         pkg="line_follow"
         type="line2_left"
         name="line2_left"
+        output="screen"
+        respawn="false"/>
+
+    <!-- 新赛道右线 + 单次挡板绕障服务：/line2o_right -->
+    <node
+        pkg="line_follow"
+        type="line2o_right"
+        name="line2o_right"
+        output="screen"
+        respawn="false"/>
+
+    <node
+        pkg="line_follow"
+        type="line2o_left"
+        name="line2o_left"
+        output="screen"
+        respawn="false"/>
+
+    <node
+        pkg="line_follow"
+        type="lineo_right"
+        name="lineo_right"
         output="screen"
         respawn="false"/>
 </launch>

@@ -6,6 +6,8 @@
   
   <include file="$(find ydlidar)/launch/ydlidar.launch" > </include>
   <arg name="map_file" default="$(find ucar_map)/maps/map2026.yaml"/>
+  <!-- <arg name="map_file" default="$(find ucar_map)/maps/map2026_2.yaml"/> -->
+  
   <!-- 起点坐标 -->
   <arg name="initial_pose_x" default="2.25"/>
   <arg name="initial_pose_y" default="5.75"/>
@@ -35,6 +37,7 @@
       <rosparam file="$(find ucar_nav)/launch/config/xys/teb_local_planner_params_2026.yaml" command="load" /> -->
       <param name="base_local_planner" value="my_planner/MyPlanner" />
       <rosparam file="$(find my_planner)/config/my_planner_params.yaml" command="load" ns="MyPlanner" />
+      <!-- <rosparam file="$(find my_planner)/config/my_planner_params_2.yaml" command="load" ns="MyPlanner" /> -->
       <!-- <rosparam file="$(find ucar_nav)/launch/config/xys_1/costmap_converter_params.yaml" command="load" /> -->
 
     <!-- 地图参数配置 -->

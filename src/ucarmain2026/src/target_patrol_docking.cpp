@@ -1,8 +1,14 @@
-// 交付构建标识：IFLY2026_FIXED_PATH_PATROL_V14_4_REAL_DOCKED_SIM_EXCEPTION_20260812
-// V14.4：基于V14.3三保护版，仅调整“非当前巡检墙仿真目标”的段末保护例外。
-// 若real_docked_=false：仍必须完整巡检完当前墙后再停靠。
-// 若real_docked_=true：识别到非当前巡检墙仿真目标后允许立即中断当前墙并直接停靠。
-// 其它两项巡检保护、Camera Handoff、两段式停靠、V13角点、MyPlanner/C5均不改。
+// 交付构建标识：IFLY2026_FIXED_PATH_PATROL_V14_9_UNKNOWN_CANDIDATE_REVISIT_20260817
+// V14.9：基于V14.8，只增加unknown候选点兜底回访：
+// 1) 巡检中某块板OCR最终仍为unknown时，记录该板墙面坐标为候选点；
+//    候选点独立去重，不改变原seen重复屏蔽和当前巡检流程。
+// 2) 四面墙完整巡检结束后，如果现实/仿真目标仍未全部完成，
+//    按候选发现顺序逐个导航到该板的docking_standoff临时停靠点，
+//    重新NanoDet+OCR；一旦分类为缺失目标，直接沿用现有两段式停靠。
+// 3) 候选回访发生在整圈巡检完成之后，因此不再套用“非当前墙等段末”规则。
+// V14.8视觉急停直接OCR、V14.7双停车保护、V14.6边缘30度修正和新起点、
+// V14.5视觉减速、V14.4三保护、Camera Handoff、两段式停靠、
+// V13角点、MyPlanner/C5均不改。
 
 
 #include <ros/ros.h>
@@ -74,7 +80,7 @@ public:
         pnh_.param("room_max_x", room_max_x_, 5.0);
         pnh_.param("room_min_y", room_min_y_, 2.5);
         pnh_.param("room_max_y", room_max_y_, 4.5);
-        pnh_.param("start_x", start_x_, 0.25);
+        pnh_.param("start_x", start_x_, 1.25);
         pnh_.param("start_y", start_y_, 4.25);
         pnh_.param("start_yaw_deg", start_yaw_deg_, 0.0);
         pnh_.param("navigation_timeout", navigation_timeout_, 180.0);
@@ -158,6 +164,27 @@ public:
         // 才允许中断固定巡检Path并停车进入OCR。默认640宽图像下为600。
         pnh_.param("patrol_stop_max_center_x",
                    patrol_stop_max_center_x_, 600.0);
+
+        // V14.5：当前左侧巡检墙视觉目标接近减速。
+        // 与line2o挡板减速同样使用线性速度比例：
+        // 1.50m -> 1.00倍，0.50m -> 0.20倍，到0.50m取消巡检goal并停车OCR。
+        pnh_.param("patrol_target_slowdown_start_distance",
+                   patrol_target_slowdown_start_distance_, 1.50);
+        pnh_.param("patrol_target_stop_distance",
+                   patrol_target_stop_distance_, 0.50);
+        pnh_.param("patrol_target_min_speed_ratio",
+                   patrol_target_min_speed_ratio_, 0.20);
+
+        // V14.7保护1：
+        // 非当前巡检墙只有在机器人距该墙本身小于该阈值时才允许立即停车。
+        pnh_.param("patrol_noncurrent_wall_stop_max_distance",
+                   patrol_noncurrent_wall_stop_max_distance_, 1.50);
+
+        // V14.7保护2：
+        // 当前左侧巡检墙目标框的左边界距图像左缘不足该像素值时立即停车。
+        pnh_.param("patrol_target_left_edge_stop_px",
+                   patrol_target_left_edge_stop_px_, 100);
+
         pnh_.param("duplicate_coordinate_distance",
                    duplicate_coordinate_distance_, 0.50);
         pnh_.param("max_track_jump_px", max_track_jump_px_, 140.0);
@@ -228,9 +255,19 @@ public:
                  categoryChinese(real_target_category_),
                  categoryChinese(simulation_target_category_));
         ROS_INFO("找板房间边界=[%.2f, %.2f]×[%.2f, %.2f]；"
-                 "巡检停车保护=centerX<%.1fpx；停靠导航点距墙%.2fm",
+                 "巡检视觉门限=centerX<%.1fpx；"
+                 "当前左墙目标%.2fm开始减速，%.2fm处降到%.0f%%并停车；"
+                 "当前墙框x0<%dpx立即停车；"
+                 "非当前墙只有距该墙<%.2fm才立即停车；"
+                 "停靠导航点距墙%.2fm",
                  room_min_x_, room_max_x_, room_min_y_, room_max_y_,
-                 patrol_stop_max_center_x_, docking_standoff_);
+                 patrol_stop_max_center_x_,
+                 patrol_target_slowdown_start_distance_,
+                 patrol_target_stop_distance_,
+                 patrol_target_min_speed_ratio_ * 100.0,
+                 patrol_target_left_edge_stop_px_,
+                 patrol_noncurrent_wall_stop_max_distance_,
+                 docking_standoff_);
         ROS_WARN("IFLY2026_FIXED_PATH_PATROL_V14_TWO_STAGE_MOVEBASE_DOCK_20260812："
                  "target_patrol_docking 固定move_base路线巡检版已启动。"
                  "巡检速度=%.2f，普通导航速度=%.2f，路径间距=%.3f。",
@@ -261,12 +298,10 @@ public:
                             "初始巡检点")) {
             return false;
         }
-        // V12：导航起点保持(0.25,4.25)不变；到点后不让move_base在墙边
-        // 再做最终姿态动作，直接用短距离全向P/PP横移到y=4.30。
-        if (!runPatrolPoseTransition(
-                0.25, 4.30, 0.0, "巡检起点安全横移")) {
-            return false;
-        }
+
+        // V14.6：初始move_base直接到(1.25,4.25,0deg)，
+        // 第一条固定Patrol Path也从该点开始，因此不再执行旧的
+        // (0.25,4.25)->(0.25,4.30)额外安全横移。
         setShadowModeActiveOnce();
         if (!openCamera()) return false;
 
@@ -289,10 +324,33 @@ public:
         finishPatrolMode();
         stopRobot();
         closeCamera();
+
+        // V14.9：只有四面墙完整巡检后任务仍未完成，才启动unknown候选回访。
+        // 正常巡检过程中候选只记录，不改变任何既有停车/停靠决策。
+        if ((!real_docked_ || !simulation_docked_) &&
+            !unknown_candidates_.empty()) {
+            ROS_WARN(
+                "四面墙完整巡检结束但双目标尚未全部完成；"
+                "已记录%zu个unknown候选，开始按发现顺序逐个回访。",
+                unknown_candidates_.size());
+
+            if (!revisitUnknownCandidates()) {
+                finishPatrolMode();
+                stopRobot();
+                closeCamera();
+                printSummary(false);
+                return false;
+            }
+        }
+
+        finishPatrolMode();
+        stopRobot();
+        closeCamera();
         const bool success = real_docked_ && simulation_docked_;
         printSummary(success);
         if (!success) {
-            ROS_ERROR("四段巡检结束，仍未完成两个目标的停靠");
+            ROS_ERROR(
+                "四段巡检及unknown候选回访结束，仍未完成两个目标的停靠");
         }
         return success;
     }
@@ -406,6 +464,40 @@ private:
             : valid(false), wall(WALL_LEFT), x(0.0), y(0.0) {}
     };
 
+    // V14.9：OCR最终仍为unknown的墙面候选。
+    // 只用于整圈巡检完成后的兜底回访，不参与正常巡检决策。
+    struct UnknownCandidate {
+        BoardBoundaryEstimate board;
+        int source_segment_index;
+        Pose2D source_pose;
+        Box source_box;
+        bool attempted;
+        bool resolved;
+
+        UnknownCandidate()
+            : source_segment_index(-1),
+              source_box{0, 0, 0, 0, 0},
+              attempted(false),
+              resolved(false) {}
+    };
+
+    // V14.5：当前左侧巡检墙目标的接近状态。
+    // 一旦在1.5m减速范围内确认，就锁存墙面map坐标。
+    // 即使随后NanoDet偶发丢1~2帧，仍可依据map位姿连续减速到0.5m。
+    struct PatrolVisualApproach {
+        bool valid;
+        int segment_index;
+        BoardBoundaryEstimate board;
+        Box latest_box;
+        bool have_latest_box;
+
+        PatrolVisualApproach()
+            : valid(false),
+              segment_index(-1),
+              latest_box{0, 0, 0, 0, 0},
+              have_latest_box(false) {}
+    };
+
     enum SegmentResult {
         SEGMENT_COMPLETE,
         SEGMENT_MISSION_COMPLETE,
@@ -516,6 +608,20 @@ private:
         patrol_stop_max_center_x_ = clampValue(
             patrol_stop_max_center_x_, 1.0,
             std::max(1.0, static_cast<double>(image_width_)));
+        patrol_target_stop_distance_ =
+            std::max(0.05, std::fabs(patrol_target_stop_distance_));
+        patrol_target_slowdown_start_distance_ =
+            std::max(patrol_target_stop_distance_ + 0.05,
+                     std::fabs(patrol_target_slowdown_start_distance_));
+        patrol_target_min_speed_ratio_ =
+            clampValue(patrol_target_min_speed_ratio_, 0.05, 1.0);
+        patrol_noncurrent_wall_stop_max_distance_ =
+            std::max(0.05,
+                     std::fabs(patrol_noncurrent_wall_stop_max_distance_));
+        patrol_target_left_edge_stop_px_ =
+            std::max(1,
+                     std::min(patrol_target_left_edge_stop_px_,
+                              std::max(1, image_width_)));
         duplicate_coordinate_distance_ =
             std::fabs(duplicate_coordinate_distance_);
         ocr_recovery_turn_deg_ = clampValue(
@@ -566,11 +672,12 @@ private:
 
     void buildSegments() {
         segments_.clear();
-        // V12安全偏移巡检线：墙仍为原场地边界，但车体中心路线向角点安全侧
-        // 额外偏移5cm，避免90度姿态调整时车头/车尾扫到墙。
-        // 每段仍走到用户指定的“逻辑终点”，随后由runPatrolPoseTransition()
-        // 同时完成5cm平移和90度转向，再启动下一条固定Path。
-        addSegment("上墙巡检", 0.25, 4.30, 4.75, 4.30,
+        // V14.6：首段直接从(1.25,4.25)发布；首段终点及之后三个
+        // V13安全角点全部保持原值。后续段仍由runPatrolPoseTransition()
+        // 同时完成安全小平移和90度转向，再启动下一条固定Path。
+        // V14.6：第一条固定Patrol Path直接从新的巡检准备点发布。
+        // 第一段终点和后续V13安全角点全部保持原值。
+        addSegment("上墙巡检", 1.25, 4.25, 4.75, 4.30,
                    0.0, 0.5 * kPi, WALL_TOP);
         addSegment("右墙巡检", 4.80, 4.30, 4.80, 2.75,
                    -0.5 * kPi, 0.0, WALL_RIGHT);
@@ -775,15 +882,45 @@ private:
         }
     }
 
-    void setPlannerRuntimeParameters(bool patrol_mode) {
-        const double speed = patrol_mode
-                                 ? patrol_speed_limit_
-                                 : normal_navigation_speed_limit_;
+    void setPlannerFourSpeedLimits(double speed) {
         ros::param::set(plannerParameter("c2_max_reference_speed"), speed);
         ros::param::set(plannerParameter("mpc_max_vx"), speed);
         ros::param::set(
             plannerParameter("mpc_max_translational_speed"), speed);
         ros::param::set(plannerParameter("max_vel_x"), speed);
+    }
+
+    void setPatrolRuntimeSpeedLimit(double speed, bool force = false) {
+        const double minimum_speed =
+            patrol_speed_limit_ * patrol_target_min_speed_ratio_;
+        speed = clampValue(speed, minimum_speed, patrol_speed_limit_);
+
+        if (!force &&
+            std::isfinite(current_patrol_runtime_speed_limit_) &&
+            std::fabs(speed - current_patrol_runtime_speed_limit_) < 0.01) {
+            return;
+        }
+
+        setPlannerFourSpeedLimits(speed);
+        current_patrol_runtime_speed_limit_ = speed;
+    }
+
+    void restorePatrolCruiseSpeedIfNeeded() {
+        if (!patrol_goal_active_) return;
+        setPatrolRuntimeSpeedLimit(patrol_speed_limit_);
+    }
+
+    void setPlannerRuntimeParameters(bool patrol_mode) {
+        const double speed = patrol_mode
+                                 ? patrol_speed_limit_
+                                 : normal_navigation_speed_limit_;
+
+        setPlannerFourSpeedLimits(speed);
+        current_patrol_runtime_speed_limit_ =
+            patrol_mode
+                ? speed
+                : std::numeric_limits<double>::quiet_NaN();
+
         ros::param::set(
             plannerParameter("enable_path_replanning"), !patrol_mode);
         setMoveBasePatrolOscillationGuard(patrol_mode);
@@ -1202,40 +1339,834 @@ private:
         return false;
     }
 
-    int chooseNewBoardBox(const std::vector<Box>& boxes,
-                          const Pose2D& pose) const {
-        const double image_center = 0.5 * static_cast<double>(image_width_);
+    int findUnknownCandidate(
+            const BoardBoundaryEstimate& estimate) const {
+        if (!estimate.valid) return -1;
+
+        for (std::size_t i = 0;
+             i < unknown_candidates_.size();
+             ++i) {
+            const UnknownCandidate& candidate =
+                unknown_candidates_[i];
+
+            if (!candidate.board.valid ||
+                candidate.board.wall != estimate.wall) {
+                continue;
+            }
+
+            if (distance2D(
+                    candidate.board.x,
+                    candidate.board.y,
+                    estimate.x,
+                    estimate.y) <=
+                duplicate_coordinate_distance_) {
+                return static_cast<int>(i);
+            }
+        }
+
+        return -1;
+    }
+
+    void addUnknownCandidate(
+            std::size_t segment_index,
+            const Pose2D& pose,
+            const Box& reference_box,
+            const BoardBoundaryEstimate& fallback_estimate,
+            const std::string& reason) {
+        BoardBoundaryEstimate estimate;
+
+        // 优先使用OCR最终参考框与“当前最终静止位姿”重新投影。
+        // 若该框无法求墙面交点，再退回最初触发停车时的墙面估计。
+        if (!estimateBoardBoundary(
+                pose,
+                reference_box,
+                estimate)) {
+            estimate = fallback_estimate;
+        }
+
+        if (!estimate.valid) {
+            ROS_WARN(
+                "V14.9候选记录失败：%s；"
+                "当前OCR仍unknown，但没有有效墙面坐标，无法生成候选导航点。",
+                reason.c_str());
+            return;
+        }
+
+        const int existing =
+            findUnknownCandidate(estimate);
+        if (existing >= 0) {
+            ROS_INFO(
+                "V14.9候选去重：%s(%.3f,%.3f)与candidate[%d]"
+                "距离<=%.2fm，不重复加入。",
+                wallName(estimate.wall),
+                estimate.x,
+                estimate.y,
+                existing + 1,
+                duplicate_coordinate_distance_);
+            return;
+        }
+
+        UnknownCandidate candidate;
+        candidate.board = estimate;
+        candidate.source_segment_index =
+            static_cast<int>(segment_index);
+        candidate.source_pose = pose;
+        candidate.source_box = reference_box;
+
+        unknown_candidates_.push_back(candidate);
+
+        ROS_WARN(
+            "V14.9新增unknown候选[%zu]：%s(%.3f,%.3f)，"
+            "来源巡检段=%zu，原因=%s。"
+            "当前不前往候选点；只有整圈巡检结束且任务未完成时才回访。",
+            unknown_candidates_.size(),
+            wallName(estimate.wall),
+            estimate.x,
+            estimate.y,
+            segment_index + 1,
+            reason.c_str());
+    }
+
+    void resolveUnknownCandidateNear(
+            const BoardBoundaryEstimate& estimate,
+            const std::string& reason) {
+        const int index =
+            findUnknownCandidate(estimate);
+        if (index < 0) return;
+
+        UnknownCandidate& candidate =
+            unknown_candidates_[
+                static_cast<std::size_t>(index)];
+        if (candidate.resolved) return;
+
+        candidate.resolved = true;
+        ROS_INFO(
+            "V14.9候选[%d]已解决：%s(%.3f,%.3f)，%s。",
+            index + 1,
+            wallName(candidate.board.wall),
+            candidate.board.x,
+            candidate.board.y,
+            reason.c_str());
+    }
+
+    bool recognizeUnknownCandidate(
+            const TargetObservation& candidate_observation,
+            Box& matched_box,
+            BoardBoundaryEstimate& matched_board,
+            OcrRecord& ocr) {
+        TargetObservation unused;
+
+        if (!detectDockingRefinedObservation(
+                candidate_observation,
+                "unknown候选回访视觉匹配",
+                docking_standoff_,
+                unused,
+                false,
+                &matched_box,
+                &matched_board,
+                true)) {
+            return false;
+        }
+
+        ocr = recognizeStaticTarget(matched_box);
+
+        // 保留主巡检原有“只读到车间通用残片时逆时针30度再识别一次”。
+        // 候选点此时已经在0.5m正面附近，这一步只是最终OCR兜底。
+        if (ocr.category == "unknown" &&
+            hasWorkshopFragment(ocr.text)) {
+            ROS_WARN(
+                "V14.9候选回访只识别到通用残片“%s”；"
+                "沿用原OCR补偿机制，逆时针转%.1f度后再识别一次。",
+                ocr.text.c_str(),
+                ocr_recovery_turn_deg_);
+
+            Pose2D recovery_pose;
+            if (rotateCounterClockwiseForOcr(
+                    recovery_pose)) {
+                Box retry_box{0, 0, 0, 0, 0};
+                BoardBoundaryEstimate retry_board;
+                TargetObservation retry_unused;
+
+                if (detectDockingRefinedObservation(
+                        candidate_observation,
+                        "unknown候选OCR补偿后匹配",
+                        docking_standoff_,
+                        retry_unused,
+                        true,
+                        &retry_box,
+                        &retry_board,
+                        true)) {
+                    matched_box = retry_box;
+                    matched_board = retry_board;
+                    ocr = recognizeStaticTarget(
+                        retry_box);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    bool revisitUnknownCandidates() {
+        // 已经完成整圈巡检，任何旧的“非当前墙必须等当前段结束”保护
+        // 在这里都不再有意义。
+        simulation_target_blocked_until_segment_end_ = false;
+
+        for (std::size_t i = 0;
+             i < unknown_candidates_.size() &&
+             ros::ok();
+             ++i) {
+            if (real_docked_ &&
+                simulation_docked_) {
+                ROS_INFO(
+                    "V14.9双目标已完成，停止剩余候选回访。");
+                return true;
+            }
+
+            UnknownCandidate& candidate =
+                unknown_candidates_[i];
+
+            if (candidate.resolved) {
+                continue;
+            }
+
+            candidate.attempted = true;
+
+            const int segment_index =
+                segmentIndexForWall(
+                    candidate.board.wall);
+            TargetObservation predock;
+
+            if (segment_index < 0 ||
+                !makeDockingObservation(
+                    segment_index,
+                    "unknown",
+                    candidate.board,
+                    predock)) {
+                ROS_WARN(
+                    "V14.9候选[%zu]无法生成距墙%.2fm临时停靠点，"
+                    "跳过该候选。",
+                    i + 1,
+                    docking_standoff_);
+                continue;
+            }
+
+            closeCamera();
+
+            ROS_WARN(
+                "V14.9回访候选[%zu/%zu]：板=%s(%.3f,%.3f)，"
+                "导航到临时停靠点=(%.3f,%.3f,%.1f度)。",
+                i + 1,
+                unknown_candidates_.size(),
+                wallName(candidate.board.wall),
+                candidate.board.x,
+                candidate.board.y,
+                predock.pose.x,
+                predock.pose.y,
+                predock.pose.yaw * 180.0 / kPi);
+
+            if (!navigateToPose(
+                    predock.pose.x,
+                    predock.pose.y,
+                    predock.pose.yaw,
+                    "前往unknown候选临时停靠点")) {
+                ROS_WARN(
+                    "V14.9候选[%zu]导航失败，继续下一个候选。",
+                    i + 1);
+                continue;
+            }
+
+            if (!openCamera()) {
+                return false;
+            }
+
+            Box matched_box{0, 0, 0, 0, 0};
+            BoardBoundaryEstimate matched_board;
+            OcrRecord ocr;
+
+            if (!recognizeUnknownCandidate(
+                    predock,
+                    matched_box,
+                    matched_board,
+                    ocr)) {
+                ROS_WARN(
+                    "V14.9候选[%zu]到点后未重新找到同一目标板，"
+                    "继续下一个候选。",
+                    i + 1);
+                closeCamera();
+                continue;
+            }
+
+            if (ocr.category == "unknown") {
+                ROS_WARN(
+                    "V14.9候选[%zu]已到正面临时停靠点，"
+                    "但OCR仍为unknown：%s；继续下一个候选。",
+                    i + 1,
+                    ocr.text.c_str());
+                closeCamera();
+                continue;
+            }
+
+            Pose2D current_pose;
+            BoardBoundaryEstimate classified_board =
+                matched_board;
+
+            if (getRobotPose(current_pose)) {
+                BoardBoundaryEstimate ocr_board;
+                if (estimateBoardBoundary(
+                        current_pose,
+                        ocr.box,
+                        ocr_board)) {
+                    classified_board =
+                        ocr_board;
+                }
+            }
+
+            candidate.resolved = true;
+
+            // 成功分类后的板加入原seen名单（若尚未存在）。
+            if (classified_board.valid &&
+                !isDuplicateBoard(
+                    classified_board)) {
+                seen_board_coordinates_.push_back(
+                    classified_board);
+            }
+
+            ROS_WARN(
+                "V14.9候选[%zu]重新分类成功：文字=%s，类别=%s，"
+                "墙面坐标=%s(%.3f,%.3f)。",
+                i + 1,
+                ocr.text.c_str(),
+                categoryChinese(ocr.category),
+                wallName(classified_board.wall),
+                classified_board.x,
+                classified_board.y);
+
+            // 第三类非任务目标：候选已经被证明不是本轮两个任务目标，
+            // 标记resolved后继续回访即可。
+            if (ocr.category != real_target_category_ &&
+                ocr.category != simulation_target_category_) {
+                ROS_INFO(
+                    "V14.9候选[%zu]分类为非任务类别%s，跳过停靠。",
+                    i + 1,
+                    categoryChinese(ocr.category));
+                closeCamera();
+                continue;
+            }
+
+            TargetObservation observation;
+            const int classified_segment =
+                segmentIndexForWall(
+                    classified_board.wall);
+
+            if (classified_segment < 0 ||
+                !makeDockingObservation(
+                    classified_segment,
+                    ocr.category,
+                    classified_board,
+                    observation)) {
+                ROS_ERROR(
+                    "V14.9候选[%zu]虽然分类成功，但无法生成有效停靠点。",
+                    i + 1);
+                closeCamera();
+                return false;
+            }
+
+            if (ocr.category ==
+                simulation_target_category_) {
+                if (!simulation_docked_) {
+                    simulation_observation_ =
+                        observation;
+                    simulation_target_pending_ = true;
+                    simulation_target_blocked_until_segment_end_ =
+                        false;
+                }
+
+                if (!real_docked_) {
+                    ROS_WARN(
+                        "V14.9候选[%zu]确认是仿真目标，但现实目标尚未停靠；"
+                        "先保存仿真目标，继续回访后续候选寻找现实目标。",
+                        i + 1);
+                    closeCamera();
+                    continue;
+                }
+
+                closeCamera();
+                if (!dockPendingSimulationTarget()) {
+                    return false;
+                }
+                continue;
+            }
+
+            // 现实目标候选：整圈巡检已经结束，不再区分当前/非当前墙，
+            // 直接按正常两段式停靠处理。
+            if (ocr.category ==
+                real_target_category_) {
+                if (!real_docked_) {
+                    real_observation_ =
+                        observation;
+                    real_target_pending_ = false;
+                    real_target_defer_segment_index_ = -1;
+
+                    releaseCameraBeforePredockNavigation(
+                        "候选回访现实目标");
+
+                    if (!navigateToPose(
+                            observation.pose.x,
+                            observation.pose.y,
+                            observation.pose.yaw,
+                            "前往候选回访现实目标临时停靠点")) {
+                        return false;
+                    }
+
+                    if (!dockTarget(
+                            real_observation_,
+                            "候选回访现实目标",
+                            false)) {
+                        return false;
+                    }
+
+                    real_docked_ = true;
+                } else {
+                    closeCamera();
+                }
+
+                // 若仿真目标此前已经正常巡检识别/候选回访识别并保存，
+                // 现实目标一完成就立即补做仿真停靠。
+                simulation_target_blocked_until_segment_end_ =
+                    false;
+                if (hasPendingSimulationTarget()) {
+                    ROS_INFO(
+                        "V14.9现实候选停靠完成，"
+                        "立即处理此前已经保存的仿真目标。");
+                    if (!dockPendingSimulationTarget()) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // 防御性：候选循环末尾现实已完成，且仿真已经被保存但还没停。
+        simulation_target_blocked_until_segment_end_ = false;
+        if (hasPendingSimulationTarget()) {
+            if (!dockPendingSimulationTarget()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    double boardProgressOnSegment(
+            const Segment& segment,
+            const BoardBoundaryEstimate& board) const {
+        return (board.x - segment.start_x) * segment.dir_x +
+               (board.y - segment.start_y) * segment.dir_y;
+    }
+
+    double boardAheadProgress(
+            const Segment& segment,
+            const Pose2D& pose,
+            const BoardBoundaryEstimate& board) const {
+        return boardProgressOnSegment(segment, board) -
+               segmentProgress(segment, pose);
+    }
+
+    double patrolTargetSpeedRatio(double distance_to_board) const {
+        if (distance_to_board >=
+            patrol_target_slowdown_start_distance_) {
+            return 1.0;
+        }
+        if (distance_to_board <=
+            patrol_target_stop_distance_) {
+            return patrol_target_min_speed_ratio_;
+        }
+
+        const double span =
+            patrol_target_slowdown_start_distance_ -
+            patrol_target_stop_distance_;
+        const double progress = clampValue(
+            (distance_to_board - patrol_target_stop_distance_) / span,
+            0.0, 1.0);
+
+        // 与line2o障碍物减速同形：
+        // stop处=min_ratio，slowdown_start处=1.0。
+        return patrol_target_min_speed_ratio_ +
+               (1.0 - patrol_target_min_speed_ratio_) * progress;
+    }
+
+    void clearPatrolVisualApproach(bool restore_speed) {
+        patrol_visual_approach_ = PatrolVisualApproach();
+        if (restore_speed) {
+            restorePatrolCruiseSpeedIfNeeded();
+        }
+    }
+
+    double distanceFromPoseToWall(
+            const Pose2D& pose,
+            WallType wall) const {
+        switch (wall) {
+            case WALL_LEFT:
+                return std::fabs(pose.x - room_min_x_);
+            case WALL_RIGHT:
+                return std::fabs(room_max_x_ - pose.x);
+            case WALL_BOTTOM:
+                return std::fabs(pose.y - room_min_y_);
+            case WALL_TOP:
+                return std::fabs(room_max_y_ - pose.y);
+        }
+        return std::numeric_limits<double>::infinity();
+    }
+
+    // V14.7保护2：
+    // 当前左侧正在巡检的墙上，如果框的左边界已经逼近图像左缘，
+    // 说明继续依赖map距离有把目标直接开出视野的风险。
+    // 该条件优先于1.5m->0.7m距离减速/停车条件。
+    int chooseCurrentWallLeftEdgeEmergencyBox(
+            const std::vector<Box>& boxes,
+            const Pose2D& pose,
+            const Segment& segment,
+            BoardBoundaryEstimate& selected_estimate) const {
         int selected = -1;
-        double best_error = std::numeric_limits<double>::infinity();
+        int best_x0 = std::numeric_limits<int>::max();
+
         for (std::size_t i = 0; i < boxes.size(); ++i) {
-            // V14.3保护1：
-            // 巡检阶段只有框中心x严格小于patrol_stop_max_center_x_
-            // 才有资格触发停车。默认640宽图像下为centerX<600。
-            // 该门限只作用于巡检停车，不影响停靠第二段或视觉恢复。
-            if (boxes[i].centerX() >= patrol_stop_max_center_x_) {
-                ROS_INFO_THROTTLE(
-                    0.8,
-                    "巡检停车保护：框%d centerX=%.1f >= %.1fpx，"
-                    "本帧不因该框停车",
-                    static_cast<int>(i),
-                    boxes[i].centerX(),
-                    patrol_stop_max_center_x_);
+            if (boxes[i].centerX() >=
+                patrol_stop_max_center_x_) {
+                continue;
+            }
+
+            // 严格“不足100px”：默认参数100时x0=99触发，x0=100不触发。
+            if (boxes[i].x0 >=
+                patrol_target_left_edge_stop_px_) {
                 continue;
             }
 
             BoardBoundaryEstimate estimate;
-            if (estimateBoardBoundary(pose, boxes[i], estimate) &&
+            if (!estimateBoardBoundary(
+                    pose, boxes[i], estimate)) {
+                continue;
+            }
+
+            if (estimate.wall != segment.wall ||
                 isDuplicateBoard(estimate)) {
                 continue;
             }
+
+            // 仍要求目标没有明显落到车辆后方。
+            const double ahead =
+                boardAheadProgress(
+                    segment, pose, estimate);
+            if (ahead < -0.03) {
+                continue;
+            }
+
+            if (boxes[i].x0 < best_x0) {
+                best_x0 = boxes[i].x0;
+                selected = static_cast<int>(i);
+                selected_estimate = estimate;
+            }
+        }
+
+        return selected;
+    }
+
+    // V14.7保护1：
+    // 非当前巡检墙不再“远远看见就停车”。
+    // 已经能判断墙面时，必须机器人到该墙本身的垂直距离<1.5m才停车。
+    // 射线无法判断墙面的框无法执行这层几何保护，保留旧安全逻辑立即停车。
+    int chooseImmediateNonCurrentBoardBox(
+            const std::vector<Box>& boxes,
+            const Pose2D& pose,
+            const Segment& segment) const {
+        const double image_center =
+            0.5 * static_cast<double>(image_width_);
+        int selected = -1;
+        double best_error =
+            std::numeric_limits<double>::infinity();
+
+        for (std::size_t i = 0; i < boxes.size(); ++i) {
+            if (boxes[i].centerX() >= patrol_stop_max_center_x_) {
+                continue;
+            }
+
+            BoardBoundaryEstimate estimate;
+            const bool estimate_ok =
+                estimateBoardBoundary(
+                    pose, boxes[i], estimate);
+
+            if (estimate_ok && isDuplicateBoard(estimate)) {
+                continue;
+            }
+
+            bool immediate = false;
+
+            if (!estimate_ok) {
+                // 无法判断属于哪面墙，保持V14.6之前的安全行为。
+                immediate = true;
+            } else if (estimate.wall != segment.wall) {
+                const double wall_distance =
+                    distanceFromPoseToWall(
+                        pose, estimate.wall);
+
+                if (wall_distance >=
+                    patrol_noncurrent_wall_stop_max_distance_) {
+                    ROS_INFO_THROTTLE(
+                        0.8,
+                        "V14.7非当前墙远距离保护：检测到%s目标框"
+                        "center=(%.1f,%.1f)，但机器人距该墙=%.3fm>=%.3fm；"
+                        "本帧只观察，不中断%s。",
+                        wallName(estimate.wall),
+                        boxes[i].centerX(),
+                        boxes[i].centerY(),
+                        wall_distance,
+                        patrol_noncurrent_wall_stop_max_distance_,
+                        segment.name.c_str());
+                    continue;
+                }
+
+                immediate = true;
+                ROS_INFO_THROTTLE(
+                    0.8,
+                    "V14.7非当前墙允许停车：%s，机器人距该墙=%.3fm<%.3fm。",
+                    wallName(estimate.wall),
+                    wall_distance,
+                    patrol_noncurrent_wall_stop_max_distance_);
+            }
+
+            if (!immediate) {
+                continue;
+            }
+
             const double error =
-                std::fabs(boxes[i].centerX() - image_center);
+                std::fabs(
+                    boxes[i].centerX() - image_center);
             if (error < best_error) {
                 best_error = error;
                 selected = static_cast<int>(i);
             }
         }
+
         return selected;
+    }
+
+    // 从当前帧中寻找“车体左侧正在巡检的这一面墙”上的最近前方新目标。
+    // 只在进入1.5m减速范围后锁存，避免远距离框直接打断巡检。
+    void updateCurrentWallApproachFromBoxes(
+            std::size_t segment_index,
+            const Segment& segment,
+            const Pose2D& pose,
+            const std::vector<Box>& boxes) {
+        int selected = -1;
+        double best_distance =
+            std::numeric_limits<double>::infinity();
+        BoardBoundaryEstimate best_board;
+
+        for (std::size_t i = 0; i < boxes.size(); ++i) {
+            if (boxes[i].centerX() >=
+                patrol_stop_max_center_x_) {
+                continue;
+            }
+
+            BoardBoundaryEstimate estimate;
+            if (!estimateBoardBoundary(
+                    pose, boxes[i], estimate)) {
+                continue;
+            }
+            if (estimate.wall != segment.wall ||
+                isDuplicateBoard(estimate)) {
+                continue;
+            }
+
+            // 必须位于当前巡检方向前方；已经驶过的板不参与接近减速。
+            const double ahead =
+                boardAheadProgress(
+                    segment, pose, estimate);
+            if (ahead < -0.03) {
+                continue;
+            }
+
+            const double physical_distance =
+                distance2D(
+                    pose.x, pose.y,
+                    estimate.x, estimate.y);
+
+            if (physical_distance >
+                patrol_target_slowdown_start_distance_) {
+                continue;
+            }
+
+            if (physical_distance < best_distance) {
+                best_distance = physical_distance;
+                best_board = estimate;
+                selected = static_cast<int>(i);
+            }
+        }
+
+        if (selected < 0) {
+            return;
+        }
+
+        patrol_visual_approach_.valid = true;
+        patrol_visual_approach_.segment_index =
+            static_cast<int>(segment_index);
+        patrol_visual_approach_.board = best_board;
+        patrol_visual_approach_.latest_box =
+            boxes[static_cast<std::size_t>(selected)];
+        patrol_visual_approach_.have_latest_box = true;
+
+        ROS_INFO_THROTTLE(
+            0.6,
+            "V14.5锁定当前左墙目标：%s(%.3f,%.3f)，"
+            "当前直线距离=%.3fm，开始/继续视觉接近减速。",
+            wallName(best_board.wall),
+            best_board.x,
+            best_board.y,
+            best_distance);
+    }
+
+    bool updatePatrolVisualApproachSpeed(
+            const Segment& segment,
+            const Pose2D& pose,
+            double& distance_to_board) {
+        distance_to_board =
+            std::numeric_limits<double>::infinity();
+
+        if (!patrol_visual_approach_.valid ||
+            patrol_visual_approach_.segment_index !=
+                current_segment_index_) {
+            return false;
+        }
+
+        const double ahead =
+            boardAheadProgress(
+                segment,
+                pose,
+                patrol_visual_approach_.board);
+
+        // 理论上在0.5m处已停车；若因定位瞬跳目标已明显到车后，
+        // 清掉状态并恢复巡检速度，防止反向追一个已经驶过的板。
+        if (ahead < -0.08) {
+            ROS_WARN(
+                "V14.5当前左墙目标已位于巡检方向后方%.3fm，"
+                "取消本次接近状态并恢复巡检速度。",
+                -ahead);
+            clearPatrolVisualApproach(true);
+            return false;
+        }
+
+        distance_to_board =
+            distance2D(
+                pose.x, pose.y,
+                patrol_visual_approach_.board.x,
+                patrol_visual_approach_.board.y);
+
+        const double ratio =
+            patrolTargetSpeedRatio(
+                distance_to_board);
+        const double speed_limit =
+            patrol_speed_limit_ * ratio;
+
+        setPatrolRuntimeSpeedLimit(speed_limit);
+
+        ROS_INFO_THROTTLE(
+            0.35,
+            "V14.5巡检视觉减速：当前左墙目标距离=%.3fm，"
+            "前向投影剩余=%.3fm，速度比例=%.3f，"
+            "MyPlanner四项速度上限=%.3fm/s（巡检基准=%.3f）。",
+            distance_to_board,
+            ahead,
+            ratio,
+            speed_limit,
+            patrol_speed_limit_);
+
+        return true;
+    }
+
+    // 到0.5m停车后再取一帧近距离NanoDet，避免把1.5m处的小框
+    // 作为OCR参考框。优先选与锁存墙面坐标最接近的同墙框。
+    bool reacquireApproachBoxAfterStop(
+            const Segment& segment,
+            Pose2D& stopped_pose,
+            Box& trigger_box) {
+        const BoardBoundaryEstimate locked_board =
+            patrol_visual_approach_.board;
+
+        for (int attempt = 0;
+             attempt < docking_recovery_detection_attempts_ &&
+             ros::ok();
+             ++attempt) {
+            ros::spinOnce();
+
+            std::vector<Box> boxes;
+            if (!detectBoxes(boxes) ||
+                boxes.empty()) {
+                continue;
+            }
+
+            getRobotPose(stopped_pose);
+
+            int selected = -1;
+            double best_shift =
+                std::numeric_limits<double>::infinity();
+
+            for (std::size_t i = 0;
+                 i < boxes.size(); ++i) {
+                BoardBoundaryEstimate estimate;
+                if (!estimateBoardBoundary(
+                        stopped_pose,
+                        boxes[i],
+                        estimate)) {
+                    continue;
+                }
+                if (estimate.wall != segment.wall ||
+                    estimate.wall != locked_board.wall) {
+                    continue;
+                }
+
+                const double shift =
+                    distance2D(
+                        estimate.x, estimate.y,
+                        locked_board.x, locked_board.y);
+                if (shift <=
+                        docking_refine_max_board_shift_ &&
+                    shift < best_shift) {
+                    best_shift = shift;
+                    selected = static_cast<int>(i);
+                }
+            }
+
+            if (selected >= 0) {
+                trigger_box =
+                    boxes[
+                        static_cast<std::size_t>(
+                            selected)];
+
+                ROS_WARN(
+                    "V14.5近距离停车后重新取框成功："
+                    "attempt=%d/%d，center=(%.1f,%.1f)，"
+                    "相对减速锁存板坐标偏移=%.3fm。",
+                    attempt + 1,
+                    docking_recovery_detection_attempts_,
+                    trigger_box.centerX(),
+                    trigger_box.centerY(),
+                    best_shift);
+                return true;
+            }
+        }
+
+        if (patrol_visual_approach_.have_latest_box) {
+            trigger_box =
+                patrol_visual_approach_.latest_box;
+            ROS_WARN(
+                "V14.5在0.5m停车后未重新取得匹配框；"
+                "回退使用减速过程中最近一次有效NanoDet框作为OCR参考。");
+            return true;
+        }
+
+        ROS_ERROR(
+            "V14.5当前左墙目标到达停车距离，但没有任何可用触发框。");
+        return false;
     }
 
     double limitPatrolTransitionRate(double desired,
@@ -1454,6 +2385,7 @@ private:
     SegmentResult completePatrolSegment(std::size_t segment_index) {
         const Segment& segment = segments_[segment_index];
         patrol_checkpoint_.valid = false;
+        clearPatrolVisualApproach(false);
         finishPatrolMode();
         ROS_INFO("%s完成；已恢复普通导航速度%.1f和路径重规划。",
                  segment.name.c_str(), normal_navigation_speed_limit_);
@@ -1502,6 +2434,10 @@ private:
 
     SegmentResult patrolSegment(std::size_t segment_index) {
         const Segment& segment = segments_[segment_index];
+
+        // 新的一面墙必须从干净的视觉接近状态开始。
+        clearPatrolVisualApproach(false);
+
         ROS_INFO("开始%s：(%.2f, %.2f)→(%.2f, %.2f)，"
                  "固定路径由move_base和MyPlanner跟踪；不使用/set_speed巡检。",
                  segment.name.c_str(), segment.start_x, segment.start_y,
@@ -1590,52 +2526,218 @@ private:
 
             std::vector<Box> boxes;
             const bool detection_ok = detectBoxes(boxes);
-            if (!detection_ok || boxes.empty()) {
+
+            // ----------------------------------------------------------
+            // V14.7优先级：
+            // 1) 当前左墙目标即将从画面左缘消失 -> 立刻停车；
+            // 2) 非当前墙且距该墙<1.5m -> 保持原立即停车；
+            // 3) 否则当前墙继续按1.5m->0.7m map距离减速。
+            // ----------------------------------------------------------
+            int current_wall_edge_selected = -1;
+            BoardBoundaryEstimate current_wall_edge_estimate;
+
+            int immediate_selected = -1;
+
+            if (detection_ok && !boxes.empty()) {
+                current_wall_edge_selected =
+                    chooseCurrentWallLeftEdgeEmergencyBox(
+                        boxes,
+                        pose,
+                        segment,
+                        current_wall_edge_estimate);
+
+                if (current_wall_edge_selected < 0) {
+                    immediate_selected =
+                        chooseImmediateNonCurrentBoardBox(
+                            boxes,
+                            pose,
+                            segment);
+                }
+            }
+
+            bool should_stop_for_ocr = false;
+
+            // 普通map距离停车：仍需要停车后重新取近距离框。
+            bool stop_from_current_wall_approach = false;
+
+            // V14.8：x0<100视觉急停已经是合适OCR距离，
+            // 直接使用当前触发框，不再二次NanoDet。
+            bool direct_ocr_from_edge_guard = false;
+
+            Box trigger_box{0, 0, 0, 0, 0};
+
+            if (current_wall_edge_selected >= 0) {
+                trigger_box =
+                    boxes[
+                        static_cast<std::size_t>(
+                            current_wall_edge_selected)];
+
+                should_stop_for_ocr = true;
+                direct_ocr_from_edge_guard = true;
+
+                ROS_WARN(
+                    "V14.8画面左缘直接OCR急停：当前%s上的目标框"
+                    "x0=%d<%dpx，centerX=%.1f；"
+                    "该视野已属于实测适合OCR的近距离范围，"
+                    "立即取消巡检goal并停车，直接使用当前触发框进入OCR，"
+                    "不再执行停车后二次NanoDet取框。",
+                    wallName(current_wall_edge_estimate.wall),
+                    trigger_box.x0,
+                    patrol_target_left_edge_stop_px_,
+                    trigger_box.centerX());
+            } else if (immediate_selected >= 0) {
+                trigger_box =
+                    boxes[
+                        static_cast<std::size_t>(
+                            immediate_selected)];
+                should_stop_for_ocr = true;
+
+                ROS_WARN(
+                    "V14.7检测到允许立即处理的非当前巡检墙目标/"
+                    "墙面估计失败目标；中断%s进入OCR。",
+                    segment.name.c_str());
+            } else {
+                // ------------------------------------------------------
+                // 当前车体左侧巡检墙目标：
+                // 进入1.5m后锁存，并根据map距离连续限制MyPlanner速度。
+                // ------------------------------------------------------
+                if (detection_ok && !boxes.empty()) {
+                    updateCurrentWallApproachFromBoxes(
+                        segment_index,
+                        segment,
+                        pose,
+                        boxes);
+                }
+
+                double distance_to_board =
+                    std::numeric_limits<double>::infinity();
+                if (updatePatrolVisualApproachSpeed(
+                        segment,
+                        pose,
+                        distance_to_board)) {
+                    if (distance_to_board <=
+                        patrol_target_stop_distance_) {
+                        should_stop_for_ocr = true;
+                        stop_from_current_wall_approach = true;
+
+                        setPatrolRuntimeSpeedLimit(
+                            patrol_speed_limit_ *
+                            patrol_target_min_speed_ratio_,
+                            true);
+
+                        ROS_WARN(
+                            "V14.7当前左墙目标达到map停车距离："
+                            "%.3fm<=%.3fm；速度上限已降至巡检速度的%.0f%%，"
+                            "现在取消巡检goal并停车。",
+                            distance_to_board,
+                            patrol_target_stop_distance_,
+                            patrol_target_min_speed_ratio_ * 100.0);
+                    }
+                }
+            }
+
+            if (!should_stop_for_ocr) {
+                if ((!detection_ok || boxes.empty()) &&
+                    !patrol_visual_approach_.valid) {
+                    restorePatrolCruiseSpeedIfNeeded();
+                }
                 rate.sleep();
                 continue;
             }
 
-            const int selected = chooseNewBoardBox(boxes, pose);
-            if (selected < 0) {
-                ROS_INFO_THROTTLE(
-                    1.0,
-                    "当前NanoDet框均不满足centerX<%.1fpx停车门限，"
-                    "或位于已记录板的%.2f米重复范围内",
-                    patrol_stop_max_center_x_,
-                    duplicate_coordinate_distance_);
-                rate.sleep();
-                continue;
-            }
-
-            const Box trigger_box =
-                boxes[static_cast<std::size_t>(selected)];
             if (!cancelPatrolGoalAndWait()) {
+                clearPatrolVisualApproach(false);
                 finishPatrolMode();
                 return SEGMENT_ABORTED;
             }
 
             Pose2D stopped_pose = pose;
             getRobotPose(stopped_pose);
+
+            // 普通map距离停车仍使用V14.5的二次近距离取框。
+            // V14.8的x0<100视觉急停明确跳过这里，直接使用触发急停的当前框。
+            if (stop_from_current_wall_approach &&
+                !direct_ocr_from_edge_guard) {
+                if (!reacquireApproachBoxAfterStop(
+                        segment,
+                        stopped_pose,
+                        trigger_box)) {
+                    clearPatrolVisualApproach(false);
+
+                    // 没框时不做错误OCR；从当前断点重新启动剩余固定Path。
+                    start_result =
+                        startPatrolFromPose(
+                            segment,
+                            stopped_pose);
+                    if (start_result ==
+                        PATROL_ALREADY_COMPLETE) {
+                        return completePatrolSegment(
+                            segment_index);
+                    }
+                    if (start_result ==
+                        PATROL_START_FAILED) {
+                        finishPatrolMode();
+                        return SEGMENT_ABORTED;
+                    }
+
+                    ROS_WARN(
+                        "V14.5停车后未能重新取得当前左墙目标框；"
+                        "已恢复%s，等待后续重新检测。",
+                        segment.name.c_str());
+                    rate.sleep();
+                    continue;
+                }
+            }
+
             patrol_checkpoint_.valid = true;
             patrol_checkpoint_.segment_index =
                 static_cast<int>(segment_index);
-            patrol_checkpoint_.stopped_progress = clampValue(
-                segmentProgress(segment, stopped_pose),
-                0.0, segment.length);
-            patrol_checkpoint_.stopped_pose = stopped_pose;
-            ROS_INFO("已在%s中断点停车：进度=%.3f/%.3fm。",
-                     segment.name.c_str(),
-                     patrol_checkpoint_.stopped_progress,
-                     segment.length);
+            patrol_checkpoint_.stopped_progress =
+                clampValue(
+                    segmentProgress(
+                        segment,
+                        stopped_pose),
+                    0.0,
+                    segment.length);
+            patrol_checkpoint_.stopped_pose =
+                stopped_pose;
+
+            ROS_INFO(
+                "已在%s中断点停车：进度=%.3f/%.3fm。",
+                segment.name.c_str(),
+                patrol_checkpoint_.stopped_progress,
+                segment.length);
+
+            // 当前接近目标已经真正停车，后续交给原V14.4 OCR/停靠状态机。
+            clearPatrolVisualApproach(false);
+
+            if (direct_ocr_from_edge_guard) {
+                ROS_WARN(
+                    "V14.8视觉急停已完成：直接使用触发框"
+                    "(%d,%d)-(%d,%d)，center=(%.1f,%.1f)"
+                    "进入handleDetectedBoard/OCR。",
+                    trigger_box.x0,
+                    trigger_box.y0,
+                    trigger_box.x1,
+                    trigger_box.y1,
+                    trigger_box.centerX(),
+                    trigger_box.centerY());
+            }
 
             const DetectionResult detection_result =
-                handleDetectedBoard(segment_index, segment,
-                                    stopped_pose, trigger_box);
-            if (detection_result == DETECTION_MISSION_COMPLETE) {
+                handleDetectedBoard(
+                    segment_index,
+                    segment,
+                    stopped_pose,
+                    trigger_box);
+
+            if (detection_result ==
+                DETECTION_MISSION_COMPLETE) {
                 finishPatrolMode();
                 return SEGMENT_MISSION_COMPLETE;
             }
-            if (detection_result == DETECTION_ABORT) {
+            if (detection_result ==
+                DETECTION_ABORT) {
                 finishPatrolMode();
                 return SEGMENT_ABORTED;
             }
@@ -1645,17 +2747,26 @@ private:
                 finishPatrolMode();
                 return SEGMENT_ABORTED;
             }
-            start_result = startPatrolFromPose(segment, resume_pose);
-            if (start_result == PATROL_ALREADY_COMPLETE) {
-                return completePatrolSegment(segment_index);
+
+            start_result =
+                startPatrolFromPose(
+                    segment,
+                    resume_pose);
+            if (start_result ==
+                PATROL_ALREADY_COMPLETE) {
+                return completePatrolSegment(
+                    segment_index);
             }
-            if (start_result == PATROL_START_FAILED) {
+            if (start_result ==
+                PATROL_START_FAILED) {
                 finishPatrolMode();
                 return SEGMENT_ABORTED;
             }
-            ROS_INFO("不执行额外朝向恢复；MyPlanner将按剩余固定路径"
-                     "自行完成初始姿态对准并继续%s。",
-                     segment.name.c_str());
+
+            ROS_INFO(
+                "不执行额外朝向恢复；MyPlanner将按剩余固定路径"
+                "自行完成初始姿态对准并继续%s。",
+                segment.name.c_str());
             rate.sleep();
         }
 
@@ -1734,6 +2845,13 @@ private:
                         wallName(boundary_estimate.wall),
                         boundary_estimate.x, boundary_estimate.y);
                 }
+                addUnknownCandidate(
+                    segment_index,
+                    stopped_pose,
+                    ocr.box,
+                    boundary_estimate,
+                    "OCR通用残片补偿旋转失败");
+
                 ROS_WARN("OCR补偿旋转失败，本次不再复识，继续%s",
                          segment.name.c_str());
                 return DETECTION_CONTINUE;
@@ -1766,6 +2884,13 @@ private:
                         wallName(boundary_estimate.wall),
                         boundary_estimate.x, boundary_estimate.y);
                 }
+                addUnknownCandidate(
+                    segment_index,
+                    stopped_pose,
+                    ocr.box,
+                    boundary_estimate,
+                    "OCR补偿旋转后仍为unknown");
+
                 ROS_WARN("补偿旋转后的唯一一次复识仍无法分类：%s；"
                          "继续%s",
                          ocr.text.c_str(), segment.name.c_str());
@@ -1784,7 +2909,16 @@ private:
                     wallName(boundary_estimate.wall),
                     boundary_estimate.x, boundary_estimate.y);
             }
-            ROS_WARN("本次文字无法分类，忽略并继续%s", segment.name.c_str());
+            addUnknownCandidate(
+                segment_index,
+                stopped_pose,
+                ocr.box,
+                boundary_estimate,
+                "巡检OCR最终分类为unknown");
+
+            ROS_WARN(
+                "本次文字无法分类；已按V14.9记录为候选点，继续%s",
+                segment.name.c_str());
             return DETECTION_CONTINUE;
         }
 
@@ -1829,6 +2963,11 @@ private:
                      docking_standoff_);
             return DETECTION_CONTINUE;
         }
+
+        resolveUnknownCandidateNear(
+            static_board_estimate,
+            std::string("后续巡检已成功分类为") +
+                categoryChinese(ocr.category));
 
         ROS_INFO("目标%s墙面坐标=%s(%.3f, %.3f)，"
                  "向场内延伸%.2fm后的move_base点=(%.3f, %.3f, %.1f度)",
@@ -2234,7 +3373,10 @@ private:
             const std::string& scan_name,
             double final_standoff,
             TargetObservation& refined_observation,
-            bool force_refresh) {
+            bool force_refresh,
+            Box* matched_box_out = nullptr,
+            BoardBoundaryEstimate* matched_board_out = nullptr,
+            bool match_only = false) {
         // 正常第二段：第一段导航前已关闭摄像头，到点后刚重新打开，
         // 不存在旧会话缓存，因此立即使用正式检测帧。
         // ±30度恢复：旋转期间相机保持打开但没有持续read，才需要-3即时刷新。
@@ -2390,6 +3532,33 @@ private:
             }
 
             if (selected >= 0) {
+                const Box& box = boxes[
+                    static_cast<std::size_t>(selected)];
+
+                if (matched_box_out) {
+                    *matched_box_out = box;
+                }
+                if (matched_board_out) {
+                    *matched_board_out = best_estimate;
+                }
+
+                // V14.6边缘视野预检查：
+                // 此模式只确认“是不是原来那块板”并返回bbox/墙面坐标，
+                // 严格不生成最终停靠点。若框位于左右1/4，调用方会先旋转。
+                if (match_only) {
+                    ROS_WARN(
+                        "[停靠诊断][边缘预检查] %s匹配到原目标："
+                        "center=(%.1f,%.1f)，板=%s(%.4f,%.4f)，"
+                        "相对第一次板坐标修正=%.4fm；"
+                        "当前尚未计算最终停靠点。",
+                        scan_name.c_str(),
+                        box.centerX(), box.centerY(),
+                        wallName(best_estimate.wall),
+                        best_estimate.x, best_estimate.y,
+                        old_observation.board_valid ? best_score : 0.0);
+                    return true;
+                }
+
                 const int segment_index =
                     segmentIndexForWall(best_estimate.wall);
                 if (segment_index >= 0 &&
@@ -2399,8 +3568,6 @@ private:
                         best_estimate,
                         final_standoff,
                         refined_observation)) {
-                    const Box& box = boxes[
-                        static_cast<std::size_t>(selected)];
                     const double pixel_error =
                         image_center - box.centerX();
                     const double world_dx =
@@ -2585,13 +3752,141 @@ private:
         }
 
         TargetObservation final_observation;
-        bool refined = detectDockingRefinedObservation(
-            observation, "最终停靠视觉复定位",
-            approach_stop_distance_, final_observation, false);
+
+        // --------------------------------------------------------------
+        // V14.6边缘视野保护
+        //
+        // 到达第一段临时停靠点后：
+        // 1. 先只匹配同一块板，严格不计算最终停靠点；
+        // 2. 若centerX位于左/右1/4，先向对应方向转30度；
+        // 3. 转完-3清缓存并重新匹配；
+        // 4. 只有此时才根据新帧计算最终approach_stop_distance停靠点。
+        // --------------------------------------------------------------
+        Box precheck_box{0, 0, 0, 0, 0};
+        BoardBoundaryEstimate precheck_board;
+        TargetObservation unused_precheck_observation;
+
+        const bool precheck_ok =
+            detectDockingRefinedObservation(
+                observation,
+                target_name + "第二段边缘视野预检查",
+                approach_stop_distance_,
+                unused_precheck_observation,
+                false,
+                &precheck_box,
+                &precheck_board,
+                true);
+
+        bool refined = false;
+
+        if (precheck_ok) {
+            const double left_quarter =
+                0.25 * static_cast<double>(image_width_);
+            const double right_quarter =
+                0.75 * static_cast<double>(image_width_);
+
+            const bool in_left_quarter =
+                precheck_box.centerX() <= left_quarter;
+            const bool in_right_quarter =
+                precheck_box.centerX() >= right_quarter;
+
+            if (in_left_quarter || in_right_quarter) {
+                Pose2D current_pose;
+                if (!getRobotPose(current_pose)) {
+                    ROS_ERROR(
+                        "%s边缘视野30度修正前无法读取当前map位姿",
+                        target_name.c_str());
+                    return false;
+                }
+
+                const double turn =
+                    docking_recovery_turn_deg_ * kPi / 180.0;
+
+                // 当前图像/相机语义已在实车确认：
+                // 目标在画面左侧 -> 目标位于车体左侧 -> yaw正方向(CCW)；
+                // 目标在画面右侧 -> yaw负方向(CW)。
+                const double signed_turn =
+                    in_left_quarter ? turn : -turn;
+                const double adjusted_yaw =
+                    normalizeAngle(
+                        current_pose.yaw + signed_turn);
+
+                ROS_WARN(
+                    "V14.6临时停靠边缘保护：%s匹配框centerX=%.1f，"
+                    "图像宽=%d，左1/4<=%.1f，右1/4>=%.1f；"
+                    "框位于%s侧，先向%s旋转%.1f度："
+                    "当前yaw=%.1f度 -> 目标yaw=%.1f度。"
+                    "此时尚未计算最终停靠点。",
+                    target_name.c_str(),
+                    precheck_box.centerX(),
+                    image_width_,
+                    left_quarter,
+                    right_quarter,
+                    in_left_quarter ? "左" : "右",
+                    in_left_quarter
+                        ? "左/逆时针"
+                        : "右/顺时针",
+                    docking_recovery_turn_deg_,
+                    current_pose.yaw * 180.0 / kPi,
+                    adjusted_yaw * 180.0 / kPi);
+
+                if (rotateToDockingRecoveryYaw(
+                        adjusted_yaw,
+                        target_name + "临时停靠边缘30度修正")) {
+                    // 旋转过程中摄像头保持打开但没有持续read，
+                    // force_refresh=true会先执行既有的NanoDet -3缓存刷新。
+                    refined =
+                        detectDockingRefinedObservation(
+                            observation,
+                            target_name + "边缘修正后最终视觉复定位",
+                            approach_stop_distance_,
+                            final_observation,
+                            true);
+
+                    if (refined) {
+                        ROS_WARN(
+                            "V14.6 %s边缘30度修正成功："
+                            "已使用转向后的新帧重新计算最终停靠点。",
+                            target_name.c_str());
+                    }
+                } else {
+                    ROS_WARN(
+                        "%s边缘30度修正旋转失败，"
+                        "不使用转向前边缘帧计算最终点。",
+                        target_name.c_str());
+                }
+            } else {
+                // 中间二分之一不需要再次取帧：
+                // 预检查得到的同墙板坐标就是当前实时新V4L2帧结果，
+                // 现在才正式生成最终停靠点。
+                const int segment_index =
+                    segmentIndexForWall(precheck_board.wall);
+                if (segment_index >= 0) {
+                    refined =
+                        makeDockingObservationAtStandoff(
+                            segment_index,
+                            observation.category,
+                            precheck_board,
+                            approach_stop_distance_,
+                            final_observation);
+                }
+
+                if (refined) {
+                    ROS_INFO(
+                        "%s临时停靠框centerX=%.1f位于图像中间二分之一"
+                        "(%.1f, %.1f)，不额外旋转；"
+                        "现在正式计算最终停靠点。",
+                        target_name.c_str(),
+                        precheck_box.centerX(),
+                        left_quarter,
+                        right_quarter);
+                }
+            }
+        }
 
         if (!refined) {
             ROS_WARN(
-                "%s在当前朝向未能可靠复定位原目标；"
+                "%s当前朝向/边缘30度修正后未能可靠复定位原目标；"
                 "启动保留的±%.1f度视觉恢复。",
                 target_name.c_str(), docking_recovery_turn_deg_);
             final_observation = observation;
@@ -3311,6 +4606,25 @@ private:
         ROS_INFO("仿真目标非当前墙段末保护（仅现实目标未完成时）：%s",
                  simulation_target_blocked_until_segment_end_
                      ? "锁定中" : "未锁定");
+
+        ROS_INFO("unknown候选总数：%zu", unknown_candidates_.size());
+        for (std::size_t i = 0;
+             i < unknown_candidates_.size();
+             ++i) {
+            const UnknownCandidate& candidate =
+                unknown_candidates_[i];
+            ROS_INFO(
+                "  候选[%zu]：%s(%.3f,%.3f)，来源段=%d，"
+                "已回访=%s，已解决=%s",
+                i + 1,
+                wallName(candidate.board.wall),
+                candidate.board.x,
+                candidate.board.y,
+                candidate.source_segment_index + 1,
+                candidate.attempted ? "是" : "否",
+                candidate.resolved ? "是" : "否");
+        }
+
         ROS_INFO("任务总结果：%s", success ? "成功" : "失败");
         ROS_INFO("==============================================");
     }
@@ -3391,6 +4705,16 @@ private:
     double ocr_recovery_settle_time_;
     double max_detection_duration_;
     double patrol_stop_max_center_x_;
+
+    // V14.5当前左墙目标接近减速参数。
+    double patrol_target_slowdown_start_distance_;
+    double patrol_target_stop_distance_;
+    double patrol_target_min_speed_ratio_;
+
+    // V14.7双停车保护参数。
+    double patrol_noncurrent_wall_stop_max_distance_;
+    int patrol_target_left_edge_stop_px_;
+
     double duplicate_coordinate_distance_;
     double max_track_jump_px_;
     int max_lost_frames_;
@@ -3445,6 +4769,14 @@ private:
     bool shadow_mode_has_been_disabled_ = false;
     std::uint32_t patrol_path_sequence_ = 0;
     std::vector<BoardBoundaryEstimate> seen_board_coordinates_;
+
+    // V14.9：巡检OCR=unknown时记录，整圈后任务未完成才依次回访。
+    std::vector<UnknownCandidate> unknown_candidates_;
+
+    // V14.5视觉接近减速状态。
+    PatrolVisualApproach patrol_visual_approach_;
+    double current_patrol_runtime_speed_limit_ =
+        std::numeric_limits<double>::quiet_NaN();
 
     sensor_msgs::LaserScan latest_scan_;
     ros::WallTime latest_scan_wall_time_;

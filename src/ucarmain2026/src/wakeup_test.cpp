@@ -36,6 +36,7 @@ bool g_vad_running = false;
 bool g_pipe_error_reported = false;
 bool g_pcm_received = false;
 bool g_wakeup_latched = false;
+bool g_discard_pcm = false;
 std::uint64_t g_pcm_bytes_received = 0;
 
 pid_t g_vad_pid = -1;
@@ -59,6 +60,7 @@ double g_min_seconds = 2.0;
 double g_silence_seconds = 1.2;
 double g_max_seconds = 9.0;
 double g_tail_seconds = 0.30;
+double g_retry_pcm_guard_seconds = 0.15;
 
 bool ensureDirectory(const std::string& directory) {
     if (::mkdir(directory.c_str(), 0755) == 0 || errno == EEXIST) {
@@ -109,6 +111,14 @@ bool writeAllToVad(const uint8_t* data, std::size_t size) {
 
         if (written < 0 && errno == EINTR) {
             continue;
+        }
+
+        if (written < 0 && errno == EPIPE) {
+            // VAD 已完成录音并关闭了管道读取端，这是正常收尾竞态。
+            // 主循环随后仍会通过 waitpid() 回收子进程并确认录音结果。
+            ::close(g_vad_stdin_fd);
+            g_vad_stdin_fd = -1;
+            return false;
         }
 
         if (!g_pipe_error_reported) {
@@ -282,6 +292,11 @@ bool requestSemantics() {
 }
 
 void startRetryRecording() {
+    // 重录提示音由扬声器播放时，麦克风 PCM 仍会持续发布。
+    // 从播放开始直到尾音保护结束，直接丢弃所有 PCM，避免提示音进入下一轮录音。
+    g_discard_pcm = true;
+    g_prebuffer.clear();
+
     const std::string command = "aplay -q '" + g_retry_audio + "'";
     const int play_result = std::system(command.c_str());
     if (play_result != 0) {
@@ -291,12 +306,34 @@ void startRetryRecording() {
         );
     }
 
+    const double guard_seconds =
+        g_retry_pcm_guard_seconds > 0.0
+        ? g_retry_pcm_guard_seconds
+        : 0.0;
+    const ros::WallTime guard_deadline =
+        ros::WallTime::now() + ros::WallDuration(guard_seconds);
+
+    // aplay 阻塞期间 ROS 队列里可能已经积压了提示音 PCM。
+    // 这里持续 spin 一小段时间，把已积压和随后到达的尾音全部回调并丢弃。
+    do {
+        ros::spinOnce();
+        if (ros::WallTime::now() >= guard_deadline) {
+            break;
+        }
+        ros::WallDuration(0.01).sleep();
+    } while (ros::ok());
+
     g_prebuffer.clear();
+    g_discard_pcm = false;
+
     if (!startVadProcess(false)) {
         ROS_ERROR("重新启动 VAD 失败，请再次说唤醒词重试");
         g_wakeup_latched = false;
     } else {
-        ROS_INFO("请重新说出完整任务，VAD 将在说完后自动停止");
+        ROS_INFO(
+            "重录提示音已隔离，尾音保护 %.2f s；请直接重新说出完整任务",
+            guard_seconds
+        );
     }
 }
 
@@ -414,6 +451,12 @@ void pcmCallback(
         return;
     }
 
+    // 播放重录提示音及其尾音保护期间，PCM 必须彻底丢弃：
+    // 既不写入 VAD，也不进入唤醒前缓存。
+    if (g_discard_pcm) {
+        return;
+    }
+
     const uint8_t* data = message->data.data();
     const std::size_t size = message->data.size();
 
@@ -497,6 +540,11 @@ int main(int argc, char** argv) {
     private_node.param("vad_silence_seconds", g_silence_seconds, 1.2);
     private_node.param("vad_max_seconds", g_max_seconds, 9.0);
     private_node.param("vad_tail_seconds", g_tail_seconds, 0.30);
+    private_node.param(
+        "retry_pcm_guard_seconds",
+        g_retry_pcm_guard_seconds,
+        0.15
+    );
 
     g_semantic_client =
         node_handle.serviceClient<ucarmain2026::GetTaskSemantics>(

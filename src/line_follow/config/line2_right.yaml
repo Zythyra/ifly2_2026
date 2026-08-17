@@ -23,7 +23,7 @@ out_forward: 0.45  # 丢线右转时的前进速度
 out_turn: 1.5      # 固定右转角速度大小，代码内部取负值
 
 adaptive_block: 45
-adaptive_c: -22
+adaptive_c: -20
 min_contour_area: 250
 
 # 相机标定文件；需要时可直接修改
@@ -50,7 +50,7 @@ docking_trigger_max_x: 0.75
 docking_trigger_distance: 0.75
 
 # 固定停靠终点及最终方向
-docking_goal_x: 0.22
+docking_goal_x: 0.23
 docking_goal_y: 0.25
 docking_goal_yaw_deg: -90.0
 

@@ -33,11 +33,11 @@ mpc_terminal_fallback_stop_distance: 0.20
 # -----------------------------------------------------------------------------
 c2_duplicate_point_distance: 0.003
 c2_resample_distance: 0.020
-c2_tracking_curvature_distance: 0.080
-c2_speed_curvature_distance: 0.120
+c2_tracking_curvature_distance: 0.040
+c2_speed_curvature_distance: 0.080
 c2_curvature_median_window: 5
-c2_curvature_preview_distance: 0.08
-c2_hold_speed_after_curve: 0.04
+c2_curvature_preview_distance: 0.04
+c2_hold_speed_after_curve: 0.02
 
 # 可在运行中修改：/move_base/MyPlanner/c2_max_reference_speed
 c2_max_reference_speed: 1.00
@@ -211,14 +211,14 @@ goal_dist_threshold: 0.50
 goal_position_tolerance: 0.025
 goal_yaw_tolerance: 0.05
 
-final_linear_x_gain: 1.60
-final_linear_y_gain: 1.20
-final_angular_gain: 6.50
+final_linear_x_gain: 2.40
+final_linear_y_gain: 1.80
+final_angular_gain: 9.50
 final_min_linear_speed: 0.03
 final_min_angular_speed: 0.08
-final_max_vel_x: 0.30
-final_max_vel_y: 0.20
-final_max_vel_theta: 0.90
+final_max_vel_x: 0.50
+final_max_vel_y: 0.35
+final_max_vel_theta: 1.00
 
 # 可在运行中修改：/move_base/MyPlanner/max_vel_x
 max_vel_x: 1.00
