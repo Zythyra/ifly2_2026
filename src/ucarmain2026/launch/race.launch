@@ -1,0 +1,374 @@
+<launch>
+
+    <!-- ================================================================== -->
+    <!-- race.cpp 主程序参数 Launch                         -->
+    <!-- 说明：competition*.launch 负责启动所有依赖，本文件只负责参数 + 主程序。 -->
+    <!-- 所有参数均按功能模块分区；每个参数前均有用途说明。                    -->
+    <!-- ================================================================== -->
+
+    <!-- ################################################################## -->
+    <!-- #################### 【模块 A：红绿灯 RKNN】 ###################### -->
+    <!-- ################################################################## -->
+    <!-- 红绿灯检测服务名；detect2026.launch 应提供该服务。 -->
+    <param name="/traffic_light/detect_service" value="/nanodet_detect" />
+
+    <!-- 红绿灯识别等待期间持续发布停车命令所使用的速度话题。 -->
+    <param name="/traffic_light/cmd_vel_topic" value="/cmd_vel" />
+
+    <!-- 稳定方向确认后发布 LEFT/RIGHT/STRAIGHT 的诊断话题。 -->
+    <param name="/traffic_light/direction_topic" value="/traffic_light/direction" />
+
+    <!-- 红绿灯 RKNN 检测循环频率；服务调用是同步的，当前实测使用 8 Hz。 -->
+    <param name="/traffic_light/detect_rate" value="8.0" />
+
+    <!-- 启动红绿灯阶段时等待 /nanodet_detect 服务出现的最长时间，单位秒。 -->
+    <param name="/traffic_light/service_wait_timeout" value="8.0" />
+
+    <!-- detect2026 打开摄像头后的预热时间，单位秒。 -->
+    <param name="/traffic_light/camera_warmup" value="0.70" />
+
+    <!-- 正式检测前调用 command=-3 清理摄像头缓存的次数。 -->
+    <param name="/traffic_light/camera_flush_calls" value="3" />
+
+    <!-- 连续多少帧识别为同一方向后才正式启动巡线。 -->
+    <param name="/traffic_light/stable_frames" value="3" />
+
+    <!-- detect2026 红绿灯正常阈值检测命令；当前协议中 10=traffic normal。 -->
+    <param name="/traffic_light/traffic_detect_command" value="10" />
+
+    <!-- detect2026 切换到红绿灯三分类模型的命令；当前协议固定为 -10。 -->
+    <param name="/traffic_light/traffic_switch_command" value="-10" />
+
+    <!-- 当前代码实际类别映射：0=RIGHT，1=LEFT，2=STRAIGHT。 -->
+    <!-- 路线映射由 C++ 固定，不通过 ROS 参数修改。 -->
+
+    <node pkg="ucarmain2026"
+          type="race"
+          name="main_competition_node"
+          output="screen">
+
+        <!-- ############################################################## -->
+        <!-- ################## 【模块 B：语音 / VAD】 #################### -->
+        <!-- ############################################################## -->
+        <!-- VAD 动态录音 Python 脚本路径。 -->
+        <param name="vad_script" value="$(find ucarmain2026)/scripts/vad_record.py" />
+
+        <!-- VAD 录音状态 JSON 文件路径，用于判断本轮录音是否正常结束。 -->
+        <param name="vad_status_file" value="$(find ucarmain2026)/wakeup_record/test_record.vad.json" />
+
+        <!-- VAD 后端；auto 会优先使用可用后端，否则回退动态能量 VAD。 -->
+        <param name="vad_backend" value="auto" />
+
+        <!-- 单次任务录音的最短时长，单位秒。 -->
+        <param name="vad_min_seconds" value="2.0" />
+
+        <!-- 判定说话结束所需的连续静音时长，单位秒。 -->
+        <param name="vad_silence_seconds" value="1.2" />
+
+        <!-- 单次任务录音的最大时长，单位秒；达到后强制结束录音。 -->
+        <param name="vad_max_seconds" value="9.0" />
+
+        <!-- VAD 检测结束后保留的尾部音频时长，单位秒。 -->
+        <param name="vad_tail_seconds" value="0.30" />
+
+        <!-- 重录提示音结束后继续丢弃扬声器尾音/积压 PCM 的保护时间，单位秒。 -->
+        <param name="retry_pcm_guard_seconds" value="0.15" />
+
+        <!-- ############################################################## -->
+        <!-- ################### 【模块 C：离线 TTS】 ##################### -->
+        <!-- ############################################################## -->
+        <!-- 是否对缓存 WAV 的首尾静音做自动裁剪。 -->
+        <param name="tts_trim_silence" value="true" />
+
+        <!-- PCM16 静音判断幅值阈值；越大裁剪越激进。 -->
+        <param name="tts_trim_silence_threshold" value="200" />
+
+        <!-- 裁掉静音后在有效语音两端各保留的缓冲时间，单位毫秒。 -->
+        <param name="tts_trim_keep_ms" value="20.0" />
+
+        <!-- 相邻语音片段拼接时的交叉淡化时长，单位毫秒。 -->
+        <param name="tts_crossfade_ms" value="8.0" />
+
+        <!-- 最终离线播报倍速；通过提高 raw PCM 播放采样率实现，当前确定为 1.50x。 -->
+        <param name="tts_playback_speed" value="1.50" />
+
+        <!-- ############################################################## -->
+        <!-- ################### 【模块 D：仿真通信】 ##################### -->
+        <!-- ############################################################## -->
+        <!-- 从进入仿真任务开始计算的总等待上限，单位秒；超时自动视为仿真完成。 -->
+        <param name="simulation_result_timeout" value="120.0" />
+
+        <!-- ############################################################## -->
+        <!-- ################### 【模块 E：二维码扫描】 ################### -->
+        <!-- ############################################################## -->
+        <!-- 四个二维码观察点的 map 坐标 X，必须与 Y/Yaw 数组长度一致。 -->
+        <rosparam param="qr_wp_x">[1.0, 0.75, 0.5, 0.75]</rosparam>
+
+        <!-- 四个二维码观察点的 map 坐标 Y，必须与 X/Yaw 数组长度一致。 -->
+        <rosparam param="qr_wp_y">[5.25, 5.0, 5.25, 5.5]</rosparam>
+
+        <!-- 四个二维码观察点的基础朝向，单位弧度；依次约为 180°/90°/0°/-90°。 -->
+        <rosparam param="qr_wp_yaw">[3.14, 1.57, 0.0, -1.57]</rosparam>
+
+        <!-- 第一轮每个观察视角的视觉扫描时间，单位秒。 -->
+        <param name="qr_scan_timeout" value="1.2" />
+
+        <!-- 第二轮兜底扫描每个观察视角的扫描时间，单位秒。 -->
+        <param name="qr_retry_scan_timeout" value="2.0" />
+
+        <!-- QR 摄像头首次打开后的预热时间，单位秒。 -->
+        <param name="qr_camera_warmup" value="0.7" />
+
+        <!-- 当前墙成功获得二维码后继续额外观察的时间，兼顾同墙多码，单位秒。 -->
+        <param name="qr_post_success_scan_seconds" value="0.15" />
+
+        <!-- 当前视角完全没解出二维码时左右 fallback 的偏航角度，单位度。 -->
+        <param name="qr_fallback_yaw_deg" value="30.0" />
+
+        <!-- 二维码 HTTP 请求 DNS/TCP/TLS 建连阶段的超时，单位秒。 -->
+        <param name="qr_http_connect_timeout" value="1.0" />
+
+        <!-- 单次二维码 HTTP 请求的总超时，单位秒。 -->
+        <param name="qr_http_total_timeout" value="3.0" />
+
+        <!-- 同一个二维码 HTTP 失败后的重试间隔，单位秒。 -->
+        <param name="qr_http_retry_delay" value="0.15" />
+
+        <!-- 整套二维码观察点最多执行多少轮；当前正常轮 + 兜底轮共 2 轮。 -->
+        <param name="qr_max_scan_rounds" value="2" />
+
+        <!-- 单个二维码 URL 的 HTTP 最大尝试次数。 -->
+        <param name="qr_http_retry_count" value="2" />
+
+        <!-- 旧版 qr_http_timeout 为兼容参数，当前已由 connect/total 两个参数替代，因此不设置。 -->
+
+        <!-- ############################################################## -->
+        <!-- ############# 【模块 F：找板巡检基础参数】 ################# -->
+        <!-- ############################################################## -->
+        <!-- 全局定位坐标系名称。 -->
+        <param name="map_frame" value="map" />
+
+        <!-- 机器人底盘坐标系名称；找板模块通过 TF 获取当前位置。 -->
+        <param name="base_frame" value="base_link" />
+
+        <!-- 找板房间有效区域最小 X，单位米。 -->
+        <param name="room_min_x" value="0.0" />
+
+        <!-- 找板房间有效区域最大 X，单位米。 -->
+        <param name="room_max_x" value="5.0" />
+
+        <!-- 找板房间有效区域最小 Y，单位米。 -->
+        <param name="room_min_y" value="2.5" />
+
+        <!-- 找板房间有效区域最大 Y，单位米。 -->
+        <param name="room_max_y" value="4.5" />
+
+        <!-- 四墙固定巡检模块的起始点 X，单位米。 -->
+        <param name="start_x" value="1.25" />
+
+        <!-- 四墙固定巡检模块的起始点 Y，单位米。 -->
+        <param name="start_y" value="4.25" />
+
+        <!-- 四墙巡检起点目标航向，单位度；当前从 0° 开始第一段。 -->
+        <param name="start_yaw_deg" value="0.0" />
+
+        <!-- 模块内部单次 move_base 导航最长等待时间，单位秒。 -->
+        <param name="navigation_timeout" value="180.0" />
+
+        <!-- 自研 MyPlanner 私有命名空间，用于固定 Path、锁路径和运行参数。 -->
+        <param name="planner_private_namespace" value="/move_base/MyPlanner" />
+
+        <!-- 固定巡检 Path / 坡道 Reference 的相邻路径点间距，单位米。 -->
+        <param name="patrol_path_spacing" value="0.02" />
+
+        <!-- 固定巡检阶段 MyPlanner 的速度上限，单位 m/s。 -->
+        <param name="patrol_speed_limit" value="0.50" />
+
+        <!-- 退出巡检模式后恢复的普通导航速度上限，单位 m/s。 -->
+        <param name="normal_navigation_speed_limit" value="1.00" />
+
+        <!-- 取消固定巡检 move_base goal 时等待 action 结束的最长时间，单位秒。 -->
+        <param name="patrol_cancel_timeout" value="3.0" />
+
+        <!-- 等待 MyPlanner 固定路径锁/控制器复位等接口的最长时间，单位秒。 -->
+        <param name="patrol_interface_timeout" value="3.0" />
+
+        <!-- move_base dynamic_reconfigure 服务名。 -->
+        <param name="move_base_reconfigure_service" value="/move_base/set_parameters" />
+
+        <!-- 巡检期间是否临时关闭 move_base oscillation 超时保护。 -->
+        <param name="disable_move_base_oscillation_during_patrol" value="true" />
+
+        <!-- 退出巡检后恢复的普通 move_base oscillation_timeout，单位秒。 -->
+        <param name="normal_move_base_oscillation_timeout" value="8.0" />
+
+        <!-- 固定巡检某段被 move_base ABORTED 后允许自动重试的次数。 -->
+        <param name="patrol_aborted_retry_count" value="2" />
+
+        <!-- 判断固定巡检路径末端已到达的位置容差，单位米。 -->
+        <param name="segment_end_tolerance" value="0.015" />
+
+        <!-- 巡检转角/恢复等直接速度控制循环频率，单位 Hz。 -->
+        <param name="control_rate" value="15.0" />
+
+        <!-- ############################################################## -->
+        <!-- ############### 【模块 G：巡检转角 / 回线控制】 ############### -->
+        <!-- ############################################################## -->
+        <!-- 转角和现实停靠后回线时的位置 P 增益。 -->
+        <param name="patrol_transition_position_kp" value="2.50" />
+
+        <!-- 转角和回线时的航向 P 增益。 -->
+        <param name="patrol_transition_yaw_kp" value="3.00" />
+
+        <!-- 非零平移指令的最小速度，单位 m/s。 -->
+        <param name="patrol_transition_min_linear_speed" value="0.025" />
+
+        <!-- 转角/回线阶段允许的最大平移速度，单位 m/s。 -->
+        <param name="patrol_transition_max_linear_speed" value="0.12" />
+
+        <!-- 非零旋转指令的最小角速度，单位 rad/s。 -->
+        <param name="patrol_transition_min_angular_speed" value="0.25" />
+
+        <!-- 转角/回线阶段最大角速度，单位 rad/s。 -->
+        <param name="patrol_transition_max_angular_speed" value="1.20" />
+
+        <!-- 转角/回线阶段平移加速度限制，单位 m/s^2。 -->
+        <param name="patrol_transition_linear_accel" value="0.60" />
+
+        <!-- 转角/回线阶段角加速度限制，单位 rad/s^2。 -->
+        <param name="patrol_transition_angular_accel" value="4.00" />
+
+        <!-- 航向误差大于该角度时开始明显压低平移速度，单位度。 -->
+        <param name="patrol_transition_yaw_priority_start_deg" value="55.0" />
+
+        <!-- 航向误差下降到该角度后解除转向优先压速，单位度。 -->
+        <param name="patrol_transition_yaw_priority_release_deg" value="20.0" />
+
+        <!-- 转向优先期间平移速度允许保留的最小比例。 -->
+        <param name="patrol_transition_yaw_priority_min_linear_scale" value="0.15" />
+
+        <!-- 转角位姿调整的位置完成容差，单位米。 -->
+        <param name="patrol_transition_position_tolerance" value="0.012" />
+
+        <!-- 转角位姿调整的航向完成容差，单位度。 -->
+        <param name="patrol_transition_yaw_tolerance_deg" value="1.5" />
+
+        <!-- 位置/航向同时满足后需要连续确认的控制帧数。 -->
+        <param name="patrol_transition_stable_frames" value="3" />
+
+        <!-- 单次转角或回线直接控制的最长时间，单位秒。 -->
+        <param name="patrol_transition_timeout" value="8.0" />
+
+        <!-- ================= V22角点路障判定参数 ================= -->
+
+        <!-- 用于角点路障判断的costmap话题；默认使用实时local costmap。 -->
+        <param name="corner_obstacle_costmap_topic" value="/move_base/local_costmap/costmap" />
+
+        <!-- 每个指定检测中心周围的圆形检测半径，单位米；当前规则固定5cm。 -->
+        <param name="corner_obstacle_check_radius" value="0.05" />
+
+        <!-- OccupancyGrid达到该值即视为路障死区；99覆盖高代价核心区域。 -->
+        <param name="corner_obstacle_lethal_cost_threshold" value="99" />
+
+        <!-- 接受的local costmap最大数据年龄，单位秒；超时保守使用原安全角点。 -->
+        <param name="corner_obstacle_costmap_max_age" value="3.0" />
+
+        <!-- ############################################################## -->
+        <!-- ########### 【模块 H：找板视觉 / OCR / 两段式停靠】 ########### -->
+        <!-- ############################################################## -->
+        <!-- NanoDet 输入图像宽度，用于目标框屏幕位置判断。 -->
+        <param name="image_width" value="640" />
+
+        <!-- 相机水平焦距 fx，用于由像素偏移估计目标方向。 -->
+        <param name="camera_fx" value="554.256" />
+
+        <!-- 相机光轴相对 base_link 的额外偏航修正，单位度。 -->
+        <param name="camera_yaw_offset_deg" value="0.0" />
+
+        <!-- 两段式停靠第一段预停靠点距离墙面的距离，单位米。 -->
+        <param name="docking_standoff" value="0.50" />
+
+        <!-- 到达观察/停靠姿态后等待底盘和画面稳定的时间，单位秒。 -->
+        <param name="settle_time" value="0.25" />
+
+        <!-- 单次 OCR 分类最多尝试次数。 -->
+        <param name="ocr_attempts" value="3" />
+
+        <!-- OCR 连续尝试之间的等待间隔，单位秒。 -->
+        <param name="ocr_retry_interval" value="0.12" />
+
+        <!-- OCR 只识别到模糊公共字时进行恢复复识的旋转角度，单位度。 -->
+        <param name="ocr_recovery_turn_deg" value="30.0" />
+
+        <!-- OCR 恢复旋转 P 增益。 -->
+        <param name="ocr_recovery_turn_kp" value="2.0" />
+
+        <!-- OCR 恢复旋转的最小角速度，单位 rad/s。 -->
+        <param name="ocr_recovery_turn_min_speed" value="0.18" />
+
+        <!-- OCR 恢复旋转的最大角速度，单位 rad/s。 -->
+        <param name="ocr_recovery_turn_max_speed" value="0.45" />
+
+        <!-- OCR 恢复旋转完成的角度容差，单位度。 -->
+        <param name="ocr_recovery_turn_tolerance_deg" value="1.5" />
+
+        <!-- OCR 恢复旋转达到角度后需要连续稳定确认的帧数。 -->
+        <param name="ocr_recovery_turn_stable_frames" value="3" />
+
+        <!-- OCR 恢复旋转的最长执行时间，单位秒。 -->
+        <param name="ocr_recovery_turn_timeout" value="5.0" />
+
+        <!-- OCR 恢复旋转结束后的画面稳定等待时间，单位秒。 -->
+        <param name="ocr_recovery_settle_time" value="0.35" />
+
+        <!-- 单次 NanoDet 找板服务允许占用的最长检测时长，单位秒。 -->
+        <param name="max_detection_duration" value="0.50" />
+
+        <!-- 当前巡检墙目标框中心 X 小于该值才允许打断固定 Path；单位像素。 -->
+        <param name="patrol_stop_max_center_x" value="600.0" />
+
+        <!-- 当前墙目标距离小于该值后开始对固定巡检速度做线性减速，单位米。 -->
+        <param name="patrol_target_slowdown_start_distance" value="1.50" />
+
+        <!-- 当前墙目标距离达到该值时取消巡检并停车进入 OCR，单位米。 -->
+        <param name="patrol_target_stop_distance" value="0.40" />
+
+        <!-- 当前墙目标逼近停车距离时允许降到的最小巡检速度比例。 -->
+        <param name="patrol_target_min_speed_ratio" value="0.20" />
+
+        <!-- 非当前巡检墙目标只有距对应墙小于该值才允许立即停车，单位米。 -->
+        <param name="patrol_noncurrent_wall_stop_max_distance" value="1.50" />
+
+        <!-- 当前墙目标框左边缘进入图像左侧该像素范围时立即停车。 -->
+        <param name="patrol_target_left_edge_stop_px" value="100" />
+
+        <!-- 两次目标观测坐标小于该距离时视为重复目标，单位米。 -->
+        <param name="duplicate_coordinate_distance" value="0.50" />
+
+        <!-- 连续目标框中心允许的最大像素跳变，用于抑制视觉误关联。 -->
+        <param name="max_track_jump_px" value="140.0" />
+
+        <!-- 第一段预停靠后目标落在画面边缘/丢失时的左右恢复旋转角度，单位度。 -->
+        <param name="docking_recovery_turn_deg" value="30.0" />
+
+        <!-- 每个第二阶段停靠恢复视角下最多尝试多少次目标检测。 -->
+        <param name="docking_recovery_detection_attempts" value="3" />
+
+        <!-- 第二阶段停靠恢复检测各次尝试之间的时间间隔，单位秒；0 表示连续尝试。 -->
+        <param name="docking_recovery_detection_interval" value="0.0" />
+
+        <!-- 第二阶段视觉重定位结果距第一阶段墙面估计允许的最大坐标偏移，单位米。 -->
+        <param name="docking_refine_max_board_shift" value="0.80" />
+
+        <!-- ±30° 停靠恢复旋转后调用 detect2026 清缓存的次数。 -->
+        <param name="docking_refresh_clear_calls" value="2" />
+
+        <!-- 现实停靠完成后横移回固定巡检线允许的最终横向误差，单位米。 -->
+        <param name="patrol_resume_max_cross_track_error" value="0.030" />
+
+        <!-- 两段式停靠第二段最终视觉停靠点距离墙面的停止距离，单位米。 -->
+        <param name="approach_stop_distance" value="0.28" />
+
+    </node>
+
+</launch>

@@ -9,8 +9,8 @@ from offline_tts import OfflineTtsError, synthesize
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PACKAGE_DIR = os.path.dirname(SCRIPT_DIR)
-OUTPUT_FILE = os.path.join(PACKAGE_DIR, "audios", "放入电子产品仓库.wav")
-TEXT = "放入电子产品仓库"
+OUTPUT_FILE = os.path.join(PACKAGE_DIR, "audios", "U盘.wav")
+TEXT = "优盘"
 
 
 def main():

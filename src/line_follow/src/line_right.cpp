@@ -113,6 +113,9 @@ private:
     double docking_control_rate_;
     double docking_position_tolerance_;
     double docking_yaw_tolerance_;
+    double docking_relaxed_yaw_tolerance_;   // 防死区：宽松方向完成门槛
+    double docking_relaxed_hold_time_;       // 防死区：宽松门槛连续保持时间
+    double docking_timeout_;                 // 防死区：停靠总超时
     double docking_linear_x_gain_;
     double docking_linear_y_gain_;
     double docking_angular_gain_;
@@ -264,6 +267,12 @@ private:
                   docking_position_tolerance_, 0.025);
         nh_.param("/line_right/docking_yaw_tolerance",
                   docking_yaw_tolerance_, 0.05);
+        nh_.param("/line_right/docking_relaxed_yaw_tolerance",
+                  docking_relaxed_yaw_tolerance_, 0.08);
+        nh_.param("/line_right/docking_relaxed_hold_time",
+                  docking_relaxed_hold_time_, 0.50);
+        nh_.param("/line_right/docking_timeout",
+                  docking_timeout_, 12.0);
         nh_.param("/line_right/docking_linear_x_gain",
                   docking_linear_x_gain_, 2.50);
         nh_.param("/line_right/docking_linear_y_gain",
@@ -313,6 +322,11 @@ private:
         docking_control_rate_ = std::max(1.0, docking_control_rate_);
         docking_position_tolerance_ = std::max(0.001, docking_position_tolerance_);
         docking_yaw_tolerance_ = std::max(0.001, docking_yaw_tolerance_);
+        docking_relaxed_yaw_tolerance_ = std::max(
+            docking_yaw_tolerance_, docking_relaxed_yaw_tolerance_);
+        docking_relaxed_hold_time_ =
+            std::max(0.0, docking_relaxed_hold_time_);
+        docking_timeout_ = std::max(1.0, docking_timeout_);
         docking_linear_x_gain_ = std::max(0.0, docking_linear_x_gain_);
         docking_linear_y_gain_ = std::max(0.0, docking_linear_y_gain_);
         docking_angular_gain_ = std::max(0.0, docking_angular_gain_);
@@ -1002,7 +1016,26 @@ private:
         ros::Rate control_rate(docking_control_rate_);
         ros::Time last_control_time = ros::Time::now();
 
+        // 与国赛版本相同的防死区机制：
+        // 1. 严格位置+方向容差仍然可以立即正常完成；
+        // 2. 位置已到位、方向进入稍宽松容差后，连续保持一段时间也判定完成；
+        // 3. 增加总超时，避免底盘静摩擦/定位抖动导致控制循环永久不退出。
+        const ros::WallTime docking_start_time = ros::WallTime::now();
+        ros::WallTime relaxed_hold_start;
+        bool relaxed_hold_active = false;
+
         while (ros::ok()) {
+            const ros::WallTime wall_now = ros::WallTime::now();
+
+            if ((wall_now - docking_start_time).toSec() > docking_timeout_) {
+                ROS_ERROR(
+                    "纯PP停靠超过%.2fs仍未满足完成条件，"
+                    "已安全停车并退出本次服务，防止控制循环永久卡住。",
+                    docking_timeout_);
+                stopRobot();
+                return false;
+            }
+
             double robot_x = 0.0;
             double robot_y = 0.0;
             double robot_yaw = 0.0;
@@ -1014,9 +1047,46 @@ private:
             }
 
             geometry_msgs::Twist desired_cmd;
-            if (computeDockingCommand(robot_x, robot_y, robot_yaw, desired_cmd)) {
+            if (computeDockingCommand(
+                    robot_x, robot_y, robot_yaw, desired_cmd)) {
                 stopRobot();
                 return true;
+            }
+
+            const double distance_error = std::hypot(
+                docking_goal_x_ - robot_x,
+                docking_goal_y_ - robot_y);
+            const double target_yaw =
+                docking_goal_yaw_deg_ * 3.14159265358979323846 / 180.0;
+            const double yaw_error = std::abs(
+                normalizeAngle(target_yaw - robot_yaw));
+
+            const bool within_relaxed_completion =
+                distance_error <= docking_position_tolerance_ &&
+                yaw_error <= docking_relaxed_yaw_tolerance_;
+
+            if (within_relaxed_completion) {
+                if (!relaxed_hold_active) {
+                    relaxed_hold_active = true;
+                    relaxed_hold_start = wall_now;
+                }
+
+                if ((wall_now - relaxed_hold_start).toSec() >=
+                    docking_relaxed_hold_time_) {
+                    stopRobot();
+                    ROS_WARN(
+                        "停靠防卡死完成：位置误差=%.3fm<=%.3fm，"
+                        "方向误差=%.3frad处于宽松门槛%.3frad内并保持%.2fs；"
+                        "停止控制并退出本次服务。",
+                        distance_error,
+                        docking_position_tolerance_,
+                        yaw_error,
+                        docking_relaxed_yaw_tolerance_,
+                        docking_relaxed_hold_time_);
+                    return true;
+                }
+            } else {
+                relaxed_hold_active = false;
             }
 
             const ros::Time now = ros::Time::now();
@@ -1027,9 +1097,12 @@ private:
 
             ROS_INFO_THROTTLE(
                 0.5,
-                "纯PP停靠中：当前位置=(%.3f, %.3f, %.1f°)，cmd=(%.3f, %.3f, %.3f)",
+                "纯PP停靠中：当前位置=(%.3f, %.3f, %.1f°)，"
+                "位置误差=%.3fm，方向误差=%.3frad，"
+                "cmd=(%.3f, %.3f, %.3f)",
                 robot_x, robot_y,
                 robot_yaw * 180.0 / 3.14159265358979323846,
+                distance_error, yaw_error,
                 twist_.linear.x,
                 twist_.linear.y,
                 twist_.angular.z);

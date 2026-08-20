@@ -4,6 +4,7 @@
 // 每次巡线服务启动前先向 /initialpose 发布指定AMCL初始位姿；
 // 巡线满足定位触发条件后，不发布零速度，直接无缝切入终点纯PP位姿停靠。
 
+// 2026-08-19：普通丢线前5帧只线性衰减角速度，线速度不改；第6帧固定左转及其余逻辑保持原样。
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <vector>
@@ -103,6 +104,9 @@ private:
     double docking_control_rate_;
     double docking_position_tolerance_;
     double docking_yaw_tolerance_;
+    double docking_relaxed_yaw_tolerance_;   // 防死区：宽松方向完成门槛
+    double docking_relaxed_hold_time_;       // 防死区：宽松门槛连续保持时间
+    double docking_timeout_;                 // 防死区：停靠总超时
     double docking_linear_x_gain_;
     double docking_linear_y_gain_;
     double docking_angular_gain_;
@@ -121,6 +125,7 @@ private:
     bool right_point_start_;               // 右点追踪标志
     bool point_forward_;                  // 右点前进标志
     int trace_failed_count_;              // 追踪失败计数
+    double lost_start_angular_z_;          // 疑似丢线开始前最后一帧PID角速度，用于线性衰减
 
 public:
     // 构造函数：初始化所有组件
@@ -136,6 +141,7 @@ public:
         right_point_start_(false),
         point_forward_(true),
         trace_failed_count_(0),
+        lost_start_angular_z_(0.0),
         integration_(0), 
         pre_error_(0),
         pointx_integration_(0),
@@ -236,6 +242,12 @@ private:
                   docking_position_tolerance_, 0.025);
         nh_.param("/line2_left/docking_yaw_tolerance",
                   docking_yaw_tolerance_, 0.05);
+        nh_.param("/line2_left/docking_relaxed_yaw_tolerance",
+                  docking_relaxed_yaw_tolerance_, 0.08);
+        nh_.param("/line2_left/docking_relaxed_hold_time",
+                  docking_relaxed_hold_time_, 0.50);
+        nh_.param("/line2_left/docking_timeout",
+                  docking_timeout_, 12.0);
         nh_.param("/line2_left/docking_linear_x_gain",
                   docking_linear_x_gain_, 0.80);
         nh_.param("/line2_left/docking_linear_y_gain",
@@ -275,6 +287,11 @@ private:
             std::max(0.001, docking_position_tolerance_);
         docking_yaw_tolerance_ =
             std::max(0.001, docking_yaw_tolerance_);
+        docking_relaxed_yaw_tolerance_ = std::max(
+            docking_yaw_tolerance_, docking_relaxed_yaw_tolerance_);
+        docking_relaxed_hold_time_ =
+            std::max(0.0, docking_relaxed_hold_time_);
+        docking_timeout_ = std::max(1.0, docking_timeout_);
         docking_linear_x_gain_ =
             std::max(0.0, docking_linear_x_gain_);
         docking_linear_y_gain_ =
@@ -467,6 +484,7 @@ private:
         right_point_start_ = false;
         point_forward_ = true;
         trace_failed_count_ = 0;
+        lost_start_angular_z_ = 0.0;
         integration_ = 0.0;
         pre_error_ = 0.0;
         pointx_integration_ = 0.0;
@@ -541,6 +559,7 @@ private:
         right_point_start_ = false;
         point_forward_ = true;
         trace_failed_count_ = 0;
+        lost_start_angular_z_ = 0.0;
         integration_ = 0.0;
         pre_error_ = 0.0;
         pointx_integration_ = 0.0;
@@ -760,7 +779,26 @@ private:
         ros::Rate control_rate(docking_control_rate_);
         ros::Time last_control_time = ros::Time::now();
 
+        // 与国赛版本相同的防死区机制：
+        // 1. 严格位置+方向容差仍然可以立即正常完成；
+        // 2. 位置已到位、方向进入稍宽松容差后，连续保持一段时间也判定完成；
+        // 3. 增加总超时，避免底盘静摩擦/定位抖动导致控制循环永久不退出。
+        const ros::WallTime docking_start_time = ros::WallTime::now();
+        ros::WallTime relaxed_hold_start;
+        bool relaxed_hold_active = false;
+
         while (ros::ok()) {
+            const ros::WallTime wall_now = ros::WallTime::now();
+
+            if ((wall_now - docking_start_time).toSec() > docking_timeout_) {
+                ROS_ERROR(
+                    "纯PP停靠超过%.2fs仍未满足完成条件，"
+                    "已安全停车并退出本次服务，防止控制循环永久卡住。",
+                    docking_timeout_);
+                stopRobot();
+                return false;
+            }
+
             double robot_x = 0.0;
             double robot_y = 0.0;
             double robot_yaw = 0.0;
@@ -778,6 +816,42 @@ private:
                 return true;
             }
 
+            const double distance_error = std::hypot(
+                docking_goal_x_ - robot_x,
+                docking_goal_y_ - robot_y);
+            const double target_yaw =
+                docking_goal_yaw_deg_ * 3.14159265358979323846 / 180.0;
+            const double yaw_error = std::abs(
+                normalizeAngle(target_yaw - robot_yaw));
+
+            const bool within_relaxed_completion =
+                distance_error <= docking_position_tolerance_ &&
+                yaw_error <= docking_relaxed_yaw_tolerance_;
+
+            if (within_relaxed_completion) {
+                if (!relaxed_hold_active) {
+                    relaxed_hold_active = true;
+                    relaxed_hold_start = wall_now;
+                }
+
+                if ((wall_now - relaxed_hold_start).toSec() >=
+                    docking_relaxed_hold_time_) {
+                    stopRobot();
+                    ROS_WARN(
+                        "停靠防卡死完成：位置误差=%.3fm<=%.3fm，"
+                        "方向误差=%.3frad处于宽松门槛%.3frad内并保持%.2fs；"
+                        "停止控制并退出本次服务。",
+                        distance_error,
+                        docking_position_tolerance_,
+                        yaw_error,
+                        docking_relaxed_yaw_tolerance_,
+                        docking_relaxed_hold_time_);
+                    return true;
+                }
+            } else {
+                relaxed_hold_active = false;
+            }
+
             const ros::Time now = ros::Time::now();
             double dt = (now - last_control_time).toSec();
             last_control_time = now;
@@ -787,9 +861,11 @@ private:
             ROS_INFO_THROTTLE(
                 0.5,
                 "纯PP停靠中：当前位置=(%.3f, %.3f, %.1f°)，"
+                "位置误差=%.3fm，方向误差=%.3frad，"
                 "cmd=(%.3f, %.3f, %.3f)",
                 robot_x, robot_y,
                 robot_yaw * 180.0 / 3.14159265358979323846,
+                distance_error, yaw_error,
                 twist_.linear.x,
                 twist_.linear.y,
                 twist_.angular.z);
@@ -890,6 +966,8 @@ private:
 
         if (trace_edge(gray_img, start_points, racetrack, cropped)) {
             trace_failed_count_ = 0;
+            lost_start_angular_z_ = 0.0;
+        lost_start_angular_z_ = 0.0;
             double line_error =
                 error_calculater(racetrack.points, cropped);
 
@@ -935,6 +1013,54 @@ private:
         } else {
             // 与右巡线完全镜像：左线连续丢失5帧后固定左转。
             trace_failed_count_++;
+
+            // 前5个疑似丢线帧只对角速度做线性衰减。
+            // 线速度保持原代码行为，不在这里修改linear.x/linear.y。
+            //
+            // 第1帧记录丢线前最后一帧PID角速度，然后按剩余比例：
+            //   wz = lost_start_wz * (1 - failed_count / 5)
+            // 第5帧时wz刚好衰减到0；
+            // 第6帧及以后仍执行下面原有固定左转逻辑。
+            if (trace_failed_count_ == 1) {
+                lost_start_angular_z_ = twist_.angular.z;
+            }
+
+            if (trace_failed_count_ <= 5) {
+                const double remaining =
+                    std::max(
+                        0.0,
+                        1.0 -
+                        static_cast<double>(trace_failed_count_) / 5.0
+                    );
+
+                twist_.angular.z =
+                    lost_start_angular_z_ * remaining;
+
+                ROS_INFO(
+                    "左线疑似丢失 %d/5：角速度线性衰减，"
+                    "起始wz=%.3f，当前wz=%.3f",
+                    trace_failed_count_,
+                    lost_start_angular_z_,
+                    twist_.angular.z
+                );
+
+                displayStream_
+                    << "左线疑似丢失 "
+                    << trace_failed_count_
+                    << "/5，角速度线性衰减"
+                    << " start_wz:" << lost_start_angular_z_
+                    << " wz:" << twist_.angular.z;
+
+                putText(
+                    cropped,
+                    displayStream_.str(),
+                    Point(50, 50),
+                    FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    Scalar(0, 255, 255),
+                    1
+                );
+            }
 
             if (trace_failed_count_ > 5) {
                 twist_.linear.x = out_forward_;

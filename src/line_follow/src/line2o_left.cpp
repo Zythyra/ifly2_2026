@@ -1,10 +1,11 @@
-// 版本：第一段反向平移 + 左线巡线 + 三段式避障 + 第三段平移旋转同步最终位姿P控制 V4（2026-08-17）
-// 唯一校验标识：LINE2O_LEFT_THREE_STAGE_SIMULTANEOUS_FINAL_POSE_V4
+// 版本：第一段反向平移 + 左线巡线 + 动态目标YAML直出 V6（2026-08-20）
+// 唯一校验标识：LINE2O_LEFT_FIXED_AVOID_TARGET_YAML_LOG_V6
 // 修改基线：line2o_right V16 + line2_left V4实车参数与左线逻辑。
 // 终点停靠平移全程同步将车头调整至-90°（由现有参数配置）。
 // 每次巡线服务启动前先向 /initialpose 发布指定AMCL初始位姿；
 // 巡线满足定位触发条件后，不发布零速度，直接无缝切入终点纯PP位姿停靠。
 
+// 2026-08-19：普通丢线前5帧只线性衰减角速度，线速度不改；第6帧固定左转及其余逻辑保持原样。
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <vector>
@@ -211,6 +212,11 @@ private:
     double avoid_move_base_heading_target_x_;
     double avoid_move_base_heading_target_y_;
     double avoid_move_base_min_target_x_;
+    // false时保持原挡板几何目标；true时第三段使用YAML绝对map目标位姿。
+    bool avoid_use_fixed_target_;
+    double avoid_fixed_target_x_;
+    double avoid_fixed_target_y_;
+    double avoid_fixed_target_yaw_deg_;
     double avoid_move_base_timeout_;
     double avoid_recenter_y_kp_;
     double avoid_recenter_min_y_speed_;
@@ -239,6 +245,7 @@ private:
     bool right_point_start_;              // 右点追踪标志
     bool point_forward_;                  // 右点前进标志
     int trace_failed_count_;              // 追踪失败计数
+    double lost_start_angular_z_;          // 疑似丢线开始前最后一帧PID角速度，用于线性衰减
 
 public:
     // 构造函数：初始化所有组件
@@ -266,7 +273,8 @@ public:
         double_line_(false),
         right_point_start_(false),
         point_forward_(true),
-        trace_failed_count_(0) {
+        trace_failed_count_(0),
+        lost_start_angular_z_(0.0) {
 
         ROS_INFO(
             "启动 line2o_left V3（挡板近区禁止丢线左转 + 原V2其余逻辑不变）");
@@ -438,6 +446,14 @@ private:
                   avoid_move_base_heading_target_y_, 0.25);
         nh_.param("/line2o_left/avoid_move_base_min_target_x",
                   avoid_move_base_min_target_x_, 0.0);
+        nh_.param("/line2o_left/avoid_use_fixed_target",
+                  avoid_use_fixed_target_, false);
+        nh_.param("/line2o_left/avoid_fixed_target_x",
+                  avoid_fixed_target_x_, 0.0);
+        nh_.param("/line2o_left/avoid_fixed_target_y",
+                  avoid_fixed_target_y_, 0.0);
+        nh_.param("/line2o_left/avoid_fixed_target_yaw_deg",
+                  avoid_fixed_target_yaw_deg_, -90.0);
         nh_.param("/line2o_left/avoid_move_base_timeout",
                   avoid_move_base_timeout_, 10.0);
         nh_.param("/line2o_left/avoid_recenter_y_kp",
@@ -648,6 +664,15 @@ private:
         if (!std::isfinite(avoid_move_base_min_target_x_)) {
             avoid_move_base_min_target_x_ = 0.0;
         }
+        if (!std::isfinite(avoid_fixed_target_x_)) {
+            avoid_fixed_target_x_ = 0.0;
+        }
+        if (!std::isfinite(avoid_fixed_target_y_)) {
+            avoid_fixed_target_y_ = 0.0;
+        }
+        if (!std::isfinite(avoid_fixed_target_yaw_deg_)) {
+            avoid_fixed_target_yaw_deg_ = -90.0;
+        }
         avoid_move_base_timeout_ = std::max(0.50, avoid_move_base_timeout_);
         if (std::abs(avoid_recenter_y_kp_) < 1e-6) {
             avoid_recenter_y_kp_ = 0.004;
@@ -704,6 +729,7 @@ private:
             "并沿板平移%.3fm（正值默认向map_x减小方向），"
             "目标航向指向参考点(%.3f, %.3f)，"
             "目标x不得小于%.3fm，MoveBase超时=%.2fs；"
+            "第三段固定目标模式=%s，固定目标=(%.3f, %.3f, %.2f°)；"
             "到达后直接恢复正常巡线。",
             avoid_left_distance_, avoid_left_speed_,
             avoid_move_base_extension_distance_,
@@ -711,7 +737,10 @@ private:
             avoid_move_base_heading_target_x_,
             avoid_move_base_heading_target_y_,
             avoid_move_base_min_target_x_,
-            avoid_move_base_timeout_);
+            avoid_move_base_timeout_,
+            avoid_use_fixed_target_ ? "开启" : "关闭",
+            avoid_fixed_target_x_, avoid_fixed_target_y_,
+            avoid_fixed_target_yaw_deg_);
     }
 
     // 初始化ROS组件（客户端、发布者等）
@@ -873,6 +902,7 @@ private:
         right_point_start_ = false;
         point_forward_ = true;
         trace_failed_count_ = 0;
+        lost_start_angular_z_ = 0.0;
         integration_ = 0.0;
         pre_error_ = 0.0;
         pointx_integration_ = 0.0;
@@ -1000,6 +1030,7 @@ private:
         right_point_start_ = false;
         point_forward_ = true;
         trace_failed_count_ = 0;
+        lost_start_angular_z_ = 0.0;
         integration_ = 0.0;
         pre_error_ = 0.0;
         pointx_integration_ = 0.0;
@@ -2156,6 +2187,7 @@ private:
         integration_ = 0.0;
         pre_error_ = 0.0;
         trace_failed_count_ = 0;
+        lost_start_angular_z_ = 0.0;
         stopRobot();
 
         const ros::WallTime start_time = ros::WallTime::now();
@@ -2201,6 +2233,8 @@ private:
 
             if (trace_edge(gray_img, start_points, racetrack, cropped)) {
                 trace_failed_count_ = 0;
+            lost_start_angular_z_ = 0.0;
+        lost_start_angular_z_ = 0.0;
                 const double line_error =
                     error_calculater(racetrack.points, cropped);
 
@@ -2252,6 +2286,8 @@ private:
                     out_.write(cropped);
                     stopRobot();
                     trace_failed_count_ = 0;
+            lost_start_angular_z_ = 0.0;
+        lost_start_angular_z_ = 0.0;
                     integration_ = 0.0;
                     pre_error_ = 0.0;
                     ROS_WARN(
@@ -2332,19 +2368,48 @@ private:
             return false;
         }
 
-        // 第三段最终目标完全复用原MoveBase的目标计算，不再由MoveBase执行。
+        // 第三段目标选择：默认完全复用原MoveBase目标；固定模式则使用
+        // YAML绝对map位姿。第一、二段路径与锁定朝向不受该开关影响。
         double final_target_x = 0.0;
         double final_target_y = 0.0;
         double final_target_yaw = 0.0;
-        if (!computeLegacyMoveBaseTargetPose(
-                locked_fit,
-                final_target_x, final_target_y, final_target_yaw)) {
-            ROS_ERROR("无法计算原MoveBase最终目标位姿，安全终止三段避障。");
-            stopRobot();
-            avoidance_active_.store(false);
-            avoidance_completed_.store(true);
-            barrier_no_drift_active_.store(false);
-            return false;
+        const char* final_target_source = nullptr;
+        if (avoid_use_fixed_target_) {
+            final_target_x = avoid_fixed_target_x_;
+            final_target_y = avoid_fixed_target_y_;
+            final_target_yaw = normalizeAngle(
+                degToRad(avoid_fixed_target_yaw_deg_));
+            final_target_source = "YAML固定目标";
+            ROS_WARN(
+                "第三段固定目标模式开启：跳过挡板几何终点计算，"
+                "采用YAML绝对map目标=(%.3f, %.3f, %.2f°)。",
+                final_target_x, final_target_y,
+                avoid_fixed_target_yaw_deg_);
+        } else {
+            if (!computeLegacyMoveBaseTargetPose(
+                    locked_fit,
+                    final_target_x, final_target_y, final_target_yaw)) {
+                ROS_ERROR("无法计算原MoveBase最终目标位姿，安全终止三段避障。");
+                stopRobot();
+                avoidance_active_.store(false);
+                avoidance_completed_.store(true);
+                barrier_no_drift_active_.store(false);
+                return false;
+            }
+            final_target_source = "挡板几何动态目标";
+
+            // false标定模式：将本次实际采用的第三段目标直接按YAML格式输出。
+            // 下次只需复制这四行并把开关保持为true，即可固化本次目标。
+            ROS_WARN(
+                "========== 本次动态避障目标【可直接写入line2o_left.yaml】 ==========\n"
+                "avoid_use_fixed_target: true\n"
+                "avoid_fixed_target_x: %.3f\n"
+                "avoid_fixed_target_y: %.3f\n"
+                "avoid_fixed_target_yaw_deg: %.2f\n"
+                "================================================================",
+                final_target_x,
+                final_target_y,
+                final_target_yaw * 180.0 / 3.14159265358979323846);
         }
 
         ROS_WARN(
@@ -2355,12 +2420,13 @@ private:
             locked_fit.normal_x, locked_fit.normal_y,
             locked_fit.center_map_x, locked_fit.center_map_y);
         ROS_WARN(
-            "三段式避障最终目标【与原MoveBase完全相同】："
-            "target=(%.3f, %.3f, %.2f°)；"
+            "三段式避障最终目标："
+            "target=(%.3f, %.3f, %.2f°)，source=%s；"
             "流程=%s %.3fm -> 第二段垂直板前移 %.3fm -> "
             "第三段P控制平移+旋转到最终目标位姿。",
             final_target_x, final_target_y,
             final_target_yaw * 180.0 / 3.14159265358979323846,
+            final_target_source,
             "第一段沿板反向平移", avoid_left_distance_, avoid_forward_distance_);
 
         const bool first_shift_ok = executeAvoidanceSegment(
@@ -2413,6 +2479,7 @@ private:
         integration_ = 0.0;
         pre_error_ = 0.0;
         trace_failed_count_ = 0;
+        lost_start_angular_z_ = 0.0;
         ROS_WARN(
             "第一段沿板反向平移、第二段垂直板前移和第三段最终位姿调整均已完成；挡板检测永久关闭并恢复line2o_left正常巡线。");
         return true;
@@ -2801,6 +2868,8 @@ private:
 
         if (trace_edge(gray_img, start_points, racetrack, cropped)) {
             trace_failed_count_ = 0;
+            lost_start_angular_z_ = 0.0;
+        lost_start_angular_z_ = 0.0;
             double line_error =
                 error_calculater(racetrack.points, cropped);
 
@@ -2846,6 +2915,54 @@ private:
         } else {
             // 与line2_left一致：左线连续丢失5帧后固定左转。
             trace_failed_count_++;
+
+            // 前5个疑似丢线帧只对角速度做线性衰减。
+            // 线速度保持原代码行为，不在这里修改linear.x/linear.y。
+            //
+            // 第1帧记录丢线前最后一帧PID角速度，然后按剩余比例：
+            //   wz = lost_start_wz * (1 - failed_count / 5)
+            // 第5帧时wz刚好衰减到0；
+            // 第6帧及以后仍执行下面原有固定左转逻辑。
+            if (trace_failed_count_ == 1) {
+                lost_start_angular_z_ = twist_.angular.z;
+            }
+
+            if (trace_failed_count_ <= 5) {
+                const double remaining =
+                    std::max(
+                        0.0,
+                        1.0 -
+                        static_cast<double>(trace_failed_count_) / 5.0
+                    );
+
+                twist_.angular.z =
+                    lost_start_angular_z_ * remaining;
+
+                ROS_INFO(
+                    "左线疑似丢失 %d/5：角速度线性衰减，"
+                    "起始wz=%.3f，当前wz=%.3f",
+                    trace_failed_count_,
+                    lost_start_angular_z_,
+                    twist_.angular.z
+                );
+
+                displayStream_
+                    << "左线疑似丢失 "
+                    << trace_failed_count_
+                    << "/5，角速度线性衰减"
+                    << " start_wz:" << lost_start_angular_z_
+                    << " wz:" << twist_.angular.z;
+
+                putText(
+                    cropped,
+                    displayStream_.str(),
+                    Point(50, 50),
+                    FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    Scalar(0, 255, 255),
+                    1
+                );
+            }
 
             if (trace_failed_count_ > 5) {
                 twist_.linear.x = out_forward_;

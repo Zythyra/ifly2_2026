@@ -1,5 +1,9 @@
 <launch>
 
+    <!-- YAML同时包含/traffic_light和/nanodet_detect参数，必须在根命名空间加载。 -->
+    <rosparam command="load"
+              file="$(find line_follow)/config/traffic_light.yaml"/>
+
     <!--
       国赛交通灯节点。
       规则：没有稳定确认绿色箭头之前一律停车；
@@ -15,11 +19,6 @@
     <node pkg="line_follow"
           type="traffic_light"
           name="traffic_light"
-          output="screen">
-
-        <rosparam command="load"
-                  file="$(find line_follow)/config/traffic_light.yaml"/>
-
-    </node>
+          output="screen"/>
 
 </launch>

@@ -1,83 +1,46 @@
-camera_index: 0                 # 摄像头编号，0 对应 /dev/video0
-camera_width: 640               # 图像宽度
-camera_height: 480              # 图像高度
-mirror_image: true              # true：摄像头画面左右镜像翻转后再显示和识别
+# 讯飞2026 YOLOv5红绿灯参数（路线一）
 
-cmd_vel_topic: /cmd_vel         # 小车速度控制话题
-direction_topic: /traffic_light/direction   # 最终方向结果发布话题
+traffic_light:
+  detect_service: /nanodet_detect
 
-# ============================================================
-# 整张图识别
-# ============================================================
-roi_x: 0.0
-roi_y: 0.0
-roi_w: 1.0
-roi_h: 1.0
+  # 模型固定类别：
+  # 0 = LEFT
+  # 1 = RIGHT
+  # 2 = STRAIGHT
+  traffic_switch_command: -10
+  traffic_detect_command: 10
 
-# ============================================================
-# HSV 绿色阈值
-# ============================================================
-green_h_min: 35
-green_h_max: 95
-green_s_min: 120
-green_v_min: 120
+  # 640输入RKNN单帧推理不需要20Hz，先用8Hz稳定运行
+  detect_rate: 8.0
 
-# ============================================================
-# 黑色负形箭头提取
-# ============================================================
-negative_close_kernel: 17
-negative_open_kernel: 3
+  # 连续几帧方向相同才正式启动巡线
+  stable_frames: 3
 
-# ============================================================
-# 过曝白芯过滤
-# ============================================================
-bright_core_v_min: 175
-bright_core_s_max: 150
-negative_component_min_area: 8
+  service_wait_timeout: 8.0
+  camera_warmup: 0.70
+  camera_flush_calls: 3
 
-# ============================================================
-# 红灯检测
-# ============================================================
-red_h1_min: 0
-red_h1_max: 12
-red_h2_min: 168
-red_h2_max: 179
-red_s_min: 160
-red_v_min: 185
-red_min_pixels: 80
+  cmd_vel_topic: /cmd_vel
+  direction_topic: /traffic_light/direction
 
-# ============================================================
-# 全图箭头候选过滤
-# ============================================================
-min_arrow_pixels: 80
-max_arrow_pixels: 1800
+nanodet_detect:
+  # 独立红绿灯测试时建议直接traffic启动，
+  # 不先加载文字框/OCR，启动更快、NPU占用更低。
+  startup_mode: traffic
 
-min_arrow_width: 15
-max_arrow_width: 160
-min_arrow_height: 15
-max_arrow_height: 160
+  traffic_model_path: /home/ucar/ucar_ws_copy/src/ros_nanodet/src/nanodet-0.2.0/workspace/model2026/best_yolov5_640_fp16.rknn
 
-bbox_aspect_min: 0.30
-bbox_aspect_max: 3.20
+  # 最终置信度=objectness*类别概率；14命令使用低阈值
+  traffic_score_threshold: 0.25
+  traffic_low_score_threshold: 0.15
+  traffic_nms_threshold: 0.45
+  traffic_warmup_count: 3
 
-min_arrow_fill_ratio: 0.04
-max_arrow_fill_ratio: 0.70
+  camera_device: /dev/video0
 
-arrow_head_ratio: 1.18
-direction_dominance_ratio: 1.12
-edge_fraction: 0.40
+  # 保持和之前traffic_light.cpp一致的水平镜像
+  flip_horizontal: true
 
-# ============================================================
-# 连续确认帧数
-# stable_frames 只在 YAML 里设置，C++ 不再保存默认帧数。
-# LEFT / STRAIGHT / RIGHT 三个方向全部共用这个值。
-# 省赛当前保持 2 帧；以后需要改，只改这一行。
-# ============================================================
-stable_frames: 2
-
-show_debug: true
-
-# 路线映射固定在 C++：
-# LEFT     -> /line2_left
-# STRAIGHT -> /line_right
-# RIGHT    -> /line2_right
+  # 需要看框时临时打开：
+  enable_debug_image: false
+  enable_debug_video: false

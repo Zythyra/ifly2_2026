@@ -1412,6 +1412,8 @@ void MyPlanner::refreshRuntimeParameters()
 {
     // C5.4不再读取clearance_optimizer/shadow_mode：
     // C5为唯一轨迹优化器，旧巡检脚本即使继续rosparam set shadow_mode也不会旁路C5。
+    bool requested_clearance_optimizer_enabled =
+        clearance_path_optimizer_.enabled();
     bool requested_enable_path_replanning =
         enable_path_replanning_;
     double requested_c2_max_reference_speed =
@@ -1423,6 +1425,9 @@ void MyPlanner::refreshRuntimeParameters()
     double requested_max_vel_x =
         max_vel_x_;
 
+    private_nh_.getParamCached(
+        "clearance_optimizer/enabled",
+        requested_clearance_optimizer_enabled);
     private_nh_.getParamCached(
         "enable_path_replanning",
         requested_enable_path_replanning);
@@ -1532,6 +1537,23 @@ void MyPlanner::refreshRuntimeParameters()
             mpc_max_vx_,
             mpc_max_translational_speed_,
             max_vel_x_);
+    }
+
+    if (requested_clearance_optimizer_enabled
+        != clearance_path_optimizer_.enabled())
+    {
+        clearance_path_optimizer_.setEnabled(
+            requested_clearance_optimizer_enabled);
+
+        // C5状态切换后，旧的失败/重规划确认不能带到新模式。
+        c5_failure_replan_confirm_counter_ = 0;
+        c5_failure_replan_candidate_ = false;
+        c5_failure_replan_reason_.clear();
+
+        ROS_WARN(
+            "运行时 clearance_optimizer/enabled 已真正切换为 %s。",
+            clearance_path_optimizer_.enabled()
+                ? "true" : "false");
     }
 
     if (requested_enable_path_replanning

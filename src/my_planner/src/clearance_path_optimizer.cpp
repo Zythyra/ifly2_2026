@@ -410,6 +410,28 @@ bool ClearancePathOptimizer::enabled() const
     return initialized_ && config_.enabled;
 }
 
+void ClearancePathOptimizer::setEnabled(bool enabled)
+{
+    if (config_.enabled == enabled)
+        return;
+
+    config_.enabled = enabled;
+
+    // 切换时清掉 warm-start / active path 内部状态。
+    // reset() 按当前 C5.4 设计不会发布空 Path，
+    // 所以 RViz 可能仍保留上一条 optimized_path；
+    // 但控制器从本周期开始已经不会再使用它。
+    reset();
+
+    ROS_WARN(
+        "C5.4 clearance_optimizer 运行时已%s；"
+        "%s",
+        config_.enabled ? "开启" : "关闭",
+        config_.enabled
+            ? "后续控制周期重新从当前Reference建立active path。"
+            : "后续控制周期完全旁路C5，直接保留当前raw/Patrol Reference。");
+}
+
 bool ClearancePathOptimizer::buildMapSnapshot(MapSnapshot& map) const
 {
     if (costmap_ == NULL)

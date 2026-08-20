@@ -67,7 +67,7 @@ docking_linear_y_gain: 1.20
 docking_angular_gain: 1.50
 
 # 克服底盘死区的最小非零速度
-docking_min_linear_speed: 0.10
+docking_min_linear_speed: 0.12
 docking_min_angular_speed: 0.010
 
 # 停靠阶段速度上限
@@ -79,3 +79,9 @@ docking_max_vel_theta: 0.90
 docking_acc_lim_x: 2.00
 docking_acc_lim_y: 2.00
 docking_acc_lim_theta: 8.00
+
+
+
+docking_relaxed_yaw_tolerance: 0.08
+docking_relaxed_hold_time: 0.50
+docking_timeout: 5.0

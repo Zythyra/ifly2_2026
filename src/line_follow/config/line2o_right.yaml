@@ -60,7 +60,7 @@ barrier_min_line_length: 0.25
 
 # 进入 barrier_trigger_distance 后，可见板长度会随距离快速缩短。
 # 触发区改用独立近场门槛；仍须同时通过点数、RMS和垂足检查。
-barrier_trigger_zone_min_line_length: 0.005
+barrier_trigger_zone_min_line_length: 0.10
 
 barrier_max_rms_error: 0.025
 
@@ -82,7 +82,7 @@ barrier_slowdown_start_distance: 1.00
 barrier_slowdown_min_speed_ratio: 0.10
 
 # 默认1表示单帧达到阈值立即触发；如雷达噪声较大可改为2，但会增加反应延迟。
-barrier_confirm_scans: 1
+barrier_confirm_scans: 2
 barrier_confirm_max_distance_change: 0.08
 barrier_confirm_max_angle_change_deg: 15.0
 
@@ -210,7 +210,7 @@ docking_relaxed_yaw_tolerance: 0.08
 docking_relaxed_hold_time: 0.50
 
 # 无论定位或底盘发生何种异常，停靠控制最多运行该时长，然后停车退出服务。
-docking_timeout: 12.0
+docking_timeout: 5.0
 
 # 地图系误差转换到 base_link 后的 vx、vy、wz 增益。
 # 停靠平移过程中wz始终根据docking_goal_yaw_deg（当前-90°）同步纠偏。
@@ -219,7 +219,7 @@ docking_linear_y_gain: 1.20
 docking_angular_gain: 4.50
 
 # 克服底盘死区的最小非零速度
-docking_min_linear_speed: 0.10
+docking_min_linear_speed: 0.12
 docking_min_angular_speed: 0.010
 
 # 停靠阶段速度上限
@@ -234,3 +234,9 @@ docking_acc_lim_theta: 8.00
 
 
 barrier_no_drift_distance: 0.60
+
+
+avoid_use_fixed_target: falsse
+avoid_fixed_target_x: 1.800
+avoid_fixed_target_y: 0.450
+avoid_fixed_target_yaw_deg: -131.61

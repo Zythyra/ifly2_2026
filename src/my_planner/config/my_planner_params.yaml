@@ -208,7 +208,7 @@ initial_max_angular_speed: 1.40
 
 # 距离目标小于0.50m时立即退出MPC，恢复C3.2独立XYZ比例控制。
 goal_dist_threshold: 0.50
-goal_position_tolerance: 0.025
+goal_position_tolerance: 0.01
 goal_yaw_tolerance: 0.05
 
 final_linear_x_gain: 2.40

@@ -1,116 +1,46 @@
-camera_index: 0                 # 摄像头编号，0 对应 /dev/video0
-camera_width: 640               # 图像宽度
-camera_height: 480              # 图像高度
-mirror_image: true              # true：摄像头画面左右镜像翻转后再显示和识别
+# 讯飞2026 YOLOv5红绿灯参数（路线二）
 
-cmd_vel_topic: /cmd_vel         # 小车速度控制话题
-direction_topic: /traffic_light2/direction   # 最终方向结果发布话题
+traffic_light2:
+  detect_service: /nanodet_detect
 
-# ============================================================
-# 整张图识别
-# ============================================================
-roi_x: 0.0
-roi_y: 0.0
-roi_w: 1.0
-roi_h: 1.0
+  # 模型固定类别：
+  # 0 = LEFT
+  # 1 = RIGHT
+  # 2 = STRAIGHT
+  traffic_switch_command: -10
+  traffic_detect_command: 10
 
-# ============================================================
-# HSV 绿色阈值
-# 保持当前已经验证成功的箭头识别参数，不改
-# ============================================================
-green_h_min: 35
-green_h_max: 95
-green_s_min: 120
-green_v_min: 120
+  # 640输入RKNN单帧推理不需要20Hz，先用8Hz稳定运行
+  detect_rate: 8.0
 
-# ============================================================
-# 黑色负形箭头提取
-# ============================================================
-negative_close_kernel: 17
-negative_open_kernel: 3
+  # 连续几帧方向相同才正式启动巡线
+  stable_frames: 3
 
-# ============================================================
-# 过曝白芯过滤
-# ============================================================
-bright_core_v_min: 175
-bright_core_s_max: 150
+  service_wait_timeout: 8.0
+  camera_warmup: 0.70
+  camera_flush_calls: 3
 
-negative_component_min_area: 8
+  cmd_vel_topic: /cmd_vel
+  direction_topic: /traffic_light/direction
 
-# ============================================================
-# 红灯检测
-#
-# 红灯识别用于终端提示。
-# 控制层本身更加保守：只要绿箭头没有正式稳定确认，
-# 无论红灯、黄灯、无灯还是 UNKNOWN，都会持续发布 0 速度停车。
-# ============================================================
-red_h1_min: 0
-red_h1_max: 12
-red_h2_min: 168
-red_h2_max: 179
-red_s_min: 160
-red_v_min: 185
-red_min_pixels: 80
+nanodet_detect:
+  # 独立红绿灯测试时建议直接traffic启动，
+  # 不先加载文字框/OCR，启动更快、NPU占用更低。
+  startup_mode: traffic
 
-# ============================================================
-# 全图箭头候选过滤
-# ============================================================
-min_arrow_pixels: 80
-max_arrow_pixels: 1800
+  traffic_model_path: /home/ucar/ucar_ws_copy/src/ros_nanodet/src/nanodet-0.2.0/workspace/model2026/best_yolov5_640_fp16.rknn
 
-min_arrow_width: 15
-max_arrow_width: 160
-min_arrow_height: 15
-max_arrow_height: 160
+  # 最终置信度=objectness*类别概率；14命令使用低阈值
+  traffic_score_threshold: 0.25
+  traffic_low_score_threshold: 0.15
+  traffic_nms_threshold: 0.45
+  traffic_warmup_count: 3
 
-bbox_aspect_min: 0.30
-bbox_aspect_max: 3.20
+  camera_device: /dev/video0
 
-min_arrow_fill_ratio: 0.04
-max_arrow_fill_ratio: 0.70
+  # 保持和之前traffic_light.cpp一致的水平镜像
+  flip_horizontal: true
 
-arrow_head_ratio: 1.18
-direction_dominance_ratio: 1.12
-edge_fraction: 0.40
-
-# 连续 2 帧同一绿色箭头方向才正式调用巡线服务
-stable_frames: 2                # 唯一生效位置：LEFT/STRAIGHT/RIGHT 全部连续2帧即立刻进入巡线
-
-show_debug: false              # 正式比赛关闭调试窗口，减少图像显示开销
-
-# ============================================================
-# 注意
-#
-# 这里不再配置 left_command / straight_command / right_command。
-# 路线映射直接固定在 C++：
-#
-# LEFT     -> /line2_left
-# STRAIGHT -> /line_right
-# RIGHT    -> /line2_right
-# ============================================================
-
-# ============================================================
-# 国赛快速响应说明
-#
-# 1. 只有有效绿色箭头能触发起步。
-# 2. RED / YELLOW / NONE / UNKNOWN / 未稳定确认 -> 全部保持停车。
-# 3. 连续2帧相同绿色箭头后立刻锁定方向并调用巡线服务。
-# 4. 一旦开始调用巡线服务，traffic_light2 不再识别后续灯色。
-# 5. traffic_light2.cpp 中已把摄像头 CAP_PROP_BUFFERSIZE 固定为 1。
-# ============================================================
-
-# ============================================================
-# stable_frames 使用规则
-#
-# stable_frames 只在本 YAML 中设置。
-# C++ 不再保存 2/3/5 的默认帧数。
-#
-# 当前：
-#   LEFT     连续 2 帧 -> /line2_left
-#   STRAIGHT 连续 2 帧 -> /line_right
-#   RIGHT    连续 2 帧 -> /line2_right
-#
-# 以后若要改成 3 帧，只改：
-#   stable_frames: 3
-# C++ 不需要修改。
-# ============================================================
+  # 需要看框时临时打开：
+  enable_debug_image: false
+  enable_debug_video: false

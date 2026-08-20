@@ -70,6 +70,10 @@ public:
     void reset();
     bool enabled() const;
 
+    // 运行时开关。用于比赛流程中临时完全旁路 C5。
+    // 状态变化时自动 reset，避免重新开启后复用旧 active path。
+    void setEnabled(bool enabled);
+
     bool optimize(
         const std::vector<geometry_msgs::PoseStamped>& plan_costmap,
         const geometry_msgs::PoseStamped& robot_pose_costmap,

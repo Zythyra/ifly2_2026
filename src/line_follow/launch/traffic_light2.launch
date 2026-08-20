@@ -1,13 +1,12 @@
 <launch>
 
+    <!-- YAML同时包含/traffic_light2和/nanodet_detect参数，必须在根命名空间加载。 -->
+    <rosparam command="load"
+              file="$(find line_follow)/config/traffic_light2.yaml"/>
+
     <node pkg="line_follow"
           type="traffic_light2"
           name="traffic_light2"
-          output="screen">
-
-        <rosparam command="load"
-                  file="$(find line_follow)/config/traffic_light2.yaml"/>
-
-    </node>
+          output="screen"/>
 
 </launch>

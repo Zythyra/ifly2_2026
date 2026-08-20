@@ -89,7 +89,7 @@ docking_linear_y_gain: 1.20
 docking_angular_gain: 1.50
 
 # 克服底盘死区的最小非零速度
-docking_min_linear_speed: 0.10
+docking_min_linear_speed: 0.12
 docking_min_angular_speed: 0.010
 
 # 停靠阶段速度上限
@@ -152,3 +152,8 @@ drift_recover_confirm_frames: 2
 # 默认不横移、不转向，避免沿用上一帧高速/PID角速度。
 lost_confirm_linear_y: 0.0
 lost_confirm_angular_z: 0.0
+
+
+docking_relaxed_yaw_tolerance: 0.08
+docking_relaxed_hold_time: 0.50
+docking_timeout: 5.0

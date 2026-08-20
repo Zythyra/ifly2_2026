@@ -24,6 +24,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation  # 生成自定义消息头文件[7](@ref)
   dynamic_reconfigure
   ros_nanodet
+  line_follow
 )
 
 find_package(OpenCV REQUIRED COMPONENTS
@@ -181,6 +182,7 @@ add_executable(nav_test src/nav_test.cpp)
 add_executable(qr_client_test_node src/qr_client_test.cpp)
 add_executable(wakeup_test_node src/wakeup_test.cpp)
 add_executable(race src/race.cpp )
+add_executable(race_2 src/race_2.cpp )
 add_executable(test_detect src/test_detect.cpp src/turn_detect.cpp)
 add_executable(test_find_approach_node src/test_find_approach.cpp src/turn_detect.cpp)
 
@@ -203,6 +205,8 @@ add_dependencies(qr_client_test_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catki
 #强制要求等本包的 message/service 生成完毕后再编译它
 add_dependencies(wakeup_test_node ${PROJECT_NAME}_generate_messages_cpp)
 add_dependencies(race ${PROJECT_NAME}_generate_messages_cpp)
+add_dependencies(race_2 ${PROJECT_NAME}_generate_messages_cpp)
+
 
 ## Specify libraries to link a library or executable target against
 
@@ -236,7 +240,18 @@ target_link_libraries(wakeup_test_node
   ${catkin_LIBRARIES}
 )
 
-target_link_libraries(race ${catkin_LIBRARIES} curl)
+target_link_libraries(race
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  curl
+)
+
+target_link_libraries(race_2
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  curl
+)
+
 
 
 target_link_libraries(test_detect
@@ -372,4 +387,19 @@ add_dependencies(target_scan_competition
 
 target_link_libraries(target_scan_competition
   ${catkin_LIBRARIES}
+)
+
+
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  geometry_msgs
+  nav_msgs
+)
+add_executable(trafficlight_image_collector
+  src/trafficlight_image_collector.cpp
+)
+
+target_link_libraries(trafficlight_image_collector
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )

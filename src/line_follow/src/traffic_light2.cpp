@@ -1,15 +1,40 @@
+/*
+ * 讯飞2026 YOLOv5红绿灯方向识别（避障路线）
+ *
+ * 模型类别：
+ *   0 -> 左转
+ *   1 -> 右转
+ *   2 -> 直行
+ *
+ * 工作流程：
+ *   1. 调用 /nanodet_detect，command=-10，切换detect2026到红绿灯模型
+ *   2. command=-1 打开 /dev/video0
+ *   3. command=-3 清理缓存
+ *   4. 循环 command=10 做YOLOv5三分类RKNN检测
+ *   5. 连续 stable_frames 帧方向一致后确认
+ *   6. 释放摄像头
+ *   7. 调用对应巡线服务：
+ *        class 0 LEFT     -> /line2o_left
+ *        class 1 RIGHT    -> /line2o_right
+ *        class 2 STRAIGHT -> /lineo_right
+ *
+ * 注意：
+ *   - 红灯不作为单独类别。没有检测到有效的0/1/2时始终停车。
+ *   - C++不再直接打开摄像头，摄像头统一由detect2026.py管理。
+ *   - detect2026交通模型返回结果已按置信度从高到低排序，
+ *     因此若同一帧存在多个候选，本节点优先使用第一个有效检测。
+ */
+
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
 #include <std_msgs/String.h>
-#include "line_follow/line_follow.h"
 
-#include <opencv2/opencv.hpp>
+#include "line_follow/line_follow.h"
+#include "ros_nanodet/detect_result_srv.h"
 
 #include <algorithm>
-#include <cmath>
-#include <cstdio>
+#include <locale.h>
 #include <string>
-#include <vector>
 
 class TrafficLightRecognizer
 {
@@ -27,22 +52,13 @@ public:
         : nh_(),
           pnh_("~"),
           route_started_(false),
-          stable_frames_(0),
+          camera_opened_(false),
+          traffic_mode_ready_(false),
           stable_count_(0),
           last_direction_(DIR_NONE)
     {
         // =========================
-        // 摄像头
-        // =========================
-        pnh_.param("camera_index", camera_index_, 0);
-        pnh_.param("camera_width", camera_width_, 640);
-        pnh_.param("camera_height", camera_height_, 480);
-
-        // 摄像头画面左右镜像翻转
-        pnh_.param("mirror_image", mirror_image_, true);
-
-        // =========================
-        // ROS
+        // ROS参数
         // =========================
         pnh_.param<std::string>(
             "cmd_vel_topic",
@@ -52,261 +68,237 @@ public:
         pnh_.param<std::string>(
             "direction_topic",
             direction_topic_,
-            std::string("/traffic_light2/direction"));
+            std::string("/traffic_light/direction"));
 
-        // =========================
-        // 全图识别
-        //
-        // 默认 0,0,1,1 = 整张 640x480。
-        // 不依赖红绿灯固定位置。
-        // =========================
-        pnh_.param("roi_x", roi_x_, 0.0);
-        pnh_.param("roi_y", roi_y_, 0.0);
-        pnh_.param("roi_w", roi_w_, 1.0);
-        pnh_.param("roi_h", roi_h_, 1.0);
+        pnh_.param<std::string>(
+            "detect_service",
+            detect_service_name_,
+            std::string("/nanodet_detect"));
 
-        // =========================
-        // HSV 绿色
-        // =========================
-        pnh_.param("green_h_min", green_h_min_, 35);
-        pnh_.param("green_h_max", green_h_max_, 95);
-        pnh_.param("green_s_min", green_s_min_, 120);
-        pnh_.param("green_v_min", green_v_min_, 120);
+        pnh_.param(
+            "detect_rate",
+            detect_rate_,
+            8.0);
 
-        // 负形箭头提取参数：
-        // 实测中 LED 箭头中心因为过曝，在 green_mask 里反而是黑色，
-        // 周围绿色光晕是白色。
-        // 所以不再做“更严格的绿色 core”，改成：
-        // 先对 green_mask 做闭运算得到绿色支撑区域，
-        // 再用 support - green_mask 提取其中的黑色负形箭头。
-        pnh_.param("negative_close_kernel", negative_close_kernel_, 17);
+        pnh_.param(
+            "service_wait_timeout",
+            service_wait_timeout_,
+            8.0);
 
-        // 对负形箭头做一次轻微开运算，去掉小碎点
-        pnh_.param("negative_open_kernel", negative_open_kernel_, 3);
+        pnh_.param(
+            "camera_warmup",
+            camera_warmup_,
+            0.70);
 
-        // 真实箭头中心存在过曝泛白：
-        // V 很高、S 较低。负形候选必须同时满足“高亮白芯”，
-        // 这样可以排除绿色椅子内部的暗孔、阴影等黑色负形。
-        pnh_.param("bright_core_v_min", bright_core_v_min_, 175);
-        pnh_.param("bright_core_s_max", bright_core_s_max_, 150);
+        pnh_.param(
+            "camera_flush_calls",
+            camera_flush_calls_,
+            3);
 
-        // 最终 arrow_mask 中面积小于该值的白色连通域直接删除，
-        // 主要清掉环境反光造成的零散白点。
-        pnh_.param("negative_component_min_area",
-                   negative_component_min_area_, 8);
+        pnh_.param(
+            "stable_frames",
+            stable_frames_,
+            3);
 
-        // 红灯仅作为“停车状态提示”检测。
-        // 真正运动许可仍然只有一个条件：
-        // 连续 stable_frames 帧确认 LEFT/STRAIGHT/RIGHT。
-        // 这样即使场地存在红色胶带，也不会因为红色检测误差阻塞绿灯。
-        pnh_.param("red_h1_min", red_h1_min_, 0);
-        pnh_.param("red_h1_max", red_h1_max_, 12);
-        pnh_.param("red_h2_min", red_h2_min_, 168);
-        pnh_.param("red_h2_max", red_h2_max_, 179);
-        pnh_.param("red_s_min", red_s_min_, 160);
-        pnh_.param("red_v_min", red_v_min_, 185);
-        pnh_.param("red_min_pixels", red_min_pixels_, 80);
+        // 正常交通灯检测命令。
+        // detect2026.py中：
+        //   10 -> traffic normal threshold
+        //   14 -> traffic low threshold
+        pnh_.param(
+            "traffic_detect_command",
+            traffic_detect_command_,
+            10);
 
-        // =========================
-        // 整块箭头候选过滤
-        // =========================
-        pnh_.param("min_arrow_pixels", min_arrow_pixels_, 40);
-        pnh_.param("max_arrow_pixels", max_arrow_pixels_, 2200);
+        // 独立测试阶段默认正常阈值。
+        // 若后续现场目标较远，可临时改成14测试较低阈值。
+        pnh_.param(
+            "traffic_switch_command",
+            traffic_switch_command_,
+            -10);
 
-        pnh_.param("min_arrow_width", min_arrow_width_, 10);
-        pnh_.param("max_arrow_width", max_arrow_width_, 160);
-        pnh_.param("min_arrow_height", min_arrow_height_, 10);
-        pnh_.param("max_arrow_height", max_arrow_height_, 160);
-
-        pnh_.param("bbox_aspect_min", bbox_aspect_min_, 0.30);
-        pnh_.param("bbox_aspect_max", bbox_aspect_max_, 3.20);
-
-        // 原始绿色像素在候选框中的占比。
-        // 箭头是稀疏点阵/发光块，不应像绿色椅子那样大面积实心。
-        pnh_.param("min_arrow_fill_ratio", min_arrow_fill_ratio_, 0.04);
-        pnh_.param("max_arrow_fill_ratio", max_arrow_fill_ratio_, 0.55);
-
-        // 把 1.8m 距离下断裂的箭头小块临时连起来，仅用于“找候选框”。
-        // 真正判断方向仍使用原始绿色 mask，不使用膨胀后的形状。
-        pnh_.param("close_kernel", close_kernel_, 11);
-
-        // 箭头方向
-        pnh_.param("arrow_head_ratio", arrow_head_ratio_, 1.18);
-
-        // 最佳方向必须明显优于第二名。
-        // 例如 RIGHT=2.67、UP=2.50 这种非常接近的情况直接判 UNKNOWN，
-        // 防止环境噪点被硬猜成某个方向。
-        pnh_.param("direction_dominance_ratio",
-                   direction_dominance_ratio_, 1.12);
-
-        pnh_.param("edge_fraction", edge_fraction_, 0.40);
-
-        // 连续确认帧数：只从 YAML 读取。
-        // 不在 C++ 中再写 2/3/5 的默认值，避免两个地方同时改造成混乱。
-        if (!pnh_.getParam("stable_frames", stable_frames_))
+        if (detect_rate_ < 1.0)
         {
-            ROS_FATAL("Missing required parameter: ~stable_frames");
-            ros::shutdown();
-            return;
+            ROS_WARN(
+                "detect_rate=%.2f过低，自动修正为1.0Hz",
+                detect_rate_);
+            detect_rate_ = 1.0;
         }
 
         if (stable_frames_ < 1)
         {
-            ROS_FATAL("Invalid ~stable_frames=%d, must be >= 1", stable_frames_);
-            ros::shutdown();
-            return;
+            ROS_WARN(
+                "stable_frames=%d非法，自动修正为1",
+                stable_frames_);
+            stable_frames_ = 1;
         }
 
-        // 调试开关由 YAML 控制。
-        pnh_.param("show_debug", show_debug_, false);
+        camera_flush_calls_ =
+            std::max(
+                0,
+                camera_flush_calls_);
 
+        // =========================
+        // ROS发布/服务客户端
+        // =========================
         cmd_pub_ =
-            nh_.advertise<geometry_msgs::Twist>(cmd_vel_topic_, 1);
+            nh_.advertise<geometry_msgs::Twist>(
+                cmd_vel_topic_,
+                1);
 
         direction_pub_ =
-            nh_.advertise<std_msgs::String>(direction_topic_, 1, true);
+            nh_.advertise<std_msgs::String>(
+                direction_topic_,
+                1,
+                true);
 
-        // =========================
-        // 巡线服务客户端
-        //
-        // 三个巡线节点应当提前启动并等待服务调用：
-        // LEFT     -> /line2_left
-        // STRAIGHT -> /line_right
-        // RIGHT    -> /line2_right
-        //
-        // 注意：这里直接调用 ROS service，不再通过 YAML 写 rosrun 命令。
-        // =========================
+        detect_client_ =
+            nh_.serviceClient<ros_nanodet::detect_result_srv>(
+                detect_service_name_);
+
         left_client_ =
-            nh_.serviceClient<line_follow::line_follow>("/line2o_left");
+            nh_.serviceClient<line_follow::line_follow>(
+                "/line2o_left");
 
         straight_client_ =
-            nh_.serviceClient<line_follow::line_follow>("/lineo_right");
+            nh_.serviceClient<line_follow::line_follow>(
+                "/lineo_right");
 
         right_client_ =
-            nh_.serviceClient<line_follow::line_follow>("/line2o_right");
-
-        if (!cap_.open(camera_index_, cv::CAP_V4L2))
-        {
-            ROS_FATAL("Cannot open /dev/video%d", camera_index_);
-            ros::shutdown();
-            return;
-        }
-
-        cap_.set(cv::CAP_PROP_FRAME_WIDTH, camera_width_);
-        cap_.set(cv::CAP_PROP_FRAME_HEIGHT, camera_height_);
-
-        // 国赛快速响应：只保留极少相机缓存，尽量处理最新画面，
-        // 避免红灯旧帧排队导致绿灯已经亮起但程序还在处理旧图像。
-        cap_.set(cv::CAP_PROP_BUFFERSIZE, 1);
-
-        // 注意：摄像头“打开之前”实际上无法清它的内部队列，
-        // 因为此时设备还没有建立采集缓冲。
-        // 正确做法是：open() 成功后、正式识别开始前，立刻丢弃若干旧帧。
-        ROS_INFO("Flushing camera startup buffer...");
-        flushCameraBuffer(8);
+            nh_.serviceClient<line_follow::line_follow>(
+                "/line2o_right");
 
         ROS_INFO(
-            "traffic_light_fullframe started: /dev/video%d, %dx%d",
-            camera_index_,
-            camera_width_,
-            camera_height_);
-
-        ROS_INFO("traffic_light2: full-frame green-arrow detection + direct route-service dispatch enabled.");
+            "YOLOv5红绿灯节点启动："
+            "模型映射 0=左转，1=右转，2=直行；"
+            "检测服务=%s，稳定帧=%d，检测频率=%.1fHz",
+            detect_service_name_.c_str(),
+            stable_frames_,
+            detect_rate_);
     }
 
     ~TrafficLightRecognizer()
     {
-        if (cap_.isOpened())
-            cap_.release();
+        publishStop();
+        releaseCamera();
+    }
 
-        if (show_debug_)
-            cv::destroyAllWindows();
+    bool initialize()
+    {
+        publishStop();
+
+        ROS_INFO(
+            "等待RKNN检测服务：%s",
+            detect_service_name_.c_str());
+
+        if (!detect_client_.waitForExistence(
+                ros::Duration(
+                    service_wait_timeout_)))
+        {
+            ROS_ERROR(
+                "检测服务%s在%.1fs内未出现",
+                detect_service_name_.c_str(),
+                service_wait_timeout_);
+            return false;
+        }
+
+        if (!switchToTrafficModel())
+        {
+            return false;
+        }
+
+        if (!openCamera())
+        {
+            return false;
+        }
+
+        ROS_INFO(
+            "红绿灯摄像头预热%.2fs",
+            camera_warmup_);
+
+        ros::WallDuration(
+            std::max(
+                0.0,
+                camera_warmup_))
+            .sleep();
+
+        for (int i = 0;
+             i < camera_flush_calls_;
+             ++i)
+        {
+            if (!flushCamera())
+            {
+                ROS_WARN(
+                    "第%d/%d次清理摄像头缓存失败，继续测试",
+                    i + 1,
+                    camera_flush_calls_);
+            }
+        }
+
+        ROS_INFO(
+            "红绿灯RKNN识别初始化完成，开始等待稳定方向");
+
+        return true;
     }
 
     void run()
     {
-        ros::Rate rate(30);
+        ros::WallRate rate(
+            detect_rate_);
 
-        while (ros::ok() && !route_started_)
+        while (
+            ros::ok() &&
+            !route_started_)
         {
+            // 在方向正式确认前，小车必须持续停车。
             publishStop();
 
-            cv::Mat frame;
+            Direction direction =
+                DIR_NONE;
 
-            // 每轮识别都先主动向前“吃掉”摄像头队列中的旧帧，
-            // 再 retrieve 最后一帧，避免实际已经黄灯时还在处理旧绿灯画面。
-            if (!readLatestFrame(frame))
+            cvBoxInfo box;
+            int detection_count = 0;
+
+            const bool detect_ok =
+                detectTrafficDirection(
+                    direction,
+                    box,
+                    detection_count);
+
+            if (!detect_ok)
             {
-                ROS_WARN_THROTTLE(1.0, "Camera latest-frame read failed");
+                resetStable();
                 ros::spinOnce();
                 rate.sleep();
                 continue;
             }
 
-            // 左右镜像翻转后再进行显示和识别
-            if (mirror_image_)
-            {
-                cv::flip(frame, frame, 1);
-            }
-
-            const cv::Rect roi_rect = makeROI(frame);
-            cv::Mat roi = frame(roi_rect).clone();
-
-            cv::Mat raw_green_mask;
-            cv::Mat arrow_negative_mask;
-            cv::Rect arrow_box;
-
-            int arrow_pixels = 0;
-            double fill_ratio = 0.0;
-            double left_score = 0.0;
-            double right_score = 0.0;
-            double up_score = 0.0;
-
-            Direction direction =
-                recognizeArrow(
-                    roi,
-                    raw_green_mask,
-                    arrow_negative_mask,
-                    arrow_box,
-                    arrow_pixels,
-                    fill_ratio,
-                    left_score,
-                    right_score,
-                    up_score);
-
-            // 国赛控制规则：在绿箭头方向正式确认之前始终停车。
-            // 红灯、黄灯、无灯、UNKNOWN、方向未稳定都不会触发巡线。
-            // 一旦绿箭头稳定确认并开始调用巡线服务，就不再识别后续灯色。
-            // 当前帧没有有效绿箭头时，额外检测高亮红灯并在终端提示。
-            if (direction == DIR_NONE ||
+            if (
+                direction == DIR_NONE ||
                 direction == DIR_UNKNOWN)
             {
-                if (detectRedLight(roi))
-                {
-                    ROS_WARN_THROTTLE(
-                        0.5,
-                        "RED LIGHT DETECTED -> HOLD STOP");
-                }
+                ROS_INFO_THROTTLE(
+                    0.5,
+                    "红绿灯：当前帧未发现有效绿箭头 -> 保持停车");
+
+                resetStable();
             }
-
-            updateStableResult(direction);
-
-            if (show_debug_)
+            else
             {
-                drawDebug(
-                    roi,
-                    arrow_box,
-                    direction,
-                    arrow_pixels,
-                    fill_ratio,
-                    left_score,
-                    right_score,
-                    up_score);
+                ROS_INFO_THROTTLE(
+                    0.3,
+                    "红绿灯检测：direction=%s，"
+                    "box=(%d,%d)-(%d,%d)，"
+                    "本帧候选数=%d",
+                    directionName(
+                        direction).c_str(),
+                    box.x0,
+                    box.y0,
+                    box.x1,
+                    box.y1,
+                    detection_count);
 
-                cv::imshow("traffic_light_debug", roi);
-                cv::imshow("traffic_light_green_mask", raw_green_mask);
-                cv::imshow("traffic_light_arrow_mask", arrow_negative_mask);
-                cv::waitKey(1);
+                updateStableResult(
+                    direction);
             }
 
             ros::spinOnce();
@@ -315,69 +307,13 @@ public:
     }
 
 private:
-    // ============================================================
-    // 摄像头低延迟读取
-    // ============================================================
-
-    // 丢弃指定数量的帧，只用于清理摄像头/驱动层已经排队的旧图像。
-    // open() 以后才能执行，因为只有设备打开后 V4L2 才真正建立采集队列。
-    void flushCameraBuffer(int frame_count)
+    struct cvBoxInfo
     {
-        if (!cap_.isOpened())
-            return;
-
-        for (int i = 0; i < frame_count; ++i)
-        {
-            if (!cap_.grab())
-            {
-                ROS_WARN("Camera buffer flush stopped at frame %d", i);
-                break;
-            }
-        }
-    }
-
-    // 每次正式识别前都丢弃几帧，只取更接近“当前时刻”的画面。
-    // 这样即使底层 V4L2 没完全遵守 CAP_PROP_BUFFERSIZE=1，
-    // 也不会让识别程序一直消费几秒前排队的旧帧。
-    bool readLatestFrame(cv::Mat &frame)
-    {
-        if (!cap_.isOpened())
-            return false;
-
-        // 先丢弃 4 帧。
-        // 若摄像头本身约 30 FPS，理论额外等待约 0.13 秒；
-        // 但如果存在积压，这几次 grab() 通常会快速吃掉旧帧。
-        const int discard_count = 4;
-
-        for (int i = 0; i < discard_count; ++i)
-        {
-            if (!cap_.grab())
-                return false;
-        }
-
-        // retrieve() 取最后一次 grab() 对应的最新帧。
-        if (!cap_.retrieve(frame))
-            return false;
-
-        return !frame.empty();
-    }
-
-    std::string directionName(Direction d) const
-    {
-        switch (d)
-        {
-        case DIR_LEFT:
-            return "LEFT";
-        case DIR_STRAIGHT:
-            return "STRAIGHT";
-        case DIR_RIGHT:
-            return "RIGHT";
-        case DIR_UNKNOWN:
-            return "UNKNOWN";
-        default:
-            return "WAIT";
-        }
-    }
+        int x0 = -1;
+        int y0 = -1;
+        int x1 = -1;
+        int y1 = -1;
+    };
 
     void publishStop()
     {
@@ -385,797 +321,423 @@ private:
         cmd_pub_.publish(stop);
     }
 
-    cv::Rect makeROI(const cv::Mat &frame) const
+    std::string directionName(
+        Direction direction) const
     {
-        int x = static_cast<int>(roi_x_ * frame.cols);
-        int y = static_cast<int>(roi_y_ * frame.rows);
-        int w = static_cast<int>(roi_w_ * frame.cols);
-        int h = static_cast<int>(roi_h_ * frame.rows);
-
-        x = std::max(0, std::min(x, frame.cols - 1));
-        y = std::max(0, std::min(y, frame.rows - 1));
-        w = std::max(1, std::min(w, frame.cols - x));
-        h = std::max(1, std::min(h, frame.rows - y));
-
-        return cv::Rect(x, y, w, h);
-    }
-
-    double spanYInBand(
-        const cv::Mat &mask,
-        int x0,
-        int x1) const
-    {
-        x0 = std::max(0, x0);
-        x1 = std::min(mask.cols, x1);
-
-        int min_y = mask.rows;
-        int max_y = -1;
-
-        for (int y = 0; y < mask.rows; ++y)
+        switch (direction)
         {
-            for (int x = x0; x < x1; ++x)
-            {
-                if (mask.at<unsigned char>(y, x) > 0)
-                {
-                    min_y = std::min(min_y, y);
-                    max_y = std::max(max_y, y);
-                }
-            }
+        case DIR_LEFT:
+            return "LEFT";
+
+        case DIR_RIGHT:
+            return "RIGHT";
+
+        case DIR_STRAIGHT:
+            return "STRAIGHT";
+
+        case DIR_UNKNOWN:
+            return "UNKNOWN";
+
+        default:
+            return "WAIT";
         }
-
-        if (max_y < 0)
-            return 0.0;
-
-        return static_cast<double>(max_y - min_y + 1);
     }
 
-    double spanXInBand(
-        const cv::Mat &mask,
-        int y0,
-        int y1) const
+    Direction classIdToDirection(
+        int class_id) const
     {
-        y0 = std::max(0, y0);
-        y1 = std::min(mask.rows, y1);
-
-        int min_x = mask.cols;
-        int max_x = -1;
-
-        for (int y = y0; y < y1; ++y)
+        // YOLOv5模型固定映射：
+        // 0 左转，1 右转，2 直行。
+        switch (class_id)
         {
-            for (int x = 0; x < mask.cols; ++x)
-            {
-                if (mask.at<unsigned char>(y, x) > 0)
-                {
-                    min_x = std::min(min_x, x);
-                    max_x = std::max(max_x, x);
-                }
-            }
-        }
+        case 0:
+            return DIR_LEFT;
 
-        if (max_x < 0)
-            return 0.0;
+        case 1:
+            return DIR_RIGHT;
 
-        return static_cast<double>(max_x - min_x + 1);
-    }
+        case 2:
+            return DIR_STRAIGHT;
 
-    void calculateDirectionScores(
-        const cv::Mat &arrow_mask,
-        double &left_score,
-        double &right_score,
-        double &up_score) const
-    {
-        const int edge_w =
-            std::max(
-                1,
-                static_cast<int>(
-                    arrow_mask.cols * edge_fraction_));
-
-        const int edge_h =
-            std::max(
-                1,
-                static_cast<int>(
-                    arrow_mask.rows * edge_fraction_));
-
-        const double left_span =
-            spanYInBand(
-                arrow_mask,
-                0,
-                edge_w);
-
-        const double right_span =
-            spanYInBand(
-                arrow_mask,
-                arrow_mask.cols - edge_w,
-                arrow_mask.cols);
-
-        const double top_span =
-            spanXInBand(
-                arrow_mask,
-                0,
-                edge_h);
-
-        const double bottom_span =
-            spanXInBand(
-                arrow_mask,
-                arrow_mask.rows - edge_h,
-                arrow_mask.rows);
-
-        const double eps = 1.0;
-
-        left_score =
-            left_span /
-            std::max(eps, right_span);
-
-        right_score =
-            right_span /
-            std::max(eps, left_span);
-
-        up_score =
-            top_span /
-            std::max(eps, bottom_span);
-    }
-
-    Direction scoreToDirection(
-        double left_score,
-        double right_score,
-        double up_score,
-        double &best_score) const
-    {
-        double scores[3] =
-        {
-            left_score,
-            right_score,
-            up_score
-        };
-
-        Direction directions[3] =
-        {
-            DIR_LEFT,
-            DIR_RIGHT,
-            DIR_STRAIGHT
-        };
-
-        int best_index = 0;
-
-        if (scores[1] > scores[best_index])
-            best_index = 1;
-
-        if (scores[2] > scores[best_index])
-            best_index = 2;
-
-        best_score = scores[best_index];
-
-        if (best_score < arrow_head_ratio_)
-            return DIR_UNKNOWN;
-
-        // 找第二高分
-        double second_best = 0.0;
-
-        for (int i = 0; i < 3; ++i)
-        {
-            if (i == best_index)
-                continue;
-
-            second_best =
-                std::max(
-                    second_best,
-                    scores[i]);
-        }
-
-        // 最佳方向与第二名太接近时，宁可 UNKNOWN，也不猜方向。
-        const double dominance =
-            best_score /
-            std::max(0.01, second_best);
-
-        if (dominance <
-            direction_dominance_ratio_)
-        {
+        default:
             return DIR_UNKNOWN;
         }
-
-        return directions[best_index];
     }
 
-    bool detectRedLight(const cv::Mat &bgr) const
+    bool callDetectorCommand(
+        int command,
+        ros_nanodet::detect_result_srv &srv)
     {
-        cv::Mat hsv;
+        srv.request.detect_start =
+            command;
 
-        cv::cvtColor(
-            bgr,
-            hsv,
-            cv::COLOR_BGR2HSV);
+        if (!detect_client_.call(srv))
+        {
+            ROS_ERROR_THROTTLE(
+                1.0,
+                "调用%s失败，command=%d",
+                detect_service_name_.c_str(),
+                command);
+            return false;
+        }
 
-        cv::Mat red1;
-        cv::Mat red2;
-        cv::Mat red_mask;
-
-        cv::inRange(
-            hsv,
-            cv::Scalar(
-                red_h1_min_,
-                red_s_min_,
-                red_v_min_),
-            cv::Scalar(
-                red_h1_max_,
-                255,
-                255),
-            red1);
-
-        cv::inRange(
-            hsv,
-            cv::Scalar(
-                red_h2_min_,
-                red_s_min_,
-                red_v_min_),
-            cv::Scalar(
-                red_h2_max_,
-                255,
-                255),
-            red2);
-
-        cv::bitwise_or(
-            red1,
-            red2,
-            red_mask);
-
-        cv::Mat kernel =
-            cv::getStructuringElement(
-                cv::MORPH_ELLIPSE,
-                cv::Size(3, 3));
-
-        cv::morphologyEx(
-            red_mask,
-            red_mask,
-            cv::MORPH_OPEN,
-            kernel);
-
-        // 这里故意只做“强红色像素数量”提示。
-        // 不拿它作为绿灯的硬否决条件，避免纸箱红胶带造成误阻塞。
-        const int red_pixels =
-            cv::countNonZero(red_mask);
-
-        return red_pixels >= red_min_pixels_;
+        return true;
     }
 
-    Direction recognizeArrow(
-        const cv::Mat &bgr,
-        cv::Mat &raw_green_mask,
-        cv::Mat &arrow_negative_mask,
-        cv::Rect &arrow_box,
-        int &arrow_pixels,
-        double &fill_ratio,
-        double &left_score,
-        double &right_score,
-        double &up_score)
+    bool switchToTrafficModel()
     {
-        // ------------------------------------------------------------
-        // 1. 全图 HSV 绿色提取
-        // ------------------------------------------------------------
-        cv::Mat hsv;
+        ros_nanodet::detect_result_srv srv;
 
-        cv::cvtColor(
-            bgr,
-            hsv,
-            cv::COLOR_BGR2HSV);
+        ROS_WARN(
+            "请求detect2026切换到红绿灯三分类RKNN模型...");
 
-        cv::inRange(
-            hsv,
-            cv::Scalar(
-                green_h_min_,
-                green_s_min_,
-                green_v_min_),
-            cv::Scalar(
-                green_h_max_,
-                255,
-                255),
-            raw_green_mask);
-
-        // 去除极小噪点
-        cv::Mat open_kernel =
-            cv::getStructuringElement(
-                cv::MORPH_ELLIPSE,
-                cv::Size(3, 3));
-
-        cv::morphologyEx(
-            raw_green_mask,
-            raw_green_mask,
-            cv::MORPH_OPEN,
-            open_kernel);
-
-        // ------------------------------------------------------------
-        // 2. 从宽松绿色 mask 中提取“黑色负形箭头”
-        //
-        // 真实测试中：
-        //   - 箭头 LED 中心过曝/泛白 -> 不满足绿色阈值 -> 在 green_mask 中是黑色
-        //   - 箭头周围绿色光晕      -> 满足绿色阈值   -> 在 green_mask 中是白色
-        //
-        // 因此先用较大的闭运算把绿色光晕围成“支撑区域”，
-        // 再做：
-        //
-        //   arrow_negative_mask = green_support AND (NOT green_mask)
-        //
-        // 这样会把“被绿色包围或紧邻绿色的黑色箭头负形”提出来。
-        // ------------------------------------------------------------
-        int close_k = negative_close_kernel_;
-
-        if (close_k < 1)
-            close_k = 1;
-
-        if (close_k % 2 == 0)
-            ++close_k;
-
-        cv::Mat support_kernel =
-            cv::getStructuringElement(
-                cv::MORPH_ELLIPSE,
-                cv::Size(close_k, close_k));
-
-        cv::Mat green_support;
-
-        cv::morphologyEx(
-            raw_green_mask,
-            green_support,
-            cv::MORPH_CLOSE,
-            support_kernel);
-
-        cv::Mat not_green;
-
-        cv::bitwise_not(
-            raw_green_mask,
-            not_green);
-
-        cv::Mat bright_core_mask;
-
-        // 过曝 LED 中心通常表现为：
-        //   V 高（很亮）
-        //   S 低到中等（由于泛白，饱和度下降）
-        // H 在这里不再限制。
-        cv::inRange(
-            hsv,
-            cv::Scalar(
-                0,
-                0,
-                bright_core_v_min_),
-            cv::Scalar(
-                179,
-                bright_core_s_max_,
-                255),
-            bright_core_mask);
-
-        cv::bitwise_and(
-            green_support,
-            not_green,
-            arrow_negative_mask);
-
-        // 只保留“绿色支撑附近的过曝白芯”。
-        // 这是本版去除绿色椅子/绿色反光噪点的关键。
-        cv::bitwise_and(
-            arrow_negative_mask,
-            bright_core_mask,
-            arrow_negative_mask);
-
-        // 去掉负形 mask 中极小的碎点
-        int open_k = negative_open_kernel_;
-
-        if (open_k < 1)
-            open_k = 1;
-
-        if (open_k % 2 == 0)
-            ++open_k;
-
-        cv::Mat negative_open_kernel =
-            cv::getStructuringElement(
-                cv::MORPH_ELLIPSE,
-                cv::Size(open_k, open_k));
-
-        cv::morphologyEx(
-            arrow_negative_mask,
-            arrow_negative_mask,
-            cv::MORPH_OPEN,
-            negative_open_kernel);
-
-        // ------------------------------------------------------------
-        // 删除 arrow_mask 中很小的孤立白点
-        // ------------------------------------------------------------
-        if (negative_component_min_area_ > 1)
+        if (!callDetectorCommand(
+                traffic_switch_command_,
+                srv))
         {
-            cv::Mat labels;
-            cv::Mat stats;
-            cv::Mat centroids;
-
-            const int component_count =
-                cv::connectedComponentsWithStats(
-                    arrow_negative_mask,
-                    labels,
-                    stats,
-                    centroids,
-                    8,
-                    CV_32S);
-
-            cv::Mat cleaned =
-                cv::Mat::zeros(
-                    arrow_negative_mask.size(),
-                    CV_8UC1);
-
-            for (int label = 1;
-                 label < component_count;
-                 ++label)
-            {
-                const int area =
-                    stats.at<int>(
-                        label,
-                        cv::CC_STAT_AREA);
-
-                if (area <
-                    negative_component_min_area_)
-                {
-                    continue;
-                }
-
-                cleaned.setTo(
-                    255,
-                    labels == label);
-            }
-
-            arrow_negative_mask =
-                cleaned;
+            return false;
         }
 
-        // ------------------------------------------------------------
-        // 3. 扫描整张图的所有候选，不依赖固定位置
-        // ------------------------------------------------------------
-        std::vector<std::vector<cv::Point> > contours;
-
-        cv::findContours(
-            arrow_negative_mask.clone(),
-            contours,
-            cv::RETR_EXTERNAL,
-            cv::CHAIN_APPROX_SIMPLE);
-
-        bool found = false;
-
-        double best_quality = -1.0;
-        Direction best_direction = DIR_NONE;
-
-        cv::Rect best_box;
-        int best_pixels = 0;
-        double best_fill = 0.0;
-        double best_left = 0.0;
-        double best_right = 0.0;
-        double best_up = 0.0;
-
-        for (size_t i = 0; i < contours.size(); ++i)
+        if (
+            srv.response.class_name.empty() ||
+            srv.response.class_name[0] !=
+                traffic_switch_command_)
         {
-            const cv::Rect box =
-                cv::boundingRect(contours[i]);
+            const int response_code =
+                srv.response.class_name.empty()
+                ? -999
+                : srv.response.class_name[0];
 
-            // 尺寸门：排除很小噪点、大片椅子/地面
-            if (box.width < min_arrow_width_ ||
-                box.width > max_arrow_width_ ||
-                box.height < min_arrow_height_ ||
-                box.height > max_arrow_height_)
-            {
-                continue;
-            }
+            ROS_ERROR(
+                "红绿灯模型切换失败：返回码=%d，"
+                "期望=%d",
+                response_code,
+                traffic_switch_command_);
 
-            const double aspect =
-                static_cast<double>(box.width) /
-                static_cast<double>(
-                    std::max(1, box.height));
-
-            // 排除很细的横线、竖线
-            if (aspect < bbox_aspect_min_ ||
-                aspect > bbox_aspect_max_)
-            {
-                continue;
-            }
-
-            const cv::Mat candidate =
-                arrow_negative_mask(box);
-
-            const int pixels =
-                cv::countNonZero(candidate);
-
-            if (pixels < min_arrow_pixels_ ||
-                pixels > max_arrow_pixels_)
-            {
-                continue;
-            }
-
-            const double fill =
-                static_cast<double>(pixels) /
-                static_cast<double>(
-                    std::max(1, box.width * box.height));
-
-            // 这里分析的是“黑色负形箭头”反相后的白色区域。
-            // 过小/过满的候选都排除。
-            if (fill < min_arrow_fill_ratio_ ||
-                fill > max_arrow_fill_ratio_)
-            {
-                continue;
-            }
-
-            // 直接对负形箭头候选算 LEFT / RIGHT / UP 几何结构。
-            double l = 0.0;
-            double r = 0.0;
-            double u = 0.0;
-
-            calculateDirectionScores(
-                candidate,
-                l,
-                r,
-                u);
-
-            double direction_score = 0.0;
-
-            const Direction direction =
-                scoreToDirection(
-                    l,
-                    r,
-                    u,
-                    direction_score);
-
-            if (direction == DIR_UNKNOWN)
-                continue;
-
-            // 候选评分：
-            // 方向特征越明显越好；
-            // 像素足够但不是实心大块越好。
-            const double sparsity_bonus =
-                1.0 -
-                std::min(
-                    1.0,
-                    std::fabs(fill - 0.22));
-
-            const double quality =
-                direction_score *
-                std::sqrt(
-                    static_cast<double>(pixels)) *
-                sparsity_bonus;
-
-            if (quality > best_quality)
-            {
-                best_quality = quality;
-                best_direction = direction;
-                best_box = box;
-                best_pixels = pixels;
-                best_fill = fill;
-                best_left = l;
-                best_right = r;
-                best_up = u;
-                found = true;
-            }
+            return false;
         }
 
-        if (!found)
-        {
-            arrow_box = cv::Rect();
-            arrow_pixels = 0;
-            fill_ratio = 0.0;
-            left_score = 0.0;
-            right_score = 0.0;
-            up_score = 0.0;
+        traffic_mode_ready_ =
+            true;
 
-            ROS_INFO_THROTTLE(
-                0.5,
-                "WAIT: no valid negative-arrow candidate");
+        ROS_INFO(
+            "红绿灯三分类RKNN模型已就绪");
 
-            return DIR_NONE;
-        }
-
-        arrow_box = best_box;
-        arrow_pixels = best_pixels;
-        fill_ratio = best_fill;
-        left_score = best_left;
-        right_score = best_right;
-        up_score = best_up;
-
-        ROS_INFO_THROTTLE(
-            0.3,
-            "ARROW box=(%d,%d,%d,%d) pix=%d fill=%.2f | "
-            "LEFT=%.2f RIGHT=%.2f UP=%.2f",
-            best_box.x,
-            best_box.y,
-            best_box.width,
-            best_box.height,
-            best_pixels,
-            best_fill,
-            best_left,
-            best_right,
-            best_up);
-
-        return best_direction;
+        return true;
     }
 
-    void updateStableResult(Direction direction)
+    bool openCamera()
     {
-        if (direction == DIR_NONE ||
-            direction == DIR_UNKNOWN)
+        ros_nanodet::detect_result_srv srv;
+
+        if (!callDetectorCommand(
+                -1,
+                srv))
         {
-            stable_count_ = 0;
-            last_direction_ = direction;
+            return false;
+        }
+
+        camera_opened_ = true;
+
+        ROS_INFO(
+            "detect2026摄像头已打开");
+
+        return true;
+    }
+
+    bool flushCamera()
+    {
+        if (!camera_opened_)
+        {
+            return false;
+        }
+
+        ros_nanodet::detect_result_srv srv;
+
+        return callDetectorCommand(
+            -3,
+            srv);
+    }
+
+    void releaseCamera()
+    {
+        if (!camera_opened_)
+        {
             return;
         }
 
-        if (direction == last_direction_)
+        // 析构/切控制权阶段不要因为一次服务异常反复报错。
+        ros_nanodet::detect_result_srv srv;
+        srv.request.detect_start = -2;
+
+        if (detect_client_.exists())
+        {
+            if (detect_client_.call(srv))
+            {
+                ROS_INFO(
+                    "红绿灯阶段已释放detect2026摄像头");
+            }
+            else
+            {
+                ROS_WARN(
+                    "释放detect2026摄像头服务调用失败");
+            }
+        }
+
+        camera_opened_ = false;
+    }
+
+    bool detectTrafficDirection(
+        Direction &direction,
+        cvBoxInfo &best_box,
+        int &detection_count)
+    {
+        direction =
+            DIR_NONE;
+
+        best_box =
+            cvBoxInfo();
+
+        detection_count = 0;
+
+        if (
+            !traffic_mode_ready_ ||
+            !camera_opened_)
+        {
+            ROS_ERROR_THROTTLE(
+                1.0,
+                "红绿灯RKNN尚未初始化完成");
+            return false;
+        }
+
+        ros_nanodet::detect_result_srv srv;
+
+        if (!callDetectorCommand(
+                traffic_detect_command_,
+                srv))
+        {
+            return false;
+        }
+
+        const size_t count =
+            std::min(
+                srv.response.class_name.size(),
+                std::min(
+                    srv.response.x0.size(),
+                    std::min(
+                        srv.response.y0.size(),
+                        std::min(
+                            srv.response.x1.size(),
+                            srv.response.y1.size()))));
+
+        detection_count =
+            static_cast<int>(count);
+
+        if (count == 0)
+        {
+            return true;
+        }
+
+        // Python端保证按照置信度从高到低返回。
+        // 找到第一个合法0/1/2类别即可。
+        for (size_t i = 0;
+             i < count;
+             ++i)
+        {
+            const int class_id =
+                srv.response.class_name[i];
+
+            const Direction candidate =
+                classIdToDirection(
+                    class_id);
+
+            if (
+                candidate == DIR_UNKNOWN ||
+                candidate == DIR_NONE)
+            {
+                ROS_WARN(
+                    "忽略未知红绿灯类别ID=%d",
+                    class_id);
+                continue;
+            }
+
+            direction =
+                candidate;
+
+            best_box.x0 =
+                srv.response.x0[i];
+
+            best_box.y0 =
+                srv.response.y0[i];
+
+            best_box.x1 =
+                srv.response.x1[i];
+
+            best_box.y1 =
+                srv.response.y1[i];
+
+            return true;
+        }
+
+        direction =
+            DIR_UNKNOWN;
+
+        return true;
+    }
+
+    void resetStable()
+    {
+        stable_count_ = 0;
+        last_direction_ = DIR_NONE;
+    }
+
+    void updateStableResult(
+        Direction direction)
+    {
+        if (
+            direction == DIR_NONE ||
+            direction == DIR_UNKNOWN)
+        {
+            resetStable();
+            return;
+        }
+
+        if (
+            direction ==
+            last_direction_)
         {
             ++stable_count_;
         }
         else
         {
-            last_direction_ = direction;
+            last_direction_ =
+                direction;
+
             stable_count_ = 1;
         }
 
-        ROS_INFO_THROTTLE(
-            0.3,
-            "candidate=%s stable=%d/%d",
-            directionName(direction).c_str(),
+        ROS_INFO(
+            "红绿灯候选=%s，稳定=%d/%d",
+            directionName(
+                direction).c_str(),
             stable_count_,
             stable_frames_);
 
-        if (stable_count_ < stable_frames_)
+        if (
+            stable_count_ <
+            stable_frames_)
+        {
             return;
+        }
 
         std_msgs::String result;
-        result.data = directionName(direction);
+        result.data =
+            directionName(
+                direction);
 
-        direction_pub_.publish(result);
+        direction_pub_.publish(
+            result);
 
         ROS_WARN(
-            "GREEN ARROW CONFIRMED -> CALL ROUTE NOW: %s",
+            "红绿灯方向确认：%s",
             result.data.c_str());
 
-        callRouteService(direction);
+        callRouteService(
+            direction);
     }
 
-    void callRouteService(Direction direction)
+    void callRouteService(
+        Direction direction)
     {
-        ros::ServiceClient *client = nullptr;
-        const char *service_name = nullptr;
+        ros::ServiceClient *client =
+            nullptr;
+
+        const char *service_name =
+            nullptr;
 
         if (direction == DIR_LEFT)
         {
-            client = &left_client_;
-            service_name = "/line2o_left";
+            client =
+                &left_client_;
+
+            service_name =
+                "/line2o_left";
         }
-        else if (direction == DIR_STRAIGHT)
+        else if (
+            direction == DIR_RIGHT)
         {
-            client = &straight_client_;
-            service_name = "/lineo_right";
+            client =
+                &right_client_;
+
+            service_name =
+                "/line2o_right";
         }
-        else if (direction == DIR_RIGHT)
+        else if (
+            direction == DIR_STRAIGHT)
         {
-            client = &right_client_;
-            service_name = "/line2o_right";
+            client =
+                &straight_client_;
+
+            service_name =
+                "/lineo_right";
         }
         else
         {
             return;
         }
 
-        // 先确认服务存在。
-        // 三个巡线服务节点应提前启动；这里只负责在绿箭头确认后调用。
-        // 三个巡线服务端应当在比赛启动流程中提前进入待命状态。
-        // 这里直接检查，不再为不存在的服务额外等待 1 秒。
-        if (!client->exists())
+        // 先检查巡线服务存在。
+        // 服务不存在时继续停车和红绿灯识别，
+        // 不提前释放摄像头。
+        if (!client->waitForExistence(
+                ros::Duration(1.0)))
         {
             ROS_ERROR(
-                "Route service %s is not available -> HOLD STOP",
+                "巡线服务%s不存在 -> 保持停车并继续识别",
                 service_name);
 
-            stable_count_ = 0;
-            last_direction_ = DIR_NONE;
+            resetStable();
             publishStop();
             return;
         }
 
-        // 从这一刻开始，方向已经在绿灯阶段正式确认。
-        // 立即锁定巡线模式，不再继续识别后续红/黄/绿灯。
+        // 到这里方向已经正式锁定。
         route_started_ = true;
 
-        // 切换控制权前最后发布一次停车，避免旧速度残留。
         publishStop();
 
-        // traffic_light 当前占用 /dev/video0。
-        // 巡线服务回调也会打开 /dev/video0，所以必须先释放摄像头。
-        if (cap_.isOpened())
-        {
-            cap_.release();
-            ROS_INFO("Released /dev/video%d before route service", camera_index_);
-        }
+        // 巡线程序也要使用/dev/video0，
+        // 所以必须先让detect2026释放摄像头。
+        releaseCamera();
 
-        if (show_debug_)
-        {
-            cv::destroyAllWindows();
-        }
-
-        // 给 V4L2 很短的释放时间，然后立刻调用巡线服务。
-        ros::Duration(0.05).sleep();
+        ros::WallDuration(
+            0.05)
+            .sleep();
 
         ROS_WARN(
-            "Calling route service: %s",
+            "红绿灯方向=%s，调用巡线服务：%s",
+            directionName(
+                direction).c_str(),
             service_name);
 
         line_follow::line_follow srv;
 
-        // 巡线服务回调会持续执行完整巡线流程。
-        // 本调用是同步调用；在服务执行期间，本节点不会再做红绿灯识别，
-        // 也不会再向 /cmd_vel 发布停车指令。
         if (!client->call(srv))
         {
             ROS_ERROR(
-                "Failed to call route service %s",
+                "调用巡线服务%s失败",
                 service_name);
 
-            // 此时摄像头已经释放，最安全的处理是停车并结束本节点，
-            // 避免在未知状态下重新抢占摄像头。
             publishStop();
             ros::shutdown();
             return;
         }
 
         ROS_INFO(
-            "Route service %s returned",
+            "巡线服务%s执行结束",
             service_name);
 
         ros::shutdown();
-    }
-
-    void drawDebug(
-        cv::Mat &image,
-        const cv::Rect &box,
-        Direction direction,
-        int pixels,
-        double fill_ratio,
-        double left_score,
-        double right_score,
-        double up_score)
-    {
-        if (box.area() > 0)
-        {
-            cv::rectangle(
-                image,
-                box,
-                cv::Scalar(0, 255, 255),
-                2);
-        }
-
-        char line1[160];
-        char line2[160];
-
-        std::snprintf(
-            line1,
-            sizeof(line1),
-            "DIR=%s PIX=%d FILL=%.2f",
-            directionName(direction).c_str(),
-            pixels,
-            fill_ratio);
-
-        std::snprintf(
-            line2,
-            sizeof(line2),
-            "L=%.2f R=%.2f UP=%.2f",
-            left_score,
-            right_score,
-            up_score);
-
-        cv::putText(
-            image,
-            line1,
-            cv::Point(10, 25),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.58,
-            cv::Scalar(0, 255, 255),
-            2);
-
-        cv::putText(
-            image,
-            line2,
-            cv::Point(10, 50),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.55,
-            cv::Scalar(0, 255, 255),
-            2);
     }
 
 private:
@@ -1185,82 +747,55 @@ private:
     ros::Publisher cmd_pub_;
     ros::Publisher direction_pub_;
 
-    cv::VideoCapture cap_;
-
-    int camera_index_;
-    int camera_width_;
-    int camera_height_;
-    bool mirror_image_;
-
-    std::string cmd_vel_topic_;
-    std::string direction_topic_;
-
-    double roi_x_;
-    double roi_y_;
-    double roi_w_;
-    double roi_h_;
-
-    int green_h_min_;
-    int green_h_max_;
-    int green_s_min_;
-    int green_v_min_;
-
-    int negative_close_kernel_;
-    int negative_open_kernel_;
-
-    int bright_core_v_min_;
-    int bright_core_s_max_;
-    int negative_component_min_area_;
-
-    int red_h1_min_;
-    int red_h1_max_;
-    int red_h2_min_;
-    int red_h2_max_;
-    int red_s_min_;
-    int red_v_min_;
-    int red_min_pixels_;
-
-    int min_arrow_pixels_;
-    int max_arrow_pixels_;
-
-    int min_arrow_width_;
-    int max_arrow_width_;
-    int min_arrow_height_;
-    int max_arrow_height_;
-
-    double bbox_aspect_min_;
-    double bbox_aspect_max_;
-
-    double min_arrow_fill_ratio_;
-    double max_arrow_fill_ratio_;
-
-    int close_kernel_;
-
-    double arrow_head_ratio_;
-    double direction_dominance_ratio_;
-    double edge_fraction_;
-
-    int stable_frames_;
-    bool show_debug_;
-
+    ros::ServiceClient detect_client_;
     ros::ServiceClient left_client_;
     ros::ServiceClient straight_client_;
     ros::ServiceClient right_client_;
 
+    std::string cmd_vel_topic_;
+    std::string direction_topic_;
+    std::string detect_service_name_;
+
+    double detect_rate_;
+    double service_wait_timeout_;
+    double camera_warmup_;
+
+    int camera_flush_calls_;
+    int stable_frames_;
+    int traffic_detect_command_;
+    int traffic_switch_command_;
+
     bool route_started_;
+    bool camera_opened_;
+    bool traffic_mode_ready_;
+
     int stable_count_;
     Direction last_direction_;
 };
 
-int main(int argc, char **argv)
+int main(
+    int argc,
+    char **argv)
 {
-    ros::init(argc, argv, "traffic_light2");
+    setlocale(
+        LC_ALL,
+        "");
+
+    ros::init(
+        argc,
+        argv,
+        "traffic_light");
 
     TrafficLightRecognizer node;
 
-    if (!ros::ok())
+    if (!node.initialize())
+    {
+        ROS_FATAL(
+            "红绿灯RKNN节点初始化失败");
         return 1;
+    }
 
     node.run();
+
     return 0;
 }

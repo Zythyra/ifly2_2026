@@ -1,0 +1,89 @@
+<launch>
+    <!-- ==================== 仿真-实车通信 ==================== -->
+    <!--
+      car_comm_bridge 作为 TCP Client：
+      - 订阅 /detected_target
+      - 通过 mDNS 连接仿真电脑
+      - 接收仿真 RESULT
+      - 发布 /car_task_finished
+    -->
+    <!--
+      仿真电脑地址：
+      正常使用 mDNS：gazebo-pc.local
+      如果 mDNS 异常，把下面 sim_host 的 default 直接改成 192.168.31.105 即可。
+      备用固定 IP 同时记录在 sim_host_backup_ip 中，方便现场直接查看。
+    -->
+    <arg name="sim_host" default="gazebo-pc.local"/>
+    <arg name="sim_host_backup_ip" default="192.168.31.105"/>
+
+    <arg name="comm_port" default="5000"/>
+    <arg name="ack_timeout" default="0.5"/>
+    <arg name="reconnect_interval" default="1.0"/>
+
+    <!-- 比赛参数：必须先于 lidar_process 和 race 加载 -->
+    <rosparam command="load"
+              file="$(find ucarmain2026)/cfg/detect.yaml"
+              ns="myplanernav" />
+
+    <include file="$(find ucarmain2026)/launch/tts_preload.launch" />
+    <!--
+      小车通信桥放在比赛总控之前启动。
+      即使仿真端尚未启动，也会按 reconnect_interval 自动持续重连。
+    -->
+    <node pkg="ucarmain2026"
+          type="car_comm_bridge"
+          name="car_comm_bridge"
+          output="screen">
+        <param name="server_host" value="$(arg sim_host)"/>
+        <param name="server_port" value="$(arg comm_port)"/>
+        <param name="ack_timeout" value="$(arg ack_timeout)"/>
+        <param name="reconnect_interval" value="$(arg reconnect_interval)"/>
+    </node>
+
+    <!-- 比赛基础服务 -->
+
+    <node pkg="ucarmain2026" type="lidar_process" name="lidar_process" output="screen" />
+    <node pkg="ucarmain2026" type="simple_move_control" name="simple_move_control" output="screen" />
+
+    <!-- ================================================================ -->
+    <!-- 【视觉依赖】NanoDet / OCR / 红绿灯三分类检测                       -->
+    <!-- detect2026 负责统一持有 /dev/video0，并由 race 通过服务命令切换模式。 -->
+    <!-- ================================================================ -->
+    <include file="$(find ros_nanodet)/launch/detect2026.launch" />
+
+    <!-- ================================================================ -->
+    <!-- 【巡线依赖】普通巡线 + 带挡板避障巡线                              -->
+    <!-- line_dependence.launch 负责启动最终红绿灯阶段可能调用的巡线服务。     -->
+    <!-- ================================================================ -->
+    <include file="$(find line_follow)/launch/line_dependence.launch" />
+
+    <!-- ================================================================ -->
+    <!-- 【二维码依赖】二维码服务                                           -->
+    <!-- race 按需通过服务命令打开/关闭二维码摄像头。                        -->
+    <!-- ================================================================ -->
+    <node pkg="qr_01"
+          type="qr_server_node"
+          name="qr_server_node"
+          output="screen" />
+
+    <!-- 语音、语义理解和物品分类 -->
+    <include file="$(find speech_command)/launch/speech_command.launch"/>
+
+    <node pkg="ucarmain2026"
+          type="spark_semantic_server.py"
+          name="spark_semantic_server_node"
+          output="screen" />
+
+    <node pkg="ucarmain2026"
+          type="spark_classifier_server.py"
+          name="spark_classifier_server_node"
+          output="screen" />
+
+    <!-- ================================================================ -->
+    <!-- 【比赛总控】主程序不在本依赖 launch 中启动                            -->
+    <!-- 依赖全部就绪后，另开终端启动：                                        -->
+    <!--   roslaunch ucarmain2026 race_2.launch                            -->
+    <!-- 这样 race 参数可以独立修改，不需要反复改 competition*.launch。         -->
+    <!-- ================================================================ -->
+
+</launch>

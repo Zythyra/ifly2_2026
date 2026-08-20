@@ -1,28 +1,64 @@
 <launch>
   <!-- 比赛测速时保持为false；需要RViz/测试窗口画面时再打开。 -->
-  <arg name="enable_debug_image" default="true" />
+  <arg name="enable_debug_image" default="false" />
   <!-- 开启后会进行XVID编码并写入磁盘，会增加每次服务调用耗时。 -->
-  <arg name="enable_debug_video" default="true" />
+  <arg name="enable_debug_video" default="false" />
+
+  <!-- 使用OpenCV imshow显示实时摄像头画面；比赛默认关闭。 -->
+  <arg name="show_live_window" default="false" />
+
+  <!--
+    detect2026.py 支持两种启动模式：
+      text    ：先加载文字框 + OCR，完整比赛默认使用；
+      traffic ：直接加载YOLOv5红绿灯模型，适合单独测试。
+    单独测试红绿灯时可：
+      roslaunch ros_nanodet detect2026.launch startup_mode:=traffic
+  -->
+  <arg name="startup_mode" default="text" />
 
   <node pkg="ros_nanodet"
         type="detect2026.py"
         name="nanodet_detect"
         output="screen">
+    <!-- 巡检文字框模型 -->
     <param name="model_path"
            value="/home/ucar/ucar_ws_copy/src/ros_nanodet/src/nanodet-0.2.0/workspace/model2026/target_textbox_fp16.rknn" />
+
+    <!-- YOLOv5红绿灯三分类模型：640输入；0=左转，1=右转，2=直行 -->
+    <param name="traffic_model_path"
+           value="/home/ucar/ucar_ws_copy/src/traffic_light_yolov5/models/best_yolov5_640_fp16.rknn" />
+
     <param name="ocr_model_path"
            value="/home/ucar/ucar_ws_copy/src/ros_nanodet/ocr/rknn_model_zoo/examples/PPOCR/PPOCR-Rec/model/ppocrv4_rec_fp16.rknn" />
     <param name="ocr_dict_path"
            value="/home/ucar/ucar_ws_copy/src/ros_nanodet/ocr/rknn_model_zoo/examples/PPOCR/PPOCR-Rec/model/ppocr_keys_v1.txt" />
     <param name="camera_device" value="/dev/video0" />
+    <!-- 文字框模型参数 -->
     <param name="score_threshold" value="0.50" />
     <param name="low_score_threshold" value="0.45" />
     <param name="nms_threshold" value="0.60" />
+
+    <!-- YOLOv5红绿灯参数：最终分数=objectness*类别概率 -->
+    <param name="traffic_score_threshold" value="0.25" />
+    <param name="traffic_low_score_threshold" value="0.15" />
+    <param name="traffic_nms_threshold" value="0.45" />
+
     <param name="flip_horizontal" value="true" />
+
+    <!-- 模型预热 -->
     <param name="warmup_count" value="3" />
+    <param name="traffic_warmup_count" value="3" />
     <param name="ocr_warmup_count" value="1" />
+
+    <!-- 完整比赛默认text；单独红绿灯测试可 startup_mode:=traffic -->
+    <param name="startup_mode" value="$(arg startup_mode)" />
     <param name="enable_debug_image" value="$(arg enable_debug_image)" />
     <param name="enable_debug_video" value="$(arg enable_debug_video)" />
+
+    <!-- OpenCV实时窗口 -->
+    <param name="show_live_window" value="$(arg show_live_window)" />
+    <param name="live_window_name" value="traffic_light_live" />
+
     <param name="debug_video_fps" value="3.0" />
     <param name="debug_video_path"
            value="/home/ucar/ucar_ws_copy/src/ucarmain2026/nanodet_debug/nanodet_textbox.avi" />
