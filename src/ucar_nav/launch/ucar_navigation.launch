@@ -5,8 +5,8 @@
   <include file="$(find ucar_controller)/launch/base_driver.launch" > </include>
   
   <include file="$(find ydlidar)/launch/ydlidar.launch" > </include>
-  <arg name="map_file" default="$(find ucar_map)/maps/map2026.yaml"/>
-  <!-- <arg name="map_file" default="$(find ucar_map)/maps/map2026_2.yaml"/> -->
+  <!-- <arg name="map_file" default="$(find ucar_map)/maps/map2026.yaml"/> -->
+  <arg name="map_file" default="$(find ucar_map)/maps/map2026_2.yaml"/>
   
   <!-- 起点坐标 -->
   <arg name="initial_pose_x" default="2.25"/>

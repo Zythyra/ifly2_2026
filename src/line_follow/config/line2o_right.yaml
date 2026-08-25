@@ -106,7 +106,7 @@ avoid_move_base_extension_distance: 0.26
 # 在法向延伸结果上，再沿平行挡板的方向移动该距离。
 # 正值默认向map_x增大的方向移动；负值向相反方向移动。
 # 默认0.0表示暂不施加额外沿板偏移。
-avoid_move_base_parallel_shift_distance: 0.01
+avoid_move_base_parallel_shift_distance: 0.05
 
 # 避障MoveBase终点的车头航向指向该map坐标点。
 # yaw = atan2(heading_target_y - 最终避障点y,
@@ -236,7 +236,7 @@ docking_acc_lim_theta: 8.00
 barrier_no_drift_distance: 0.60
 
 
-avoid_use_fixed_target: falsse
+avoid_use_fixed_target: false
 avoid_fixed_target_x: 1.800
 avoid_fixed_target_y: 0.450
 avoid_fixed_target_yaw_deg: -131.61

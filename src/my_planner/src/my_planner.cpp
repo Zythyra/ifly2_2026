@@ -1424,6 +1424,8 @@ void MyPlanner::refreshRuntimeParameters()
         mpc_max_translational_speed_;
     double requested_max_vel_x =
         max_vel_x_;
+    double requested_goal_dist_threshold =
+        goal_dist_threshold_;
 
     private_nh_.getParamCached(
         "clearance_optimizer/enabled",
@@ -1443,6 +1445,9 @@ void MyPlanner::refreshRuntimeParameters()
     private_nh_.getParamCached(
         "max_vel_x",
         requested_max_vel_x);
+    private_nh_.getParamCached(
+        "goal_dist_threshold",
+        requested_goal_dist_threshold);
 
     if (!std::isfinite(
             requested_c2_max_reference_speed))
@@ -1472,10 +1477,24 @@ void MyPlanner::refreshRuntimeParameters()
             max_vel_x_;
     }
 
+    if (!std::isfinite(
+            requested_goal_dist_threshold))
+    {
+        requested_goal_dist_threshold =
+            goal_dist_threshold_;
+    }
+
     const double new_max_vel_x =
         std::max(
             0.05,
             requested_max_vel_x);
+
+    // 允许总控在进入找板区前通过参数服务器动态缩放最终姿态
+    // 调整的接管距离；下限不得小于最终位置到达容差。
+    const double new_goal_dist_threshold =
+        std::max(
+            goal_position_tolerance_,
+            requested_goal_dist_threshold);
 
     const double new_c2_max_reference_speed =
         clampValue(
@@ -1516,6 +1535,11 @@ void MyPlanner::refreshRuntimeParameters()
             new_max_vel_x
             - max_vel_x_) > 1.0e-9;
 
+    const bool goal_dist_threshold_changed =
+        std::abs(
+            new_goal_dist_threshold
+            - goal_dist_threshold_) > 1.0e-9;
+
     c2_max_reference_speed_ =
         new_c2_max_reference_speed;
     mpc_max_vx_ =
@@ -1524,6 +1548,8 @@ void MyPlanner::refreshRuntimeParameters()
         new_mpc_max_translational_speed;
     max_vel_x_ =
         new_max_vel_x;
+    goal_dist_threshold_ =
+        new_goal_dist_threshold;
 
     if (speed_changed)
     {
@@ -1537,6 +1563,14 @@ void MyPlanner::refreshRuntimeParameters()
             mpc_max_vx_,
             mpc_max_translational_speed_,
             max_vel_x_);
+    }
+
+    if (goal_dist_threshold_changed)
+    {
+        ROS_WARN(
+            "运行时终点姿态调整进入距离已更新："
+            "goal_dist_threshold=%.3fm。",
+            goal_dist_threshold_);
     }
 
     if (requested_clearance_optimizer_enabled

@@ -238,7 +238,7 @@ barrier_no_drift_distance: 0.60
 
 
 
-avoid_use_fixed_target: true
+avoid_use_fixed_target: false
 avoid_fixed_target_x: 1.800
 avoid_fixed_target_y: 0.450
 avoid_fixed_target_yaw_deg: -131.61

@@ -1,10 +1,10 @@
 {
   "success": true,
   "backend": "energy",
-  "reason": "检测到连续静音",
-  "duration_seconds": 7.14,
+  "reason": "达到最长录音时间",
+  "duration_seconds": 9.0,
   "speech_started": true,
-  "speech_frame_count": 317,
+  "speech_frame_count": 412,
   "output": "/home/ucar/ucar_ws_copy/src/ucarmain2026/wakeup_record/test_record.wav",
-  "wall_seconds": 7.617
+  "wall_seconds": 8.619
 }

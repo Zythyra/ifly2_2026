@@ -1,5 +1,7 @@
 #!/home/ucar/miniforge3/envs/rknn_env/bin/python3
 # V5_YOLOV5_TRAFFIC_20260820：红绿灯后端替换为YOLOv5 RKNN。
+# V6_TRAFFIC_GREEN_COLOR_GUARD_20260824：位置过滤后增加HSV绿色有效性和
+# 红色占优过滤，阻止红灯被三分类模型高置信度误判为直行。
 # -*- coding: utf-8 -*-
 
 """讯飞2026 RKNN统一ROS服务。
@@ -1358,6 +1360,115 @@ class Detect2026Server(object):
             )
         )
 
+        # 红绿灯检测框位置过滤。这里的坐标比例基于YOLOv5检测框
+        # 已经还原后的原始相机图像尺寸，而不是640x640模型输入尺寸。
+        self.traffic_center_x_min_ratio = float(
+            rospy.get_param(
+                "~traffic_center_x_min_ratio",
+                0.35,
+            )
+        )
+
+        self.traffic_center_x_max_ratio = float(
+            rospy.get_param(
+                "~traffic_center_x_max_ratio",
+                0.66,
+            )
+        )
+
+        self.traffic_center_y_min_ratio = float(
+            rospy.get_param(
+                "~traffic_center_y_min_ratio",
+                0.22,
+            )
+        )
+
+        self.traffic_center_y_max_ratio = float(
+            rospy.get_param(
+                "~traffic_center_y_max_ratio",
+                0.38,
+            )
+        )
+
+        # 红绿灯模型只有左/右/直行三个绿色方向类别，没有红灯类别。
+        # 因此YOLO高分框还必须通过框内颜色检查，红灯框才不会被强制
+        # 分到最相似的straight类别后返回给总控。
+        self.traffic_green_color_filter_enabled = bool(
+            rospy.get_param(
+                "~traffic_green_color_filter_enabled",
+                True,
+            )
+        )
+        self.traffic_color_roi_inset_ratio = float(
+            rospy.get_param(
+                "~traffic_color_roi_inset_ratio",
+                0.08,
+            )
+        )
+        self.traffic_green_h_min = int(
+            rospy.get_param("~traffic_green_h_min", 30)
+        )
+        self.traffic_green_h_max = int(
+            rospy.get_param("~traffic_green_h_max", 100)
+        )
+        self.traffic_red_h_low_max = int(
+            rospy.get_param("~traffic_red_h_low_max", 15)
+        )
+        self.traffic_red_h_high_min = int(
+            rospy.get_param("~traffic_red_h_high_min", 165)
+        )
+        self.traffic_color_s_min = int(
+            rospy.get_param("~traffic_color_s_min", 55)
+        )
+        self.traffic_color_v_min = int(
+            rospy.get_param("~traffic_color_v_min", 45)
+        )
+        self.traffic_green_min_ratio = float(
+            rospy.get_param("~traffic_green_min_ratio", 0.010)
+        )
+        self.traffic_red_min_ratio = float(
+            rospy.get_param("~traffic_red_min_ratio", 0.020)
+        )
+        self.traffic_red_to_green_max_ratio = float(
+            rospy.get_param(
+                "~traffic_red_to_green_max_ratio",
+                1.0,
+            )
+        )
+
+        self.traffic_color_roi_inset_ratio = min(
+            0.40,
+            max(0.0, self.traffic_color_roi_inset_ratio),
+        )
+        self.traffic_green_h_min = min(
+            179, max(0, self.traffic_green_h_min)
+        )
+        self.traffic_green_h_max = min(
+            179,
+            max(self.traffic_green_h_min, self.traffic_green_h_max),
+        )
+        self.traffic_red_h_low_max = min(
+            179, max(0, self.traffic_red_h_low_max)
+        )
+        self.traffic_red_h_high_min = min(
+            179, max(0, self.traffic_red_h_high_min)
+        )
+        self.traffic_color_s_min = min(
+            255, max(0, self.traffic_color_s_min)
+        )
+        self.traffic_color_v_min = min(
+            255, max(0, self.traffic_color_v_min)
+        )
+        self.traffic_green_min_ratio = min(
+            1.0, max(0.0, self.traffic_green_min_ratio)
+        )
+        self.traffic_red_min_ratio = min(
+            1.0, max(0.0, self.traffic_red_min_ratio)
+        )
+        self.traffic_red_to_green_max_ratio = max(
+            0.0, self.traffic_red_to_green_max_ratio
+        )
+
         self.flip_horizontal = bool(
             rospy.get_param(
                 "~flip_horizontal",
@@ -1515,6 +1626,29 @@ class Detect2026Server(object):
             self.enable_debug_image,
             self.enable_debug_video,
             self.show_live_window,
+        )
+
+        rospy.loginfo(
+            "红绿灯检测框中心位置过滤："
+            "X比例=[%.3f, %.3f]，Y比例=[%.3f, %.3f]",
+            self.traffic_center_x_min_ratio,
+            self.traffic_center_x_max_ratio,
+            self.traffic_center_y_min_ratio,
+            self.traffic_center_y_max_ratio,
+        )
+
+        rospy.loginfo(
+            "红绿灯HSV绿色保护：启用=%s，绿色H=[%d,%d]，"
+            "S>=%d，V>=%d，绿色最小占比=%.3f；"
+            "红色占比>=%.3f且红/绿>%.2f时剔除",
+            self.traffic_green_color_filter_enabled,
+            self.traffic_green_h_min,
+            self.traffic_green_h_max,
+            self.traffic_color_s_min,
+            self.traffic_color_v_min,
+            self.traffic_green_min_ratio,
+            self.traffic_red_min_ratio,
+            self.traffic_red_to_green_max_ratio,
         )
 
     @staticmethod
@@ -1899,6 +2033,265 @@ class Detect2026Server(object):
             message
         )
 
+    def filter_traffic_boxes_by_position(
+        self,
+        frame,
+        boxes,
+        scores,
+        class_ids
+    ):
+        """按还原到原始图像后的检测框中心位置过滤红绿灯候选。"""
+        if boxes.size == 0:
+            return boxes, scores, class_ids
+
+        frame_height, frame_width = frame.shape[:2]
+        keep_indices = []
+
+        for index, (box, score, class_id) in enumerate(
+            zip(boxes, scores, class_ids)
+        ):
+            x0, y0, x1, y1 = [
+                float(value)
+                for value in box
+            ]
+
+            center_x = (x0 + x1) * 0.5
+            center_y = (y0 + y1) * 0.5
+            center_x_ratio = center_x / max(float(frame_width), 1.0)
+            center_y_ratio = center_y / max(float(frame_height), 1.0)
+
+            x_valid = (
+                self.traffic_center_x_min_ratio
+                <= center_x_ratio
+                <= self.traffic_center_x_max_ratio
+            )
+            y_valid = (
+                self.traffic_center_y_min_ratio
+                <= center_y_ratio
+                <= self.traffic_center_y_max_ratio
+            )
+
+            if x_valid and y_valid:
+                keep_indices.append(index)
+                continue
+
+            rospy.logwarn(
+                "红绿灯位置过滤：剔除候选 "
+                "class=%d(%s)，score=%.4f，"
+                "中心=(%.1f, %.1f)，中心比例=(%.3f, %.3f)，"
+                "允许X=[%.3f, %.3f]，Y=[%.3f, %.3f]",
+                int(class_id),
+                self.class_name_for_id(
+                    int(class_id),
+                    "traffic",
+                ),
+                float(score),
+                center_x,
+                center_y,
+                center_x_ratio,
+                center_y_ratio,
+                self.traffic_center_x_min_ratio,
+                self.traffic_center_x_max_ratio,
+                self.traffic_center_y_min_ratio,
+                self.traffic_center_y_max_ratio,
+            )
+
+        if not keep_indices:
+            rospy.logwarn(
+                "红绿灯位置过滤失败：原始候选=%d，"
+                "全部超出允许中心范围，本次/nanodet_detect返回空检测",
+                len(boxes),
+            )
+            return (
+                boxes[:0],
+                scores[:0],
+                class_ids[:0],
+            )
+
+        if len(keep_indices) != len(boxes):
+            rospy.loginfo(
+                "红绿灯位置过滤完成：原始候选=%d，保留=%d，剔除=%d",
+                len(boxes),
+                len(keep_indices),
+                len(boxes) - len(keep_indices),
+            )
+
+        keep_indices = np.asarray(
+            keep_indices,
+            dtype=np.int32,
+        )
+
+        return (
+            boxes[keep_indices],
+            scores[keep_indices],
+            class_ids[keep_indices],
+        )
+
+    def traffic_box_color_ratios(
+        self,
+        frame,
+        box
+    ):
+        """计算检测框内部有效绿色和红色像素占比。"""
+        frame_height, frame_width = frame.shape[:2]
+        x0, y0, x1, y1 = [float(value) for value in box]
+
+        box_width = max(1.0, x1 - x0)
+        box_height = max(1.0, y1 - y0)
+        inset_x = box_width * self.traffic_color_roi_inset_ratio
+        inset_y = box_height * self.traffic_color_roi_inset_ratio
+
+        crop_x0 = max(
+            0,
+            min(frame_width - 1, int(round(x0 + inset_x))),
+        )
+        crop_y0 = max(
+            0,
+            min(frame_height - 1, int(round(y0 + inset_y))),
+        )
+        crop_x1 = max(
+            crop_x0 + 1,
+            min(frame_width, int(round(x1 - inset_x))),
+        )
+        crop_y1 = max(
+            crop_y0 + 1,
+            min(frame_height, int(round(y1 - inset_y))),
+        )
+
+        crop = frame[crop_y0:crop_y1, crop_x0:crop_x1]
+        if crop.size == 0:
+            return 0.0, 0.0
+
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        lower_green = np.array(
+            [
+                self.traffic_green_h_min,
+                self.traffic_color_s_min,
+                self.traffic_color_v_min,
+            ],
+            dtype=np.uint8,
+        )
+        upper_green = np.array(
+            [self.traffic_green_h_max, 255, 255],
+            dtype=np.uint8,
+        )
+        green_mask = cv2.inRange(
+            hsv,
+            lower_green,
+            upper_green,
+        )
+
+        lower_red_1 = np.array(
+            [0, self.traffic_color_s_min, self.traffic_color_v_min],
+            dtype=np.uint8,
+        )
+        upper_red_1 = np.array(
+            [self.traffic_red_h_low_max, 255, 255],
+            dtype=np.uint8,
+        )
+        lower_red_2 = np.array(
+            [
+                self.traffic_red_h_high_min,
+                self.traffic_color_s_min,
+                self.traffic_color_v_min,
+            ],
+            dtype=np.uint8,
+        )
+        upper_red_2 = np.array(
+            [179, 255, 255],
+            dtype=np.uint8,
+        )
+        red_mask = cv2.bitwise_or(
+            cv2.inRange(hsv, lower_red_1, upper_red_1),
+            cv2.inRange(hsv, lower_red_2, upper_red_2),
+        )
+
+        pixel_count = float(max(1, crop.shape[0] * crop.shape[1]))
+        green_ratio = float(cv2.countNonZero(green_mask)) / pixel_count
+        red_ratio = float(cv2.countNonZero(red_mask)) / pixel_count
+        return green_ratio, red_ratio
+
+    def filter_traffic_boxes_by_color(
+        self,
+        frame,
+        boxes,
+        scores,
+        class_ids
+    ):
+        """只允许具有有效绿色且不被红色主导的方向灯框通过。"""
+        if (
+            not self.traffic_green_color_filter_enabled
+            or boxes.size == 0
+        ):
+            return boxes, scores, class_ids
+
+        keep_indices = []
+
+        for index, (box, score, class_id) in enumerate(
+            zip(boxes, scores, class_ids)
+        ):
+            green_ratio, red_ratio = self.traffic_box_color_ratios(
+                frame,
+                box,
+            )
+
+            enough_green = (
+                green_ratio >= self.traffic_green_min_ratio
+            )
+            red_dominant = (
+                red_ratio >= self.traffic_red_min_ratio
+                and red_ratio >
+                    green_ratio *
+                    self.traffic_red_to_green_max_ratio
+            )
+
+            if enough_green and not red_dominant:
+                keep_indices.append(index)
+                rospy.loginfo(
+                    "红绿灯颜色过滤通过：class=%d(%s)，score=%.4f，"
+                    "绿色占比=%.4f，红色占比=%.4f",
+                    int(class_id),
+                    self.class_name_for_id(int(class_id), "traffic"),
+                    float(score),
+                    green_ratio,
+                    red_ratio,
+                )
+                continue
+
+            reject_reason = (
+                "绿色不足"
+                if not enough_green
+                else "红色占优"
+            )
+            rospy.logwarn(
+                "红绿灯颜色过滤：剔除候选class=%d(%s)，score=%.4f，"
+                "原因=%s，绿色占比=%.4f(要求>=%.4f)，"
+                "红色占比=%.4f",
+                int(class_id),
+                self.class_name_for_id(int(class_id), "traffic"),
+                float(score),
+                reject_reason,
+                green_ratio,
+                self.traffic_green_min_ratio,
+                red_ratio,
+            )
+
+        if not keep_indices:
+            rospy.logwarn(
+                "红绿灯颜色过滤失败：原始候选=%d，"
+                "没有候选同时满足绿色有效且红色不占优；"
+                "本次/nanodet_detect返回空检测",
+                len(boxes),
+            )
+            return boxes[:0], scores[:0], class_ids[:0]
+
+        keep_indices = np.asarray(keep_indices, dtype=np.int32)
+        return (
+            boxes[keep_indices],
+            scores[keep_indices],
+            class_ids[keep_indices],
+        )
+
     def capture_and_detect(
         self,
         command
@@ -1991,6 +2384,31 @@ class Detect2026Server(object):
                 error,
             )
             return None
+
+        # YOLOv5红绿灯检测框此时已经由infer()还原到原始相机坐标。
+        # 在返回/nanodet_detect结果之前按检测框中心位置进行过滤。
+        if mode == "traffic":
+            (
+                boxes,
+                scores,
+                class_ids,
+            ) = self.filter_traffic_boxes_by_position(
+                frame,
+                boxes,
+                scores,
+                class_ids,
+            )
+
+            (
+                boxes,
+                scores,
+                class_ids,
+            ) = self.filter_traffic_boxes_by_color(
+                frame,
+                boxes,
+                scores,
+                class_ids,
+            )
 
         if not self.output_shape_logged[
             mode

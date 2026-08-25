@@ -216,7 +216,7 @@ barrier_debug_log_interval: 0.50
 # 固定模式(true)：完全跳过本次几何目标计算，直接使用下面写死的map坐标和yaw；
 # 三段均保持avoid_fixed_target_yaw_deg。适合在正式场地测出最佳日志后直接固化。
 avoid_right_distance: 0.50
-avoid_forward_distance: 0.56
+avoid_forward_distance: 0.53
 avoid_target_extension_distance: 0.25
 
 # -------------------- V29沿用：绕障目标固定覆盖 --------------------

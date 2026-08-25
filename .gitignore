@@ -5,3 +5,5 @@
 /.vscode
 src/ucar_camera/pic/
 src/ydlidar/laser_msg/scan_20250413_165325.npy
+
+/G38_src.tar.gz

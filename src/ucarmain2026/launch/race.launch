@@ -167,7 +167,7 @@
         <param name="start_x" value="1.25" />
 
         <!-- 四墙固定巡检模块的起始点 Y，单位米。 -->
-        <param name="start_y" value="4.25" />
+        <param name="start_y" value="4.30" />
 
         <!-- 四墙巡检起点目标航向，单位度；当前从 0° 开始第一段。 -->
         <param name="start_yaw_deg" value="0.0" />
